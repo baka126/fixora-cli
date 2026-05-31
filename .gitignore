@@ -5,4 +5,5 @@ dist/
 coverage.txt
 .DS_Store
 k8sgpt/
+Fixora/
 kubectl-fixora

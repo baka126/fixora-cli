@@ -30,6 +30,12 @@ var registry = []Definition{
 	{Name: "ValidatingWebhook", Kind: "ValidatingWebhookConfiguration", Resource: "validatingwebhookconfigurations", Scope: "cluster", Description: "Validation webhook health and timeout risk", Enabled: true},
 	{Name: "KyvernoPolicyReport", Kind: "PolicyReport", Resource: "policyreports.wgpolicyk8s.io", Scope: "namespaced", Description: "Kyverno policy report failures", Enabled: true},
 	{Name: "KedaScaledObject", Kind: "ScaledObject", Resource: "scaledobjects.keda.sh", Scope: "namespaced", Description: "KEDA ScaledObject readiness and scaler errors", Enabled: true},
+	{Name: "TrivyVulnerabilityReport", Kind: "VulnerabilityReport", Resource: "vulnerabilityreports.aquasecurity.github.io", Scope: "namespaced", Description: "Trivy Operator vulnerability findings", Enabled: true},
+	{Name: "TrivyConfigAuditReport", Kind: "ConfigAuditReport", Resource: "configauditreports.aquasecurity.github.io", Scope: "namespaced", Description: "Trivy Operator config audit findings", Enabled: true},
+	{Name: "OLMClusterServiceVersion", Kind: "ClusterServiceVersion", Resource: "clusterserviceversions.operators.coreos.com", Scope: "namespaced", Description: "OLM operator install and upgrade health", Enabled: true},
+	{Name: "OLMSubscription", Kind: "Subscription", Resource: "subscriptions.operators.coreos.com", Scope: "namespaced", Description: "OLM subscription health and catalog resolution", Enabled: true},
+	{Name: "OLMInstallPlan", Kind: "InstallPlan", Resource: "installplans.operators.coreos.com", Scope: "namespaced", Description: "OLM install plan phase and approval status", Enabled: true},
+	{Name: "OLMCatalogSource", Kind: "CatalogSource", Resource: "catalogsources.operators.coreos.com", Scope: "namespaced", Description: "OLM catalog source health", Enabled: true},
 }
 
 func ListAnalyzers(filters []string) []Definition {
@@ -183,6 +189,10 @@ func categoryForRegistered(def Definition) string {
 		return "policy"
 	case "KedaScaledObject":
 		return "autoscaling"
+	case "TrivyVulnerabilityReport", "TrivyConfigAuditReport":
+		return "security"
+	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource":
+		return "operator"
 	default:
 		return "workload"
 	}
@@ -208,6 +218,10 @@ func recommendationForRegistered(def Definition) string {
 		return "Review the failing policy result and update manifests to satisfy policy before applying."
 	case "KedaScaledObject":
 		return "Check trigger authentication, scaler target, metrics source, and KEDA operator events."
+	case "TrivyVulnerabilityReport", "TrivyConfigAuditReport":
+		return "Review affected image, package, severity, and available fixed versions before promoting or rolling back workloads."
+	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource":
+		return "Check OLM conditions, catalog availability, install plan approval, and operator pod events."
 	default:
 		return "Inspect related events, owner chain, logs, and GitOps source before patching."
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/graph"
 	"github.com/fixora/kubectl-fixora/internal/integration"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/mcp"
 	"github.com/fixora/kubectl-fixora/internal/memory"
 	"github.com/fixora/kubectl-fixora/internal/ops"
 	"github.com/fixora/kubectl-fixora/internal/output"
@@ -53,6 +54,7 @@ type options struct {
 	repoPath      string
 	branch        string
 	commit        bool
+	mcp           bool
 	profile       string
 	aiBudget      int
 	container     string
@@ -150,6 +152,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case "custom-analyzers":
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
+		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters)}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return 1
+			}
+			return 0
+		}
 		addr := "127.0.0.1:8089"
 		if len(rest) > 0 {
 			addr = rest[0]
@@ -501,6 +510,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
+	fs.BoolVar(&opts.mcp, "mcp", false, "serve MCP stdio mode")
 	fs.StringVar(&opts.profile, "profile", "", "AI prompt profile or bundle profile")
 	fs.IntVar(&opts.aiBudget, "ai-budget-tokens", 0, "maximum estimated AI prompt tokens")
 	fs.StringVar(&opts.container, "container", "", "target container for concrete patch generation")
@@ -808,6 +818,45 @@ func runCache(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, store.Dir)
 		return 0
 	}
+	if args[0] == "add" {
+		cfg, err := parseRemoteCache(args[1:])
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		if err := store.SetRemote(cfg); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return output.Write(stdout, "json", cfg)
+	}
+	if args[0] == "get" {
+		cfg, err := store.Remote()
+		return output.WriteOrError(stdout, stderr, "json", cfg, err)
+	}
+	if args[0] == "list" {
+		return output.Write(stdout, "json", store.List())
+	}
+	if args[0] == "purge" {
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "error: cache purge requires key")
+			return 2
+		}
+		if err := store.Purge(args[1]); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "cache entry purged")
+		return 0
+	}
+	if args[0] == "remove" {
+		if err := store.RemoveRemote(); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "remote cache removed")
+		return 0
+	}
 	if args[0] == "stats" {
 		return output.Write(stdout, "json", store.Stats())
 	}
@@ -821,6 +870,42 @@ func runCache(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "error: unknown cache command %q\n", args[0])
 	return 2
+}
+
+func parseRemoteCache(args []string) (cache.RemoteConfig, error) {
+	if len(args) == 0 {
+		return cache.RemoteConfig{}, fmt.Errorf("cache add requires type: s3, azure, gcs, or interplex")
+	}
+	cfg := cache.RemoteConfig{Type: args[0]}
+	for i := 1; i < len(args); i++ {
+		key := strings.TrimLeft(args[i], "-")
+		if key == "insecure" {
+			cfg.Insecure = true
+			continue
+		}
+		if i+1 >= len(args) {
+			return cfg, fmt.Errorf("missing value for --%s", key)
+		}
+		value := args[i+1]
+		i++
+		switch key {
+		case "bucket":
+			cfg.Bucket = value
+		case "region":
+			cfg.Region = value
+		case "endpoint":
+			cfg.Endpoint = value
+		case "storageacc", "storage-account", "storageaccount":
+			cfg.StorageAccount = value
+		case "container":
+			cfg.Container = value
+		case "projectid", "project-id":
+			cfg.ProjectID = value
+		default:
+			return cfg, fmt.Errorf("unknown cache option --%s", key)
+		}
+	}
+	return cfg, nil
 }
 
 func runCustomAnalyzers(ctx context.Context, stdout, stderr io.Writer, opts options, a analyzer.Analyzer, rest []string) int {
@@ -872,6 +957,7 @@ Commands:
   integrations                 Detect local optional integrations and CRDs
   custom-analyzers list|add|run Manage explicit local custom analyzer executables
   serve [addr]                 Serve a local-only HTTP API for incidents/analyze
+  serve --mcp                  Serve a local MCP stdio server for AI assistants
   why <kind/name>              Explain what is broken, why, proof, and next step
   graph <kind/name>            Show dependency graph as text, JSON, YAML, or Mermaid
   trace <resource>             Debug Ingress/HTTPRoute/Service connectivity path
@@ -907,7 +993,9 @@ Commands:
   config view|set|unset|validate|export|reset|path
                                Manage local CLI configuration
   config profile|context       Manage named config profiles and kube-context overrides
-  cache path|clear             Inspect or clear local AI cache
+  cache path|stats|list|purge|clear
+                               Inspect, purge, or clear local AI cache
+  cache add|get|remove         Configure K8sGPT-style remote cache metadata
   ai doctor|profiles           Validate AI setup and list prompt profiles
   memory list|clear            Inspect or clear local scenario memory
 
@@ -915,7 +1003,7 @@ Global flags:
   -n, --namespace string       Namespace (default "default")
   -A, --all-namespaces         Scan all namespaces
       --context string         Kube context
-  -o, --output string          text, json, yaml, markdown (default "text")
+  -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus (default "text")
       --include-logs           Include bounded logs in evidence
       --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
       --auto-fix               Generate explicit local fix plan

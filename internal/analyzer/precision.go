@@ -17,6 +17,10 @@ func (a Analyzer) runPrecisionAnalyzers(ctx context.Context) ([]Finding, []Skipp
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
 		{name: "ingress-backends", aliases: []string{"ingress", "ingresses", "networking"}, run: a.analyzeIngressBackends},
 		{name: "hpa-targets", aliases: []string{"hpa", "horizontalpodautoscaler", "autoscaling"}, run: a.analyzeHPATargets},
+		{name: "pdb-disruptions", aliases: []string{"pdb", "poddisruptionbudget", "policy"}, run: a.analyzePDBs},
+		{name: "webhook-backends", aliases: []string{"webhook", "mutatingwebhook", "validatingwebhook", "policy"}, run: a.analyzeWebhooks},
+		{name: "gateway-api", aliases: []string{"gateway", "gatewayclass", "httproute", "networking"}, run: a.analyzeGatewayAPI},
+		{name: "rbac-risk", aliases: []string{"rbac", "role", "clusterrole", "rolebinding", "clusterrolebinding", "security"}, run: a.analyzeRBAC},
 		{name: "pod-security", aliases: []string{"pod", "pods", "security"}, run: a.analyzePodSecurity},
 		{name: "storage", aliases: []string{"storage", "pv", "persistentvolume", "storageclass"}, run: a.analyzeStorage},
 	}
@@ -174,6 +178,29 @@ func (a Analyzer) analyzeIngressBackends(ctx context.Context) ([]Finding, error)
 				}},
 			})
 		}
+		for _, secretName := range ingressTLSSecretNames(spec) {
+			if secretName == "" || a.objectNameExists(ctx, namespace, "secret", secretName) {
+				continue
+			}
+			out = append(out, Finding{
+				ID:           keyFor(namespace, "Ingress/"+name+"/MissingTLSSecret/"+secretName),
+				Namespace:    namespace,
+				ResourceKind: "Ingress",
+				ResourceName: name,
+				Status:       "MissingTLSSecret",
+				Severity:     "high",
+				Category:     "networking",
+				Summary:      "Ingress references a TLS Secret that does not exist or is not readable.",
+				Evidence:     []Evidence{{Label: "TLS secret", Value: secretName}},
+				GitOps:       gitOpsForObject(ingress),
+				Recommendations: []Recommendation{{
+					Title:         "Restore the TLS Secret reference",
+					Description:   "Create the expected Secret through the cluster's certificate workflow or update the Ingress TLS reference. Fixora checks only object existence and does not read Secret values.",
+					PatchType:     "ingress",
+					SafeByDefault: false,
+				}},
+			})
+		}
 	}
 	return out, nil
 }
@@ -296,6 +323,228 @@ func (a Analyzer) analyzePodSecurity(ctx context.Context) ([]Finding, error) {
 		}
 		_ = namespace
 		_ = name
+	}
+	return out, nil
+}
+
+func (a Analyzer) analyzePDBs(ctx context.Context) ([]Finding, error) {
+	pdbs, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "pdb")
+	if err != nil {
+		return nil, err
+	}
+	out := []Finding{}
+	for _, pdb := range pdbs {
+		namespace, name := objectNamespaceName(pdb)
+		status := nestedMap(pdb, "status")
+		current, desired := intValue(status["currentHealthy"]), intValue(status["desiredHealthy"])
+		disruptions := intValue(status["disruptionsAllowed"])
+		expected := intValue(status["expectedPods"])
+		if expected == 0 || current < desired || disruptions == 0 && desired > 0 {
+			severity := "medium"
+			if current < desired {
+				severity = "high"
+			}
+			out = append(out, Finding{
+				ID:           keyFor(namespace, "PodDisruptionBudget/"+name+"/Unavailable"),
+				Namespace:    namespace,
+				ResourceKind: "PodDisruptionBudget",
+				ResourceName: name,
+				Status:       "DisruptionsBlocked",
+				Severity:     severity,
+				Category:     "policy",
+				Summary:      "PodDisruptionBudget may block voluntary disruption or does not match healthy pods.",
+				Evidence: []Evidence{
+					{Label: "currentHealthy", Value: fmt.Sprint(current)},
+					{Label: "desiredHealthy", Value: fmt.Sprint(desired)},
+					{Label: "disruptionsAllowed", Value: fmt.Sprint(disruptions)},
+					{Label: "expectedPods", Value: fmt.Sprint(expected)},
+				},
+				GitOps: gitOpsForObject(pdb),
+				Recommendations: []Recommendation{{
+					Title:         "Check PDB selector and workload health",
+					Description:   "Confirm the PDB selector matches the intended pods, then fix unavailable replicas before relaxing disruption policy.",
+					PatchType:     "pdb",
+					SafeByDefault: false,
+				}},
+			})
+		}
+	}
+	return out, nil
+}
+
+func (a Analyzer) analyzeWebhooks(ctx context.Context) ([]Finding, error) {
+	out := []Finding{}
+	for _, resource := range []string{"mutatingwebhookconfigurations", "validatingwebhookconfigurations"} {
+		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		if err != nil {
+			continue
+		}
+		kind := "MutatingWebhookConfiguration"
+		if strings.HasPrefix(resource, "validating") {
+			kind = "ValidatingWebhookConfiguration"
+		}
+		for _, cfg := range items {
+			_, name := objectNamespaceName(cfg)
+			for _, webhook := range nestedSlice(cfg, "webhooks") {
+				webhookMap, _ := webhook.(map[string]any)
+				webhookName := strValue(webhookMap["name"])
+				clientConfig := nestedMap(webhookMap, "clientConfig")
+				service := nestedMap(clientConfig, "service")
+				serviceName, serviceNS := strValue(service["name"]), strValue(service["namespace"])
+				if serviceName != "" && !a.objectNameExists(ctx, serviceNS, "service", serviceName) {
+					out = append(out, clusterFinding(kind, name, "MissingWebhookService/"+webhookName, "high", "policy", "Admission webhook references a Service that does not exist or is not readable.", []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "Service", Value: keyFor(serviceNS, serviceName)}}))
+				}
+				if seconds := intValue(webhookMap["timeoutSeconds"]); seconds > 10 {
+					out = append(out, clusterFinding(kind, name, "HighWebhookTimeout/"+webhookName, "medium", "policy", "Admission webhook has a high timeout and can slow or block API writes during incidents.", []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "timeoutSeconds", Value: fmt.Sprint(seconds)}}))
+				}
+				if failurePolicy := strValue(webhookMap["failurePolicy"]); strings.EqualFold(failurePolicy, "Fail") {
+					out = append(out, clusterFinding(kind, name, "FailClosedWebhook/"+webhookName, "low", "policy", "Admission webhook fails closed; this can block remediation when the webhook backend is unhealthy.", []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "failurePolicy", Value: failurePolicy}}))
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (a Analyzer) analyzeGatewayAPI(ctx context.Context) ([]Finding, error) {
+	out := []Finding{}
+	services, _ := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "services")
+	serviceSet := map[string]bool{}
+	for _, service := range services {
+		serviceSet[objectKey(service)] = true
+	}
+	for _, resource := range []string{"gatewayclasses.gateway.networking.k8s.io", "gateways.gateway.networking.k8s.io", "httproutes.gateway.networking.k8s.io"} {
+		items, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, resource)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			namespace, name := objectNamespaceName(item)
+			kind := strValue(item["kind"])
+			if kind == "" {
+				kind = resource
+			}
+			for _, condition := range nestedSlice(nestedMap(item, "status"), "conditions") {
+				conditionMap, _ := condition.(map[string]any)
+				if strValue(conditionMap["status"]) == "False" {
+					out = append(out, Finding{
+						ID:           keyFor(namespace, kind+"/"+name+"/Condition/"+strValue(conditionMap["type"])),
+						Namespace:    namespace,
+						ResourceKind: kind,
+						ResourceName: name,
+						Status:       firstNonEmpty(strValue(conditionMap["reason"]), "ConditionFalse"),
+						Severity:     "medium",
+						Category:     "networking",
+						Summary:      "Gateway API resource reports a false condition.",
+						Evidence:     []Evidence{{Label: strValue(conditionMap["type"]), Value: strValue(conditionMap["message"])}},
+						GitOps:       gitOpsForObject(item),
+						Recommendations: []Recommendation{{
+							Title:         "Inspect Gateway API controller status",
+							Description:   "Check controller events, listener attachment, route acceptance, backend refs, and ReferenceGrant requirements.",
+							PatchType:     "gateway",
+							SafeByDefault: false,
+						}},
+					})
+				}
+			}
+			if strings.EqualFold(kind, "HTTPRoute") {
+				for _, backend := range httpRouteBackendRefs(item) {
+					if backend.Namespace == "" {
+						backend.Namespace = namespace
+					}
+					if backend.Kind == "" || backend.Kind == "Service" {
+						if !serviceSet[keyFor(backend.Namespace, backend.Name)] {
+							out = append(out, Finding{
+								ID:           keyFor(namespace, "HTTPRoute/"+name+"/MissingBackend/"+backend.Name),
+								Namespace:    namespace,
+								ResourceKind: "HTTPRoute",
+								ResourceName: name,
+								Status:       "MissingBackendRef",
+								Severity:     "high",
+								Category:     "networking",
+								Summary:      "HTTPRoute references a backend Service that does not exist or is not readable.",
+								Evidence:     []Evidence{{Label: "Backend", Value: keyFor(backend.Namespace, backend.Name)}},
+								GitOps:       gitOpsForObject(item),
+								Recommendations: []Recommendation{{
+									Title:         "Fix HTTPRoute backend reference",
+									Description:   "Restore the referenced Service or retarget the route after confirming cross-namespace ReferenceGrant requirements.",
+									PatchType:     "gateway",
+									SafeByDefault: false,
+								}},
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+func (a Analyzer) analyzeRBAC(ctx context.Context) ([]Finding, error) {
+	out := []Finding{}
+	for _, resource := range []string{"roles", "clusterroles"} {
+		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			namespace, name := objectNamespaceName(item)
+			kind := firstNonEmpty(strValue(item["kind"]), "Role")
+			for _, rule := range nestedSlice(item, "rules") {
+				ruleMap, _ := rule.(map[string]any)
+				if sliceHasWildcard(nestedSlice(ruleMap, "verbs")) || sliceHasWildcard(nestedSlice(ruleMap, "resources")) || sliceHasWildcard(nestedSlice(ruleMap, "apiGroups")) {
+					out = append(out, Finding{
+						ID:           keyFor(namespace, kind+"/"+name+"/WildcardRule"),
+						Namespace:    namespace,
+						ResourceKind: kind,
+						ResourceName: name,
+						Status:       "WildcardRBAC",
+						Severity:     "high",
+						Category:     "security",
+						Summary:      "RBAC role contains wildcard permissions.",
+						Evidence:     []Evidence{{Label: "Rule", Value: compactMap(ruleMap)}},
+						GitOps:       gitOpsForObject(item),
+						Recommendations: []Recommendation{{
+							Title:         "Reduce RBAC wildcard scope",
+							Description:   "Replace wildcard verbs, resources, or API groups with explicit permissions required by the workload.",
+							PatchType:     "rbac",
+							SafeByDefault: false,
+						}},
+					})
+				}
+			}
+		}
+	}
+	for _, resource := range []string{"rolebindings", "clusterrolebindings"} {
+		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			namespace, name := objectNamespaceName(item)
+			roleRef := nestedMap(item, "roleRef")
+			if strings.EqualFold(strValue(roleRef["name"]), "cluster-admin") {
+				out = append(out, Finding{
+					ID:           keyFor(namespace, strValue(item["kind"])+"/"+name+"/ClusterAdmin"),
+					Namespace:    namespace,
+					ResourceKind: firstNonEmpty(strValue(item["kind"]), "ClusterRoleBinding"),
+					ResourceName: name,
+					Status:       "ClusterAdminBinding",
+					Severity:     "high",
+					Category:     "security",
+					Summary:      "Binding grants cluster-admin privileges.",
+					Evidence:     []Evidence{{Label: "roleRef", Value: compactMap(roleRef)}},
+					GitOps:       gitOpsForObject(item),
+					Recommendations: []Recommendation{{
+						Title:         "Review cluster-admin binding",
+						Description:   "Replace broad cluster-admin grants with scoped roles, especially for workload service accounts and automation identities.",
+						PatchType:     "rbac",
+						SafeByDefault: false,
+					}},
+				})
+			}
+		}
 	}
 	return out, nil
 }
@@ -496,6 +745,22 @@ func ingressBackendServices(spec map[string]any) []string {
 	return out
 }
 
+func ingressTLSSecretNames(spec map[string]any) []string {
+	seen := map[string]bool{}
+	for _, tls := range nestedSlice(spec, "tls") {
+		tlsMap, _ := tls.(map[string]any)
+		if name := strValue(tlsMap["secretName"]); name != "" {
+			seen[name] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func backendServiceName(backend map[string]any) string {
 	service := nestedMap(backend, "service")
 	if name := strValue(service["name"]); name != "" {
@@ -549,4 +814,78 @@ func podTemplateContainers(obj map[string]any) []any {
 	}
 	template := nestedMap(nestedMap(obj, "spec"), "template")
 	return nestedSlice(nestedMap(template, "spec"), "containers")
+}
+
+type backendRef struct {
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+func httpRouteBackendRefs(route map[string]any) []backendRef {
+	spec := nestedMap(route, "spec")
+	out := []backendRef{}
+	for _, rule := range nestedSlice(spec, "rules") {
+		ruleMap, _ := rule.(map[string]any)
+		for _, ref := range nestedSlice(ruleMap, "backendRefs") {
+			refMap, _ := ref.(map[string]any)
+			out = append(out, backendRef{Kind: firstNonEmpty(strValue(refMap["kind"]), "Service"), Namespace: strValue(refMap["namespace"]), Name: strValue(refMap["name"])})
+		}
+	}
+	return out
+}
+
+func (a Analyzer) objectNameExists(ctx context.Context, namespace, resource, name string) bool {
+	args := []string{"get", resource, name}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	args = append(args, "-o", "name")
+	_, err := a.k.Run(ctx, args...)
+	return err == nil
+}
+
+func intValue(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case string:
+		var out int
+		_, _ = fmt.Sscanf(v, "%d", &out)
+		return out
+	default:
+		return 0
+	}
+}
+
+func sliceHasWildcard(values []any) bool {
+	for _, value := range values {
+		if strValue(value) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func clusterFinding(kind, name, status, severity, category, summary string, evidence []Evidence) Finding {
+	return Finding{
+		ID:           "cluster/" + kind + "/" + name + "/" + status,
+		ResourceKind: kind,
+		ResourceName: name,
+		Status:       status,
+		Severity:     severity,
+		Category:     category,
+		Summary:      summary,
+		Evidence:     evidence,
+		Recommendations: []Recommendation{{
+			Title:         "Review controller dependency",
+			Description:   "Fix the referenced dependency or relax the policy only after confirming production blast radius.",
+			PatchType:     strings.ToLower(kind),
+			SafeByDefault: false,
+		}},
+	}
 }

@@ -62,7 +62,7 @@ func NewFromEnv() (Client, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL(provider)
 	}
-	if (provider == "azureopenai" || provider == "customrest") && baseURL == "" {
+	if (provider == "azureopenai" || provider == "customrest" || provider == "watsonxai" || provider == "ibmwatsonxai" || provider == "googlevertexai" || provider == "amazonbedrock" || provider == "amazonbedrockconverse" || provider == "amazonsagemaker" || provider == "oci") && baseURL == "" {
 		return Client{}, fmt.Errorf("FIXORA_AI_BASE_URL is required for %s", provider)
 	}
 	return Client{
@@ -94,6 +94,14 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 		return c.explainAnthropic(ctx, payloadWithProfile)
 	case "gemini", "google":
 		return c.explainGemini(ctx, payloadWithProfile)
+	case "cohere":
+		return c.explainCohere(ctx, payloadWithProfile)
+	case "huggingface":
+		return c.explainHuggingFace(ctx, payloadWithProfile)
+	case "watsonxai", "ibmwatsonxai":
+		return c.explainTextGeneration(ctx, payloadWithProfile, "Watsonx")
+	case "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
+		return c.explainCloudGateway(ctx, payloadWithProfile)
 	case "azureopenai":
 		return c.explainAzureOpenAI(ctx, payloadWithProfile)
 	case "noop":
@@ -101,6 +109,115 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 	default:
 		return c.explainOpenAI(ctx, payloadWithProfile)
 	}
+}
+
+func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AIResult, error) {
+	body, err := json.Marshal(map[string]any{
+		"model":       c.Model,
+		"temperature": 0.1,
+		"messages": []map[string]string{
+			{"role": "system", "content": "Return only JSON with summary, rootCause, recommendedFix, commands, warnings."},
+			{"role": "user", "content": "Analyze this redacted Kubernetes finding:\n" + payload},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v2/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var decoded struct {
+		Message struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"message"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, err
+	}
+	if len(decoded.Message.Content) > 0 {
+		return parseAIContent(decoded.Message.Content[0].Text), nil
+	}
+	if decoded.Text != "" {
+		return parseAIContent(decoded.Text), nil
+	}
+	return nil, fmt.Errorf("AI provider returned no content")
+}
+
+func (c Client) explainHuggingFace(ctx context.Context, payload string) (*analyzer.AIResult, error) {
+	body, err := json.Marshal(map[string]any{
+		"inputs": "Return only JSON with summary, rootCause, recommendedFix, commands, warnings.\nAnalyze this Kubernetes finding:\n" + payload,
+		"parameters": map[string]any{
+			"temperature":      0.1,
+			"return_full_text": false,
+			"max_new_tokens":   900,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/"+c.Model, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+	}
+	var decoded []struct {
+		GeneratedText string `json:"generated_text"`
+	}
+	if err := json.Unmarshal(data, &decoded); err == nil && len(decoded) > 0 {
+		return parseAIContent(decoded[0].GeneratedText), nil
+	}
+	var single struct {
+		GeneratedText string `json:"generated_text"`
+	}
+	if err := json.Unmarshal(data, &single); err == nil && single.GeneratedText != "" {
+		return parseAIContent(single.GeneratedText), nil
+	}
+	return parseAIContent(string(data)), nil
+}
+
+func (c Client) explainCloudGateway(ctx context.Context, payload string) (*analyzer.AIResult, error) {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return nil, fmt.Errorf("%s requires FIXORA_AI_BASE_URL pointing at an authenticated internal gateway or cloud proxy", c.Provider)
+	}
+	return c.explainOpenAI(ctx, payload)
+}
+
+func (c Client) explainTextGeneration(ctx context.Context, payload, providerName string) (*analyzer.AIResult, error) {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return nil, fmt.Errorf("%s requires FIXORA_AI_BASE_URL", providerName)
+	}
+	return c.explainOpenAI(ctx, payload)
 }
 
 func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -390,9 +507,13 @@ func defaultBaseURL(provider string) string {
 		return "https://generativelanguage.googleapis.com/v1beta"
 	case "groq":
 		return "https://api.groq.com/openai/v1"
+	case "cohere":
+		return "https://api.cohere.com"
+	case "huggingface":
+		return "https://api-inference.huggingface.co/models"
 	case "localai":
 		return "http://localhost:8080/v1"
-	case "azureopenai", "customrest":
+	case "azureopenai", "customrest", "watsonxai", "ibmwatsonxai", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
 		return ""
 	default:
 		return "https://api.openai.com/v1"
@@ -409,6 +530,10 @@ func defaultModel(provider string) string {
 		return "gemini-1.5-flash"
 	case "groq":
 		return "llama-3.1-70b-versatile"
+	case "cohere":
+		return "command-r-plus"
+	case "huggingface":
+		return "mistralai/Mistral-7B-Instruct-v0.3"
 	default:
 		return "gpt-4o-mini"
 	}

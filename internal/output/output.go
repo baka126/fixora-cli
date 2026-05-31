@@ -29,10 +29,108 @@ func Write(w io.Writer, format string, value any) int {
 		writeYAML(w, value, 0)
 	case "markdown", "md":
 		writeMarkdown(w, value)
+	case "sarif":
+		writeSARIF(w, value)
+	case "junit":
+		writeJUnit(w, value)
+	case "prometheus", "metrics":
+		writePrometheus(w, value)
 	default:
 		writeText(w, value)
 	}
 	return 0
+}
+
+func writeSARIF(w io.Writer, value any) {
+	findings := extractFindings(value)
+	results := []map[string]any{}
+	for _, f := range findings {
+		results = append(results, map[string]any{
+			"ruleId":  fmt.Sprint(f["status"]),
+			"level":   sarifLevel(fmt.Sprint(f["severity"])),
+			"message": map[string]string{"text": fmt.Sprint(f["summary"])},
+			"locations": []map[string]any{{
+				"physicalLocation": map[string]any{
+					"artifactLocation": map[string]string{"uri": fmt.Sprintf("kubernetes://%s/%s/%s", f["namespace"], f["resourceKind"], f["resourceName"])},
+				},
+			}},
+		})
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"version": "2.1.0",
+		"runs": []map[string]any{{
+			"tool":    map[string]any{"driver": map[string]any{"name": "fixora-cli"}},
+			"results": results,
+		}},
+	})
+}
+
+func writeJUnit(w io.Writer, value any) {
+	findings := extractFindings(value)
+	fmt.Fprintf(w, "<testsuite name=\"fixora\" tests=\"%d\" failures=\"%d\">\n", len(findings), len(findings))
+	for i, f := range findings {
+		name := xmlEscape(fmt.Sprintf("%s/%s/%s", f["namespace"], f["resourceKind"], f["resourceName"]))
+		fmt.Fprintf(w, "  <testcase classname=\"fixora\" name=\"%s\">\n", name)
+		fmt.Fprintf(w, "    <failure message=\"%s\">%s</failure>\n", xmlEscape(fmt.Sprint(f["status"])), xmlEscape(fmt.Sprint(f["summary"])))
+		fmt.Fprintf(w, "  </testcase>\n")
+		if i > 5000 {
+			break
+		}
+	}
+	fmt.Fprintln(w, "</testsuite>")
+}
+
+func writePrometheus(w io.Writer, value any) {
+	findings := extractFindings(value)
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[fmt.Sprint(f["severity"])]++
+	}
+	fmt.Fprintln(w, "# HELP fixora_findings_total Fixora findings by severity")
+	fmt.Fprintln(w, "# TYPE fixora_findings_total gauge")
+	for severity, count := range counts {
+		fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", severity, count)
+	}
+	fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", "all", len(findings))
+}
+
+func extractFindings(value any) []map[string]any {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil
+	}
+	raw, _ := obj["results"].([]any)
+	if raw == nil {
+		raw, _ = obj["findings"].([]any)
+	}
+	out := []map[string]any{}
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func sarifLevel(severity string) string {
+	switch strings.ToLower(severity) {
+	case "critical", "high":
+		return "error"
+	case "medium":
+		return "warning"
+	default:
+		return "note"
+	}
+}
+
+func xmlEscape(value string) string {
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
+	return replacer.Replace(value)
 }
 
 func writeText(w io.Writer, value any) {

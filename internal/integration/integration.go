@@ -18,10 +18,36 @@ type Status struct {
 func List(ctx context.Context, k kube.Kubectl) []Status {
 	return []Status{
 		prometheus(ctx, k),
+		alertmanager(ctx, k),
+		trivy(ctx, k),
 		aws(ctx, k),
 		kyverno(ctx, k),
 		keda(ctx, k),
 	}
+}
+
+func alertmanager(ctx context.Context, k kube.Kubectl) Status {
+	items, err := k.GetResourceItems(ctx, "", true, "services")
+	if err != nil {
+		return Status{Name: "Alertmanager", Detail: err.Error(), FreeLocal: true}
+	}
+	for _, item := range items {
+		name, ns := meta(item)
+		if strings.Contains(strings.ToLower(name), "alertmanager") {
+			return Status{Name: "Alertmanager", Detected: true, Detail: ns + "/" + name, Analyzer: "AlertCorrelation", FreeLocal: true}
+		}
+	}
+	return Status{Name: "Alertmanager", Detail: "no alertmanager service detected", FreeLocal: true}
+}
+
+func trivy(ctx context.Context, k kube.Kubectl) Status {
+	for _, resource := range []string{"vulnerabilityreports.aquasecurity.github.io", "configauditreports.aquasecurity.github.io", "clustercompliancereports.aquasecurity.github.io"} {
+		items, err := k.GetResourceItems(ctx, "", true, resource)
+		if err == nil && len(items) > 0 {
+			return Status{Name: "Trivy", Detected: true, Detail: countDetail(len(items), resource), Analyzer: "TrivyReports", FreeLocal: true}
+		}
+	}
+	return Status{Name: "Trivy", Detail: "Trivy Operator report CRDs not readable", Analyzer: "TrivyReports", FreeLocal: true}
 }
 
 func prometheus(ctx context.Context, k kube.Kubectl) Status {

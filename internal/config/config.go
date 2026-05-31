@@ -466,7 +466,7 @@ func Reset() error {
 
 func Validate(cfg Config) ValidationResult {
 	result := ValidationResult{Valid: true}
-	providers := []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "noop"}
+	providers := []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "cohere", "huggingface", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "watsonxai", "ibmwatsonxai", "noop"}
 	if !slices.Contains(providers, strings.ToLower(cfg.AIProvider)) {
 		result.Errors = append(result.Errors, "aiProvider must be one of "+strings.Join(providers, ", "))
 	}
@@ -484,9 +484,9 @@ func Validate(cfg Config) ValidationResult {
 	if cfg.MaxLogBytes < 0 {
 		result.Errors = append(result.Errors, "maxLogBytes cannot be negative")
 	}
-	outputs := []string{"text", "json", "yaml", "markdown"}
+	outputs := []string{"text", "json", "yaml", "markdown", "sarif", "junit", "prometheus", "metrics"}
 	if !slices.Contains(outputs, strings.ToLower(cfg.DefaultOutput)) {
-		result.Errors = append(result.Errors, "defaultOutput must be one of text, json, yaml, markdown")
+		result.Errors = append(result.Errors, "defaultOutput must be one of "+strings.Join(outputs, ", "))
 	}
 	if strings.TrimSpace(cfg.AIAPIKey) != "" {
 		result.Warnings = append(result.Warnings, "aiApiKey is stored in plaintext config; prefer FIXORA_AI_API_KEY for production")
@@ -528,6 +528,11 @@ func AddCustomAnalyzer(path string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("custom analyzer path is required")
+	}
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		if !strings.Contains(path, ".") && !strings.Contains(path, "localhost") {
+			return fmt.Errorf("custom analyzer URL must include a valid host")
+		}
 	}
 	for _, existing := range cfg.CustomAnalyzers {
 		if existing == path {

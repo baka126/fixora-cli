@@ -156,6 +156,9 @@ Supported provider modes:
 - `anthropic`: Anthropic Messages API.
 - `gemini` or `google`: Google Gemini GenerateContent API.
 - `azureopenai`: Azure OpenAI deployment endpoint; set `FIXORA_AI_BASE_URL` to the deployment base.
+- `cohere`: Cohere Chat API.
+- `huggingface`: Hugging Face Inference API.
+- `googlevertexai`, `amazonbedrock`, `amazonbedrockconverse`, `amazonsagemaker`, `oci`, `watsonxai`, `ibmwatsonxai`: enterprise/cloud gateway modes; set `FIXORA_AI_BASE_URL` to an authenticated internal proxy or compatible endpoint.
 - `noop`: deterministic analyzer output only.
 
 Gemini example:
@@ -174,7 +177,7 @@ export FIXORA_AI_API_KEY="$AZURE_OPENAI_API_KEY"
 export FIXORA_AI_BASE_URL="https://<resource>.openai.azure.com/openai/deployments/<deployment>"
 ```
 
-The request includes redacted Kubernetes evidence. The CLI never sends Secret values because it does not read Secret data by default. JSON, YAML, and Markdown incident output uses a stable `AnalysisReport` envelope with `status`, `problems`, `results`, `skipped`, and `summary` fields.
+The request includes redacted Kubernetes evidence. The CLI never sends Secret values because it does not read Secret data by default. JSON, YAML, Markdown, SARIF, JUnit, and Prometheus incident output uses a stable `AnalysisReport` envelope with `status`, `provider`, `problems`, `results`, `skipped`, `warnings`, and `summary` fields.
 
 ## Analyzer Filters
 
@@ -184,7 +187,34 @@ The request includes redacted Kubernetes evidence. The CLI never sends Secret va
 kubectl fixora incidents -A --filter Pod,Deployment,Service,Ingress
 ```
 
-The catalog includes workload, networking, storage, policy, node, Kyverno, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services, HPA targets and resource requests, risky pod security context, PersistentVolume failures, and multiple default StorageClasses. Missing CRDs or denied reads are skipped cleanly.
+The catalog includes workload, networking, storage, policy, node, Kyverno, Trivy, OLM, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services or TLS Secret references, HPA targets and resource requests, PDB disruption blocking, admission webhook backends, Gateway API conditions/backend refs, risky RBAC, risky pod security context, PersistentVolume failures, and multiple default StorageClasses. Missing CRDs or denied reads are skipped cleanly.
+
+## MCP
+
+Fixora can run as a local MCP stdio server for AI assistants:
+
+```sh
+kubectl fixora serve --mcp
+```
+
+Available MCP tools include `analyze`, `incidents`, `health`, `runbook`, `list-resources`, `get-resource`, `get-logs`, `list-events`, `list-filters`, and `config`.
+
+## Cache
+
+Local AI responses are cached by default. Fixora also supports K8sGPT-style remote cache configuration metadata:
+
+```sh
+kubectl fixora cache add s3 --region us-east-1 --bucket fixora-cache
+kubectl fixora cache add azure --storageacc mystorage --container fixora
+kubectl fixora cache add gcs --projectid my-project --bucket fixora-cache
+kubectl fixora cache add interplex --endpoint https://cache.internal.example
+kubectl fixora cache get
+kubectl fixora cache list
+kubectl fixora cache purge <key>
+kubectl fixora cache remove
+```
+
+Remote cache configuration is opt-in because production evidence can be sensitive.
 
 ## High-Impact Workflows
 

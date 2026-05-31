@@ -68,13 +68,19 @@ func (r ScanReport) Envelope() ScanEnvelope {
 	if len(r.Findings) > 0 {
 		status = "ProblemDetected"
 	}
+	warnings := []string{}
+	for _, skipped := range r.Skipped {
+		warnings = append(warnings, skipped.Name+": "+skipped.Reason)
+	}
 	return ScanEnvelope{
 		APIVersion: "fixora.dev/v1alpha1",
 		Kind:       "AnalysisReport",
 		Status:     status,
+		Provider:   firstNonEmpty(os.Getenv("FIXORA_AI_PROVIDER"), "local"),
 		Problems:   len(r.Findings),
 		Results:    r.Findings,
 		Skipped:    r.Skipped,
+		Warnings:   warnings,
 		Summary:    r.Summary,
 	}
 }

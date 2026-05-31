@@ -25,9 +25,11 @@ type ScanEnvelope struct {
 	APIVersion string         `json:"apiVersion"`
 	Kind       string         `json:"kind"`
 	Status     string         `json:"status"`
+	Provider   string         `json:"provider,omitempty"`
 	Problems   int            `json:"problems"`
 	Results    []Finding      `json:"results"`
 	Skipped    []SkippedCheck `json:"skipped,omitempty"`
+	Warnings   []string       `json:"warnings,omitempty"`
 	Summary    ScanSummary    `json:"summary"`
 }
 
