@@ -133,6 +133,31 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 			return nil, err
 		}
 		return ops.BuildRunbook(finding, fix.BuildPlan(finding)), nil
+	case "plan-fix", "preview-fix", "validate-fix":
+		resource := stringArg(args, "resource")
+		if resource == "" {
+			return nil, fmt.Errorf("resource is required")
+		}
+		finding, err := a.AnalyzeResource(ctx, resource)
+		if err != nil {
+			return nil, err
+		}
+		plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{
+			Container:     stringArg(args, "container"),
+			Image:         stringArg(args, "image"),
+			MemoryRequest: stringArg(args, "memoryRequest"),
+			MemoryLimit:   stringArg(args, "memoryLimit"),
+			CPURequest:    stringArg(args, "cpuRequest"),
+			Strategy:      stringArg(args, "strategy"),
+			ForceRisky:    boolArg(args, "forceRisky"),
+		})
+		if name == "preview-fix" {
+			return map[string]any{"plan": plan, "diff": plan.DiffView()}, nil
+		}
+		if name == "validate-fix" {
+			return map[string]any{"applyEligible": plan.ApplyEligible, "blockedReasons": plan.BlockedReasons, "verification": plan.Verification}, nil
+		}
+		return plan, nil
 	case "list-resources":
 		resource := firstNonEmpty(stringArg(args, "type"), "pods")
 		return s.Kubectl.GetResourceItems(ctx, s.AnalyzerOpt.Namespace, s.AnalyzerOpt.AllNS, resource)
@@ -164,7 +189,7 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 }
 
 func tools() []map[string]any {
-	names := []string{"analyze", "incidents", "health", "runbook", "list-resources", "get-resource", "get-logs", "list-events", "list-filters", "config"}
+	names := []string{"analyze", "incidents", "health", "runbook", "plan-fix", "preview-fix", "validate-fix", "list-resources", "get-resource", "get-logs", "list-events", "list-filters", "config"}
 	out := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		out = append(out, map[string]any{"name": name, "description": "Fixora Kubernetes SRE tool: " + name, "inputSchema": map[string]any{"type": "object"}})

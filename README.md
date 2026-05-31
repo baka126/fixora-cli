@@ -231,6 +231,8 @@ Remote cache configuration is opt-in because production evidence can be sensitiv
 - `preflight -f <path>` runs static policy checks and server dry-run before a manifest apply.
 - `policy-check -f <path>` runs production policy lint without touching the cluster.
 - `patch --preview` shows the fix plan, risk, confidence, blocked reasons, and rollback command without writing files.
+- `fix <resource>` uses a structured production remediation plan with confidence gates, rollback, verification commands, and `applyEligible` checks before any live apply.
+- `fix <resource> --strategy right-size|repair-selector|add-requests|rollback --repo <path> --source-patch` prefers GitOps source patches for production clusters.
 - `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
 - `bundle --profile incident|network|storage|security` creates scoped redacted audit bundles for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.

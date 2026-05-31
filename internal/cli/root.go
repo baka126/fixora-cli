@@ -51,7 +51,9 @@ type options struct {
 	proof         bool
 	paranoid      bool
 	preview       bool
+	forceRisky    bool
 	repoPath      string
+	strategy      string
 	branch        string
 	commit        bool
 	mcp           bool
@@ -203,7 +205,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return writeFindings(stdout, stderr, opts, []analyzer.Finding{finding}, nil)
-	case "plan", "diff", "patch", "runbook", "readiness", "rollback":
+	case "plan", "diff", "patch", "fix", "runbook", "readiness", "rollback":
 		if len(rest) == 0 {
 			fmt.Fprintf(stderr, "error: %s requires a resource, for example deployment/api\n", cmd)
 			return 2
@@ -228,6 +230,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		if opts.autoFix {
 			plan.AutoFixRequested = true
+			if opts.repoPath != "" && cmd == "fix" {
+				opts.sourcePatch = true
+			}
 		}
 		switch cmd {
 		case "runbook":
@@ -254,7 +259,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if cmd == "diff" {
 			return output.Write(stdout, opts.output, plan.DiffView())
 		}
-		if cmd == "patch" {
+		if cmd == "patch" || cmd == "fix" {
 			if opts.preview {
 				termui.Plan(stdout, plan, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
 				return 0
@@ -276,8 +281,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "wrote %s\n", opts.outFile)
 			if opts.apply {
-				if !plan.CanApply {
-					fmt.Fprintln(stderr, "error: generated patch is advisory only; review and make it concrete before applying")
+				if !plan.ApplyEligible {
+					fmt.Fprintln(stderr, "error: generated patch is not eligible for production apply; review blockedReasons, provide concrete values, or use --force-risky only after approval")
 					return 1
 				}
 				if opts.applyDryRun {
@@ -507,7 +512,9 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
+	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
+	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
 	fs.BoolVar(&opts.mcp, "mcp", false, "serve MCP stdio mode")
@@ -982,6 +989,7 @@ Commands:
   analyze <kind/name>          Analyze one resource locally
   explain <kind/name> --ai     Analyze and ask an OpenAI-compatible AI for explanation
   plan <kind/name>             Build a safe local remediation plan
+  fix <kind/name>              Build or write a gated production remediation patch
   diff <kind/name>             Show suggested local patch diff
   patch <kind/name> --out file Write a suggested local patch file
   report <kind/name> --out md  Export a local markdown report
@@ -1014,7 +1022,9 @@ Global flags:
       --profile string         AI prompt profile or bundle profile
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
+      --strategy string        Fix strategy such as rollback, right-size, repair-selector
       --preview                Preview patch plan only
+      --force-risky            Allow risky concrete fixes after review
       --timeout duration       Overall command timeout (default 90s)
       --log-tail int           Pod log lines to collect with --include-logs (default 120)
       --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
@@ -1083,5 +1093,7 @@ func concreteOptions(opts options) fix.ConcreteOptions {
 		EnvName:       opts.envName,
 		ConfigMap:     opts.configMap,
 		ConfigKey:     opts.configKey,
+		Strategy:      opts.strategy,
+		ForceRisky:    opts.forceRisky,
 	}
 }

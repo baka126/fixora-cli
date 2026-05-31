@@ -14,9 +14,14 @@ type Plan struct {
 	Strategy         string   `json:"strategy"`
 	Safe             bool     `json:"safe"`
 	CanApply         bool     `json:"canApply"`
+	ApplyEligible    bool     `json:"applyEligible"`
 	Confidence       int      `json:"confidence"`
 	Risk             string   `json:"risk"`
 	AutoFixRequested bool     `json:"autoFixRequested"`
+	Patches          []Patch  `json:"patches,omitempty"`
+	Commands         []string `json:"commands,omitempty"`
+	Verification     []string `json:"verification,omitempty"`
+	Rollback         []string `json:"rollback,omitempty"`
 	Steps            []string `json:"steps"`
 	Warnings         []string `json:"warnings,omitempty"`
 	BlockedReasons   []string `json:"blockedReasons,omitempty"`
@@ -24,6 +29,13 @@ type Plan struct {
 	PatchTemplate    string   `json:"patchTemplate"`
 	ApplyCommand     string   `json:"applyCommand,omitempty"`
 	RollbackCommand  string   `json:"rollbackCommand,omitempty"`
+}
+
+type Patch struct {
+	Type        string `json:"type"`
+	Target      string `json:"target"`
+	Description string `json:"description"`
+	Preview     string `json:"preview,omitempty"`
 }
 
 type ConcreteOptions struct {
@@ -35,6 +47,8 @@ type ConcreteOptions struct {
 	EnvName       string
 	ConfigMap     string
 	ConfigKey     string
+	Strategy      string
+	ForceRisky    bool
 }
 
 func BuildPlan(finding analyzer.Finding) Plan {
@@ -53,6 +67,11 @@ func BuildPlan(finding analyzer.Finding) Plan {
 			"Review events and logs for the failing container.",
 			"Generate a PR against the source manifest, Helm values file, or Kustomize overlay.",
 		},
+		Verification: []string{
+			fmt.Sprintf("kubectl get %s -n %s -o wide", strings.ToLower(resource), finding.Namespace),
+			fmt.Sprintf("kubectl describe %s -n %s", strings.ToLower(resource), finding.Namespace),
+			fmt.Sprintf("kubectl get events -n %s --sort-by=.lastTimestamp", finding.Namespace),
+		},
 	}
 	if len(finding.Recommendations) > 0 {
 		rec := finding.Recommendations[0]
@@ -67,33 +86,71 @@ func BuildPlan(finding analyzer.Finding) Plan {
 	switch {
 	case strings.Contains(finding.Status, "ImagePull"):
 		plan.PatchTemplate = imagePatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Pin a verified replacement image for the failing container.", Preview: plan.PatchTemplate})
 		plan.Confidence = 70
 		plan.Warnings = append(plan.Warnings, "Verify the replacement image exists, is pinned by tag or digest, and supports the node CPU architecture before applying.")
+		plan.Commands = append(plan.Commands, "crane digest <image> or docker manifest inspect <image>")
 	case strings.Contains(finding.Status, "OOMKilled"):
 		plan.PatchTemplate = resourcesPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Set memory and CPU requests/limits from observed usage with headroom.", Preview: plan.PatchTemplate})
 		plan.Confidence = 62
 		plan.Warnings = append(plan.Warnings, "Right-size from observed usage. Do not only raise limits if the process is intentionally allocating too much memory.")
+		plan.Commands = append(plan.Commands, "query Prometheus p95/p99 memory before choosing request and limit")
 	case strings.Contains(finding.Status, "CrashLoopBackOff"):
 		plan.PatchTemplate = runtimePatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Patch command, args, probe, env, or securityContext only after confirming the actual root cause.", Preview: plan.PatchTemplate})
 		plan.Confidence = 55
+		plan.BlockedReasons = append(plan.BlockedReasons, "CrashLoopBackOff fixes require workload-specific root-cause proof before apply.")
 		plan.Warnings = append(plan.Warnings, "Crash fixes are workload-specific. Validate command, args, env, probes, permissions, and dependencies before applying.")
 	case strings.Contains(finding.Status, "Config"):
 		plan.PatchTemplate = envPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Reference an existing ConfigMap key without embedding secret values.", Preview: plan.PatchTemplate})
 		plan.Confidence = 68
 		plan.Warnings = append(plan.Warnings, "Do not write secret values into plain manifests. Reference existing Secrets or create them with kubectl/secret tooling.")
+	case finding.ResourceKind == "Service" && strings.Contains(finding.Status, "NoEndpoints"):
+		plan.Strategy = "repair-selector"
+		plan.PatchTemplate = serviceSelectorPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Repair Service selector only when pod labels prove the intended backend.", Preview: plan.PatchTemplate})
+		plan.Confidence = 58
+		plan.Warnings = append(plan.Warnings, "Selector fixes can reroute traffic. Require endpoint proof before applying.")
+	case strings.Contains(finding.Status, "MissingResourceRequests"):
+		plan.Strategy = "add-requests"
+		plan.PatchTemplate = hpaRequestsPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "workload-patch", Target: resource, Description: "Add CPU/memory requests to the HPA scale target workload.", Preview: plan.PatchTemplate})
+		plan.Confidence = 66
+	case strings.Contains(finding.Status, "DisruptionsBlocked"):
+		plan.Strategy = "pdb-safe-adjust"
+		plan.PatchTemplate = pdbPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "policy-patch", Target: resource, Description: "Adjust PDB only after workload health and rollout safety are verified.", Preview: plan.PatchTemplate})
+		plan.Confidence = 60
+		plan.Warnings = append(plan.Warnings, "Relaxing PDB can reduce availability during voluntary disruption.")
+	case strings.Contains(finding.Status, "MissingWebhookService"), strings.Contains(finding.Status, "FailClosedWebhook"):
+		plan.Strategy = "webhook-unblock"
+		plan.PatchTemplate = webhookPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "temporary-policy-patch", Target: resource, Description: "Temporarily lower webhook blast radius while restoring webhook backend.", Preview: plan.PatchTemplate})
+		plan.Confidence = 64
+		plan.Warnings = append(plan.Warnings, "Webhook changes affect admission safety. Prefer restoring backend Service before changing failure policy.")
 	default:
 		plan.PatchTemplate = genericPatchTemplate(finding)
 		plan.BlockedReasons = append(plan.BlockedReasons, "No deterministic patch strategy matched this status.")
 	}
 	plan.ApplyCommand = fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)
 	plan.RollbackCommand = rollbackCommand(finding)
+	if plan.RollbackCommand != "" {
+		plan.Rollback = append(plan.Rollback, plan.RollbackCommand)
+	}
 	if plan.Safe && len(plan.BlockedReasons) == 0 {
 		plan.Risk = "low"
 	}
+	plan.refreshApplyEligibility(false)
 	return plan
 }
 
 func Concretize(plan Plan, opts ConcreteOptions) Plan {
+	if opts.Strategy != "" {
+		plan.Strategy = opts.Strategy
+		plan.Guardrails = append(plan.Guardrails, "strategy="+opts.Strategy)
+	}
 	patch := plan.PatchTemplate
 	replacements := map[string]string{
 		"TODO_CONTAINER_NAME":          opts.Container,
@@ -115,17 +172,30 @@ func Concretize(plan Plan, opts ConcreteOptions) Plan {
 		plan.CanApply = true
 		plan.Safe = true
 		plan.Risk = "low"
-		plan.Confidence = max(plan.Confidence, 82)
+		plan.Confidence = max(plan.Confidence, 90)
 		plan.BlockedReasons = nil
 		plan.Guardrails = append(plan.Guardrails, "concrete-values-provided")
 	}
+	plan.refreshApplyEligibility(opts.ForceRisky)
 	return plan
+}
+
+func (p *Plan) refreshApplyEligibility(forceRisky bool) {
+	p.ApplyEligible = p.CanApply && p.Confidence >= 90 && len(p.BlockedReasons) == 0 && (p.Safe || forceRisky)
+	if p.CanApply && !p.ApplyEligible {
+		if p.Confidence < 90 {
+			p.BlockedReasons = appendUnique(p.BlockedReasons, "confidence below production apply threshold 90")
+		}
+		if !p.Safe && !forceRisky {
+			p.BlockedReasons = appendUnique(p.BlockedReasons, "risky fix requires --force-risky")
+		}
+	}
 }
 
 func (p Plan) DiffView() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Fixora remediation plan\n")
-	fmt.Fprintf(&b, "resource: %s\nnamespace: %s\nstatus: %s\nstrategy: %s\nsafe: %t\ncanApply: %t\nconfidence: %d\nrisk: %s\n\n", p.Resource, p.Namespace, p.Status, p.Strategy, p.Safe, p.CanApply, p.Confidence, p.Risk)
+	fmt.Fprintf(&b, "resource: %s\nnamespace: %s\nstatus: %s\nstrategy: %s\nsafe: %t\ncanApply: %t\napplyEligible: %t\nconfidence: %d\nrisk: %s\n\n", p.Resource, p.Namespace, p.Status, p.Strategy, p.Safe, p.CanApply, p.ApplyEligible, p.Confidence, p.Risk)
 	for _, step := range p.Steps {
 		fmt.Fprintf(&b, "+ %s\n", step)
 	}
@@ -137,6 +207,12 @@ func (p Plan) DiffView() string {
 	}
 	if p.RollbackCommand != "" {
 		fmt.Fprintf(&b, "\nrollback: %s\n", p.RollbackCommand)
+	}
+	if len(p.Verification) > 0 {
+		fmt.Fprintf(&b, "\nverify:\n")
+		for _, command := range p.Verification {
+			fmt.Fprintf(&b, "- %s\n", command)
+		}
 	}
 	fmt.Fprintf(&b, "\n--- suggested patch template ---\n%s", p.PatchTemplate)
 	return b.String()
@@ -216,6 +292,49 @@ spec:
 `, normalizeKind(f.ResourceKind), f.ResourceName, f.Namespace)
 }
 
+func serviceSelectorPatchTemplate(f analyzer.Finding) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Service
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  selector:
+    app.kubernetes.io/name: TODO_PROVEN_BACKEND_LABEL
+`, f.ResourceName, f.Namespace)
+}
+
+func hpaRequestsPatchTemplate(f analyzer.Finding) string {
+	return fmt.Sprintf(`# Patch the HPA scale target workload, not the HPA object itself.
+# HPA: %s/%s in namespace %s
+# Add requests to every scaled container:
+resources:
+  requests:
+    cpu: TODO_OBSERVED_CPU_REQUEST
+    memory: TODO_OBSERVED_REQUEST
+`, f.ResourceKind, f.ResourceName, f.Namespace)
+}
+
+func pdbPatchTemplate(f analyzer.Finding) string {
+	return fmt.Sprintf(`apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  # Review selector first. Choose exactly one policy after confirming availability.
+  maxUnavailable: TODO_SAFE_MAX_UNAVAILABLE
+`, f.ResourceName, f.Namespace)
+}
+
+func webhookPatchTemplate(f analyzer.Finding) string {
+	return fmt.Sprintf(`# Temporary emergency patch for %s/%s.
+# Prefer restoring the webhook Service first.
+failurePolicy: Ignore
+timeoutSeconds: 5
+`, f.ResourceKind, f.ResourceName)
+}
+
 func genericPatchTemplate(f analyzer.Finding) string {
 	return fmt.Sprintf(`# Fixora could not infer a concrete patch.
 # Resource: %s/%s
@@ -256,6 +375,15 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func rollbackCommand(f analyzer.Finding) string {
