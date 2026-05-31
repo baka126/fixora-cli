@@ -10,6 +10,7 @@ import (
 )
 
 func TestLintAcceptsFilenameFlag(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "deployment.yaml")
 	err := os.WriteFile(manifest, []byte(`apiVersion: apps/v1
@@ -38,6 +39,7 @@ spec:
 }
 
 func TestParseProductionBounds(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	opts, rest, err := parseFlags([]string{"--timeout", "30s", "--log-tail", "20", "--max-logs-bytes", "4096", "-f", "app.yaml"})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +58,33 @@ func TestParseProductionBounds(t *testing.T) {
 	}
 	if len(opts.lintFiles) != 1 || opts.lintFiles[0] != "app.yaml" {
 		t.Fatalf("expected lint file app.yaml, got %#v", opts.lintFiles)
+	}
+}
+
+func TestPolicyCheckUsesLint(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	dir := t.TempDir()
+	manifest := filepath.Join(dir, "pod.yaml")
+	err := os.WriteFile(manifest, []byte(`apiVersion: v1
+kind: Pod
+metadata:
+  name: risky
+spec:
+  containers:
+  - name: app
+    image: nginx:latest
+`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"policy-check", "-f", manifest}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("policy-check failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "latest tag") {
+		t.Fatalf("expected policy-check lint finding, got %s", stdout.String())
 	}
 }
 

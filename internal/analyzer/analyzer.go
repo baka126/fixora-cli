@@ -19,22 +19,37 @@ func New(k kube.Kubectl, opts Options) Analyzer {
 }
 
 func (a Analyzer) ScanIncidents(ctx context.Context) ([]Finding, error) {
+	report := a.ScanReport(ctx)
+	if len(report.Findings) == 0 && len(report.Skipped) > 0 {
+		return nil, fmt.Errorf(report.Skipped[0].Reason)
+	}
+	return report.Findings, nil
+}
+
+func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 	findings := []Finding{}
+	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
 	if len(selected) == 0 || selected["pod"] || selected["pods"] {
 		pods, err := a.k.GetPods(ctx, a.opts.Namespace, a.opts.AllNS)
 		if err != nil {
-			return nil, err
-		}
-		events, _ := a.k.GetEvents(ctx, a.eventNamespace())
-		for _, pod := range pods.Items {
-			finding, ok := a.findingForPod(ctx, pod, events)
-			if ok {
-				findings = append(findings, finding)
+			skipped = append(skipped, SkippedCheck{Name: "pods", Reason: err.Error()})
+		} else {
+			events, err := a.k.GetEvents(ctx, a.eventNamespace())
+			if err != nil {
+				skipped = append(skipped, SkippedCheck{Name: "events", Reason: err.Error()})
+			}
+			for _, pod := range pods.Items {
+				finding, ok := a.findingForPod(ctx, pod, events)
+				if ok {
+					findings = append(findings, finding)
+				}
 			}
 		}
 	}
-	findings = append(findings, a.runRegistry(ctx)...)
+	registryFindings, registrySkipped := a.runRegistry(ctx)
+	findings = append(findings, registryFindings...)
+	skipped = append(skipped, registrySkipped...)
 	findings = dedupe(findings)
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Severity != findings[j].Severity {
@@ -42,7 +57,7 @@ func (a Analyzer) ScanIncidents(ctx context.Context) ([]Finding, error) {
 		}
 		return findings[i].Namespace+"/"+findings[i].PodName < findings[j].Namespace+"/"+findings[j].PodName
 	})
-	return findings, nil
+	return ScanReport{Findings: findings, Skipped: skipped, Summary: summarizeScan(findings, skipped)}
 }
 
 func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding, error) {
@@ -483,6 +498,21 @@ func dedupe(findings []Finding) []Finding {
 		out = append(out, f)
 	}
 	return out
+}
+
+func summarizeScan(findings []Finding, skipped []SkippedCheck) ScanSummary {
+	summary := ScanSummary{Findings: len(findings), SkippedChecks: len(skipped)}
+	for _, finding := range findings {
+		switch strings.ToLower(finding.Severity) {
+		case "high":
+			summary.HighSeverity++
+		case "medium":
+			summary.MediumSeverity++
+		case "low":
+			summary.LowSeverity++
+		}
+	}
+	return summary
 }
 
 var manifestPathRE = regexp.MustCompile(`(?i)\.(ya?ml|json)$`)

@@ -15,6 +15,25 @@ type Analyzer struct {
 	opts Options
 }
 
+type ScanReport struct {
+	Findings []Finding      `json:"findings"`
+	Skipped  []SkippedCheck `json:"skipped,omitempty"`
+	Summary  ScanSummary    `json:"summary"`
+}
+
+type SkippedCheck struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+type ScanSummary struct {
+	Findings       int `json:"findings"`
+	SkippedChecks  int `json:"skippedChecks"`
+	HighSeverity   int `json:"highSeverity"`
+	MediumSeverity int `json:"mediumSeverity"`
+	LowSeverity    int `json:"lowSeverity"`
+}
+
 type Finding struct {
 	ID              string           `json:"id"`
 	Namespace       string           `json:"namespace"`

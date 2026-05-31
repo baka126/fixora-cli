@@ -56,17 +56,26 @@ kubectl fixora security -n prod
 kubectl fixora node-pressure
 kubectl fixora analyze deployment/api -n prod
 kubectl fixora explain pod/api-abc123 -n prod --include-logs --ai
+kubectl fixora health -n prod
+kubectl fixora runbook deployment/api -n prod
+kubectl fixora readiness deployment/api -n prod
+kubectl fixora changes deployment/api -n prod
 kubectl fixora plan deployment/api -n prod
 kubectl fixora plan deployment/api -n prod --repo ./charts/api
 kubectl fixora diff deployment/api -n prod --proof
 kubectl fixora patch deployment/api -n prod --out fixora-patch.yaml
 kubectl fixora patch deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3 --out fixora-patch.yaml
+kubectl fixora patch deployment/api -n prod --repo ./charts/api --source-patch
 kubectl fixora patch deployment/api -n prod --preview
+kubectl fixora rollback deployment/api -n prod --preview
 kubectl fixora report deployment/api -n prod --include-logs --ai --out report.md
 kubectl fixora bundle deployment/api -n prod --out fixora-bundle.tgz
 kubectl fixora cost nodes
 kubectl fixora predict -A
 kubectl fixora lint -f manifests/deployment.yaml
+kubectl fixora policy-check -f manifests/deployment.yaml
+kubectl fixora preflight -f manifests/deployment.yaml
+kubectl fixora watch incidents -A
 kubectl fixora repo ./charts/api
 kubectl fixora validate ./charts/api
 kubectl fixora ui -A
@@ -151,13 +160,22 @@ The catalog includes workload, networking, storage, policy, node, Kyverno, and K
 ## High-Impact Workflows
 
 - `why <resource>` gives a concise incident explanation, confidence score, rollback hint, and optional proof.
+- `runbook <resource>` turns incident evidence into an operator runbook with verify, safe fix, rollback, and warning sections.
+- `readiness <resource>` scores whether Fixora has enough evidence for a safe fix.
+- `health` summarizes namespace or cluster incident count, skipped checks, severity, and services without endpoints.
+- `changes <resource>` surfaces rollout metadata, revisions, checksum/image annotations, and generation signals.
+- `rollback <resource> --preview` shows the safest rollback command. `--apply` executes only when a deterministic command exists.
 - `graph <resource>` outputs a dependency graph as text, JSON, YAML, or Mermaid.
 - `trace`, `storage`, `rbac`, `dns`, `security`, and `node-pressure` provide focused production debuggers.
 - `repo` detects raw, Helm, or Kustomize source mode.
 - `validate` renders or dry-runs local source where the required tool is available.
+- `preflight -f <path>` runs static policy checks and server dry-run before a manifest apply.
+- `policy-check -f <path>` runs production policy lint without touching the cluster.
 - `patch --preview` shows the fix plan, risk, confidence, blocked reasons, and rollback command without writing files.
+- `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
 - `bundle` creates a redacted audit bundle for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.
+- `watch incidents` polls incident state until interrupted.
 - `memory` stores local scenario history so repeated failures can reuse previous context.
 
 ## Integrations
@@ -202,6 +220,7 @@ The plugin is intentionally conservative:
 - `--paranoid` forces secret-safe redaction behavior.
 - `--ai-budget-tokens` prevents accidental expensive AI calls.
 - `--apply` runs a server-side dry-run first and refuses advisory/TODO patches.
+- `incidents`, `health`, and `ui` return partial results when optional resource checks are forbidden or unavailable, and include skipped checks instead of failing the whole scan.
 
 For production clusters, start from the minimal read-only RBAC example in `docs/rbac.yaml` and remove optional CRD permissions your cluster does not use.
 

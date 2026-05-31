@@ -47,8 +47,9 @@ func ListAnalyzers(filters []string) []Definition {
 	return out
 }
 
-func (a Analyzer) runRegistry(ctx context.Context) []Finding {
+func (a Analyzer) runRegistry(ctx context.Context) ([]Finding, []SkippedCheck) {
 	findings := []Finding{}
+	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
 	for _, def := range registry {
 		if def.Name == "Pod" {
@@ -61,18 +62,28 @@ func (a Analyzer) runRegistry(ctx context.Context) []Finding {
 			continue
 		}
 		if def.Scope == "cluster" {
-			findings = append(findings, a.analyzeResourceList(ctx, def, "", true)...)
+			list, err := a.analyzeResourceList(ctx, def, "", true)
+			if err != nil {
+				skipped = append(skipped, SkippedCheck{Name: def.Resource, Reason: err.Error()})
+				continue
+			}
+			findings = append(findings, list...)
 			continue
 		}
-		findings = append(findings, a.analyzeResourceList(ctx, def, a.opts.Namespace, a.opts.AllNS)...)
+		list, err := a.analyzeResourceList(ctx, def, a.opts.Namespace, a.opts.AllNS)
+		if err != nil {
+			skipped = append(skipped, SkippedCheck{Name: def.Resource, Reason: err.Error()})
+			continue
+		}
+		findings = append(findings, list...)
 	}
-	return findings
+	return findings, skipped
 }
 
-func (a Analyzer) analyzeResourceList(ctx context.Context, def Definition, namespace string, allNS bool) []Finding {
+func (a Analyzer) analyzeResourceList(ctx context.Context, def Definition, namespace string, allNS bool) ([]Finding, error) {
 	items, err := a.k.GetResourceItems(ctx, namespace, allNS, def.Resource)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := []Finding{}
 	for _, item := range items {
@@ -81,7 +92,7 @@ func (a Analyzer) analyzeResourceList(ctx context.Context, def Definition, names
 			out = append(out, f)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (a Analyzer) findingForRegisteredObject(obj map[string]any, def Definition) (Finding, bool) {

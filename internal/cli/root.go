@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/integration"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/memory"
+	"github.com/fixora/kubectl-fixora/internal/ops"
 	"github.com/fixora/kubectl-fixora/internal/output"
 	"github.com/fixora/kubectl-fixora/internal/repo"
 	"github.com/fixora/kubectl-fixora/internal/report"
@@ -31,41 +33,43 @@ import (
 )
 
 type options struct {
-	namespace   string
-	allNS       bool
-	context     string
-	output      string
-	includeLogs bool
-	useAI       bool
-	autoFix     bool
-	apply       bool
-	outFile     string
-	verbose     bool
-	redact      bool
-	filters     string
-	wide        bool
-	noColor     bool
-	proof       bool
-	paranoid    bool
-	preview     bool
-	repoPath    string
-	branch      string
-	commit      bool
-	profile     string
-	aiBudget    int
-	container   string
-	image       string
-	memRequest  string
-	memLimit    string
-	cpuRequest  string
-	envName     string
-	configMap   string
-	configKey   string
-	timeout     time.Duration
-	logTail     int
-	maxLogBytes int
-	applyDryRun bool
-	lintFiles   listFlag
+	namespace     string
+	allNS         bool
+	context       string
+	output        string
+	includeLogs   bool
+	useAI         bool
+	autoFix       bool
+	apply         bool
+	outFile       string
+	verbose       bool
+	redact        bool
+	filters       string
+	wide          bool
+	noColor       bool
+	proof         bool
+	paranoid      bool
+	preview       bool
+	repoPath      string
+	branch        string
+	commit        bool
+	profile       string
+	aiBudget      int
+	container     string
+	image         string
+	memRequest    string
+	memLimit      string
+	cpuRequest    string
+	envName       string
+	configMap     string
+	configKey     string
+	timeout       time.Duration
+	logTail       int
+	maxLogBytes   int
+	applyDryRun   bool
+	sourcePatch   bool
+	watchInterval time.Duration
+	lintFiles     listFlag
 }
 
 type listFlag []string
@@ -116,7 +120,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if cmd == "serve" {
+	if cmd == "serve" || cmd == "watch" {
 		ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	} else {
 		ctx, cancel = context.WithTimeout(context.Background(), opts.timeout)
@@ -163,8 +167,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "incidents":
-		findings, err := a.ScanIncidents(ctx)
-		return writeFindings(stdout, stderr, opts, findings, err)
+		scan := a.ScanReport(ctx)
+		if opts.output == "text" {
+			termui.Findings(stdout, scan.Findings, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
+			writeSkipped(stdout, scan.Skipped)
+			return 0
+		}
+		return output.Write(stdout, opts.output, scan)
 	case "analyze", "explain", "why":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: analyze requires a resource, for example deployment/api")
@@ -185,7 +194,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return writeFindings(stdout, stderr, opts, []analyzer.Finding{finding}, nil)
-	case "plan", "diff", "patch":
+	case "plan", "diff", "patch", "runbook", "readiness", "rollback":
 		if len(rest) == 0 {
 			fmt.Fprintf(stderr, "error: %s requires a resource, for example deployment/api\n", cmd)
 			return 2
@@ -211,6 +220,28 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.autoFix {
 			plan.AutoFixRequested = true
 		}
+		switch cmd {
+		case "runbook":
+			fmt.Fprint(stdout, ops.BuildRunbook(finding, plan))
+			return 0
+		case "readiness":
+			return output.Write(stdout, opts.output, ops.FixReadiness(finding, plan))
+		case "rollback":
+			rollback := ops.BuildRollback(finding, plan, opts.apply)
+			if opts.apply {
+				if rollback.Command == "" {
+					fmt.Fprintln(stderr, "error: no rollback command available")
+					return 1
+				}
+				if _, err := k.Run(ctx, strings.Fields(rollback.Command)...); err != nil {
+					fmt.Fprintf(stderr, "error: rollback failed: %v\n", err)
+					return 1
+				}
+				fmt.Fprintln(stdout, "rollback command executed")
+				return 0
+			}
+			return output.Write(stdout, opts.output, rollback)
+		}
 		if cmd == "diff" {
 			return output.Write(stdout, opts.output, plan.DiffView())
 		}
@@ -221,6 +252,16 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 			if opts.outFile == "" {
 				opts.outFile = "fixora-patch.yaml"
+			}
+			if opts.sourcePatch {
+				path, err := ops.WriteSourcePatch(opts.repoPath, opts.outFile, plan)
+				if err != nil {
+					fmt.Fprintf(stderr, "error: source patch: %v\n", err)
+					return 1
+				}
+				fmt.Fprintf(stdout, "wrote source patch %s\n", path)
+				_ = memory.Add(finding, plan, "source-patch-generated")
+				return 0
 			}
 			if err := os.WriteFile(opts.outFile, []byte(plan.PatchYAML()), 0o600); err != nil {
 				fmt.Fprintf(stderr, "error: write patch: %v\n", err)
@@ -310,6 +351,32 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		err = repo.Validate(ctx, mode)
 		return output.WriteOrError(stdout, stderr, opts.output, map[string]any{"repo": mode, "valid": err == nil}, err)
+	case "health":
+		scan := a.ScanReport(ctx)
+		return output.Write(stdout, opts.output, ops.BuildHealth(ctx, k, scan, opts.namespace))
+	case "changes":
+		if len(rest) == 0 {
+			fmt.Fprintln(stderr, "error: changes requires a resource, for example deployment/api")
+			return 2
+		}
+		changes, err := ops.DetectChanges(ctx, k, opts.namespace, rest[0])
+		return output.WriteOrError(stdout, stderr, opts.output, changes, err)
+	case "preflight", "policy-check":
+		paths := append([]string{}, opts.lintFiles...)
+		paths = append(paths, rest...)
+		if len(paths) == 0 {
+			fmt.Fprintf(stderr, "error: %s requires -f path\n", cmd)
+			return 2
+		}
+		if cmd == "policy-check" {
+			results, err := analyzer.Lint(paths)
+			return output.WriteOrError(stdout, stderr, opts.output, results, err)
+		}
+		results := []ops.Preflight{}
+		for _, path := range paths {
+			results = append(results, ops.RunPreflight(ctx, k, path))
+		}
+		return output.Write(stdout, opts.output, results)
 	case "report":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: report requires a resource, for example deployment/api")
@@ -356,14 +423,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "wrote %s\n", out)
 		return 0
 	case "ui":
-		findings, err := a.ScanIncidents(ctx)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-		termui.Findings(stdout, findings, termui.Options{Wide: true, NoColor: opts.noColor})
+		scan := a.ScanReport(ctx)
+		termui.Findings(stdout, scan.Findings, termui.Options{Wide: true, NoColor: opts.noColor})
+		writeSkipped(stdout, scan.Skipped)
 		fmt.Fprintln(stdout, "\nTip: run `kubectl fixora why <resource> --proof` for an incident detail view.")
 		return 0
+	case "watch":
+		return runWatch(ctx, stdout, stderr, opts, a, rest)
 	case "cost":
 		return runCost(ctx, stdout, stderr, opts, a, rest)
 	case "predict":
@@ -451,6 +517,8 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.IntVar(&opts.logTail, "log-tail", opts.logTail, "pod log lines to collect when --include-logs is set")
 	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
+	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
+	fs.DurationVar(&opts.watchInterval, "watch-interval", 5*time.Second, "watch polling interval")
 	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
 	fs.Var(&opts.lintFiles, "filename", "manifest, chart, or kustomize path to lint")
 	if err := fs.Parse(args); err != nil {
@@ -488,6 +556,41 @@ func writeFindings(stdout, stderr io.Writer, opts options, findings []analyzer.F
 		return 0
 	}
 	return output.WriteOrError(stdout, stderr, opts.output, findings, err)
+}
+
+func writeSkipped(stdout io.Writer, skipped []analyzer.SkippedCheck) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintln(stdout, "\nSkipped checks:")
+	for _, item := range skipped {
+		fmt.Fprintf(stdout, "- %s: %s\n", item.Name, item.Reason)
+	}
+}
+
+func runWatch(ctx context.Context, stdout, stderr io.Writer, opts options, a analyzer.Analyzer, rest []string) int {
+	if len(rest) == 0 || rest[0] != "incidents" {
+		fmt.Fprintln(stderr, "error: watch supports `watch incidents`")
+		return 2
+	}
+	interval := opts.watchInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	for {
+		scan := a.ScanReport(ctx)
+		fmt.Fprintf(stdout, "\n%s findings=%d high=%d medium=%d skipped=%d\n", time.Now().Format(time.RFC3339), scan.Summary.Findings, scan.Summary.HighSeverity, scan.Summary.MediumSeverity, scan.Summary.SkippedChecks)
+		for i, finding := range scan.Findings {
+			if i >= 8 {
+				fmt.Fprintf(stdout, "... %d more findings\n", len(scan.Findings)-i)
+				break
+			}
+			fmt.Fprintf(stdout, "- %s %s/%s %s\n", finding.Severity, finding.ResourceKind, finding.ResourceName, finding.Status)
+		}
+		if !ops.SleepOrDone(ctx, interval) {
+			return 0
+		}
+	}
 }
 
 func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options, stderr io.Writer) {
@@ -736,6 +839,14 @@ Commands:
   node-pressure                Debug node pressure, readiness, and eviction signals
   repo [path]                  Detect raw, Helm, or Kustomize source mode
   validate [path]              Render/validate local raw, Helm, or Kustomize source
+  health                       Summarize namespace or cluster health
+  changes <kind/name>          Correlate rollout metadata, revisions, and recent change signals
+  runbook <kind/name>          Generate an operator runbook for an incident
+  readiness <kind/name>        Score whether evidence is sufficient for a safe fix
+  rollback <kind/name>         Preview or execute a conservative rollback command
+  preflight -f path            Lint and server dry-run a manifest before apply
+  policy-check -f path         Run production policy checks against manifests
+  watch incidents              Poll incident state until interrupted
   ui                           Show a compact terminal incident dashboard
   bundle <kind/name>           Write a redacted audit bundle
   incidents                    List current failing workloads
@@ -775,6 +886,8 @@ Global flags:
       --log-tail int           Pod log lines to collect with --include-logs (default 120)
       --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
       --apply-dry-run          Run server-side dry-run before --apply (default true)
+      --source-patch           Write patch into --repo for GitOps source review
+      --watch-interval duration Watch polling interval (default 5s)
   -f, --filename string        Manifest, chart, or Kustomize path for lint
       --container string       Target container for concrete patches
       --image string           Pinned replacement image
