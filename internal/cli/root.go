@@ -61,6 +61,21 @@ type options struct {
 	envName     string
 	configMap   string
 	configKey   string
+	timeout     time.Duration
+	logTail     int
+	maxLogBytes int
+	lintFiles   listFlag
+}
+
+type listFlag []string
+
+func (l *listFlag) String() string {
+	return fmt.Sprint([]string(*l))
+}
+
+func (l *listFlag) Set(value string) error {
+	*l = append(*l, value)
+	return nil
 }
 
 func Execute(args []string, stdout, stderr io.Writer) int {
@@ -103,11 +118,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	if cmd == "serve" {
 		ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel = context.WithTimeout(context.Background(), opts.timeout)
 	}
 	defer cancel()
 
 	k := kube.NewKubectl(opts.context)
+	k.LogTail = opts.logTail
+	k.LogLimitBytes = opts.maxLogBytes
 	a := analyzer.New(k, analyzer.Options{
 		Namespace:   opts.namespace,
 		AllNS:       opts.allNS,
@@ -212,6 +229,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			if opts.apply {
 				if !plan.CanApply {
 					fmt.Fprintln(stderr, "error: generated patch is advisory only; review and make it concrete before applying")
+					return 1
+				}
+				if err := k.DryRunApply(ctx, opts.outFile); err != nil {
+					fmt.Fprintf(stderr, "error: server dry-run rejected patch: %v\n", err)
 					return 1
 				}
 				if err := k.Apply(ctx, opts.outFile); err != nil {
@@ -346,11 +367,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		predictions, err := a.Predict(ctx)
 		return output.WriteOrError(stdout, stderr, opts.output, predictions, err)
 	case "lint":
-		if len(rest) == 0 {
+		paths := append([]string{}, opts.lintFiles...)
+		paths = append(paths, rest...)
+		if len(paths) == 0 {
 			fmt.Fprintln(stderr, "error: lint requires -f, --helm, or --kustomize path")
 			return 2
 		}
-		results, err := analyzer.Lint(rest)
+		results, err := analyzer.Lint(paths)
 		return output.WriteOrError(stdout, stderr, opts.output, results, err)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
@@ -360,7 +383,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseFlags(args []string) (options, []string, error) {
-	opts := options{output: "text", namespace: "default", redact: true}
+	opts := options{output: "text", namespace: "default", redact: true, timeout: 90 * time.Second, logTail: 120, maxLogBytes: 24000}
 	fs := flag.NewFlagSet("kubectl-fixora", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.namespace, "namespace", "default", "namespace")
@@ -397,6 +420,11 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.envName, "env-name", "", "environment variable name for concrete env patch")
 	fs.StringVar(&opts.configMap, "configmap", "", "ConfigMap name for concrete env patch")
 	fs.StringVar(&opts.configKey, "config-key", "", "ConfigMap key for concrete env patch")
+	fs.DurationVar(&opts.timeout, "timeout", 90*time.Second, "overall command timeout, for example 30s or 2m")
+	fs.IntVar(&opts.logTail, "log-tail", 120, "pod log lines to collect when --include-logs is set")
+	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", 24000, "maximum bytes to collect per pod log stream")
+	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
+	fs.Var(&opts.lintFiles, "filename", "manifest, chart, or kustomize path to lint")
 	if err := fs.Parse(args); err != nil {
 		return opts, nil, err
 	}
@@ -662,6 +690,10 @@ Global flags:
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
       --preview                Preview patch plan only
+      --timeout duration       Overall command timeout (default 90s)
+      --log-tail int           Pod log lines to collect with --include-logs (default 120)
+      --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
+  -f, --filename string        Manifest, chart, or Kustomize path for lint
       --container string       Target container for concrete patches
       --image string           Pinned replacement image
       --memory-request string  Concrete memory request

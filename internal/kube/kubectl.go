@@ -10,7 +10,9 @@ import (
 )
 
 type Kubectl struct {
-	Context string
+	Context       string
+	LogTail       int
+	LogLimitBytes int
 }
 
 type Status struct {
@@ -32,7 +34,7 @@ type DoctorReport struct {
 }
 
 func NewKubectl(context string) Kubectl {
-	return Kubectl{Context: context}
+	return Kubectl{Context: context, LogTail: 120, LogLimitBytes: 24000}
 }
 
 func (k Kubectl) Status(ctx context.Context) (Status, error) {
@@ -160,7 +162,15 @@ func (k Kubectl) GetNodes(ctx context.Context) ([]Node, error) {
 }
 
 func (k Kubectl) Logs(ctx context.Context, namespace, pod string, previous bool) (string, error) {
-	args := []string{"logs", pod, "-n", namespace, "--tail=120", "--limit-bytes=24000"}
+	tail := k.LogTail
+	if tail <= 0 {
+		tail = 120
+	}
+	limitBytes := k.LogLimitBytes
+	if limitBytes <= 0 {
+		limitBytes = 24000
+	}
+	args := []string{"logs", pod, "-n", namespace, fmt.Sprintf("--tail=%d", tail), fmt.Sprintf("--limit-bytes=%d", limitBytes)}
 	if previous {
 		args = append(args, "--previous")
 	}

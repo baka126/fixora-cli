@@ -127,7 +127,7 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	if decoded.Error != nil {
-		return nil, fmt.Errorf(decoded.Error.Message)
+		return nil, fmt.Errorf("%s", decoded.Error.Message)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("AI provider returned HTTP %d", resp.StatusCode)
@@ -182,7 +182,7 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	if decoded.Error != "" {
-		return nil, fmt.Errorf(decoded.Error)
+		return nil, fmt.Errorf("%s", decoded.Error)
 	}
 	return parseAIContent(decoded.Message.Content), nil
 }

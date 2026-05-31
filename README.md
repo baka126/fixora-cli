@@ -156,12 +156,16 @@ Set `FIXORA_SERVE_TOKEN` to require `Authorization: Bearer <token>`.
 The plugin is intentionally conservative:
 
 - `patch` writes a local patch template.
-- `--apply` is rejected unless a future planner marks the patch as concrete and safe.
+- `--apply` is rejected unless the generated patch is concrete and safe.
 - GitOps-managed workloads are reported with source-target advice so users patch Helm values or Kustomize overlays instead of rendered YAML.
 - Logs are bounded and redacted by default.
+- Production scans can be bounded with `--timeout`, `--log-tail`, and `--max-logs-bytes`.
 - AI results are cached locally when cache is enabled.
 - `--paranoid` forces secret-safe redaction behavior.
 - `--ai-budget-tokens` prevents accidental expensive AI calls.
+- `--apply` runs a server-side dry-run first and refuses advisory/TODO patches.
+
+For production clusters, start from the minimal read-only RBAC example in `docs/rbac.yaml` and remove optional CRD permissions your cluster does not use.
 
 ## Free vs Paid Boundary
 

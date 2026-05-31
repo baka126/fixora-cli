@@ -3,7 +3,9 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -491,11 +493,114 @@ func Lint(paths []string) ([]LintResult, error) {
 		if strings.HasPrefix(p, "-") {
 			continue
 		}
-		if !manifestPathRE.MatchString(p) && path.Base(p) != "Chart.yaml" && path.Base(p) != "kustomization.yaml" {
-			results = append(results, LintResult{Path: p, Severity: "info", Message: "skipped non-manifest path"})
+		linted, err := lintPath(p)
+		if err != nil {
+			results = append(results, LintResult{Path: p, Severity: "error", Message: err.Error()})
 			continue
 		}
-		results = append(results, LintResult{Path: p, Severity: "info", Message: "static lint placeholder: validate env refs, probes, resources, latest tags, selectors, PVCs, privileged containers, hostPath"})
+		results = append(results, linted...)
 	}
 	return results, nil
+}
+
+func lintPath(p string) ([]LintResult, error) {
+	info, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		results := []LintResult{}
+		err := filepath.WalkDir(p, func(item string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() {
+				return walkErr
+			}
+			if !isLintablePath(item) {
+				return nil
+			}
+			linted, err := lintFile(item)
+			if err != nil {
+				results = append(results, LintResult{Path: item, Severity: "error", Message: err.Error()})
+				return nil
+			}
+			results = append(results, linted...)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(results) == 0 {
+			results = append(results, LintResult{Path: p, Severity: "info", Message: "no manifest files found"})
+		}
+		return results, nil
+	}
+	if !isLintablePath(p) {
+		return []LintResult{{Path: p, Severity: "info", Message: "skipped non-manifest path"}}, nil
+	}
+	return lintFile(p)
+}
+
+func isLintablePath(p string) bool {
+	base := path.Base(p)
+	return manifestPathRE.MatchString(p) || base == "Chart.yaml" || base == "kustomization.yaml" || base == "kustomization.yml"
+}
+
+func lintFile(p string) ([]LintResult, error) {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	text := string(data)
+	results := []LintResult{}
+	add := func(severity, message string) {
+		results = append(results, LintResult{Path: p, Severity: severity, Message: message})
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "privileged: true") {
+		add("high", "privileged containers should be avoided in production unless explicitly justified")
+	}
+	if strings.Contains(lower, "hostpath:") {
+		add("high", "hostPath volumes couple pods to nodes and can expose host files")
+	}
+	for _, image := range imageRefs(text) {
+		switch {
+		case strings.HasSuffix(image, ":latest"):
+			add("medium", "image uses mutable latest tag: "+image)
+		case !strings.Contains(path.Base(image), ":") && !strings.Contains(image, "@sha256:"):
+			add("medium", "image should be pinned by tag or digest: "+image)
+		}
+	}
+	if strings.Contains(lower, "containers:") {
+		if !strings.Contains(lower, "resources:") {
+			add("medium", "containers should define resource requests and limits")
+		}
+		if !strings.Contains(lower, "readinessprobe:") {
+			add("low", "workload containers should define readiness probes where traffic safety matters")
+		}
+		if !strings.Contains(lower, "livenessprobe:") {
+			add("low", "workload containers should define liveness probes for self-healing workloads")
+		}
+	}
+	if strings.Contains(lower, "kind: deployment") && !strings.Contains(lower, "strategy:") {
+		add("low", "deployment should declare an explicit rollout strategy")
+	}
+	if len(results) == 0 {
+		add("ok", "no production lint findings")
+	}
+	return results, nil
+}
+
+func imageRefs(text string) []string {
+	out := []string{}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		image := strings.TrimSpace(strings.TrimPrefix(trimmed, "image:"))
+		image = strings.Trim(image, `"'`)
+		if image != "" {
+			out = append(out, image)
+		}
+	}
+	return out
 }
