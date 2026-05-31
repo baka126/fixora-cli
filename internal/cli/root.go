@@ -64,6 +64,7 @@ type options struct {
 	timeout     time.Duration
 	logTail     int
 	maxLogBytes int
+	applyDryRun bool
 	lintFiles   listFlag
 }
 
@@ -231,9 +232,11 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 					fmt.Fprintln(stderr, "error: generated patch is advisory only; review and make it concrete before applying")
 					return 1
 				}
-				if err := k.DryRunApply(ctx, opts.outFile); err != nil {
-					fmt.Fprintf(stderr, "error: server dry-run rejected patch: %v\n", err)
-					return 1
+				if opts.applyDryRun {
+					if err := k.DryRunApply(ctx, opts.outFile); err != nil {
+						fmt.Fprintf(stderr, "error: server dry-run rejected patch: %v\n", err)
+						return 1
+					}
 				}
 				if err := k.Apply(ctx, opts.outFile); err != nil {
 					fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
@@ -383,7 +386,31 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseFlags(args []string) (options, []string, error) {
-	opts := options{output: "text", namespace: "default", redact: true, timeout: 90 * time.Second, logTail: 120, maxLogBytes: 24000}
+	cfg, _ := config.Load()
+	timeout, err := time.ParseDuration(cfg.Timeout)
+	if err != nil || timeout <= 0 {
+		timeout = 90 * time.Second
+	}
+	defaultOutput := cfg.DefaultOutput
+	if defaultOutput == "" {
+		defaultOutput = "text"
+	}
+	opts := options{
+		output:      defaultOutput,
+		namespace:   "default",
+		redact:      cfg.Redact,
+		paranoid:    cfg.Paranoid,
+		timeout:     timeout,
+		logTail:     cfg.LogTail,
+		maxLogBytes: cfg.MaxLogBytes,
+		applyDryRun: cfg.ApplyDryRun,
+	}
+	if opts.logTail <= 0 {
+		opts.logTail = 120
+	}
+	if opts.maxLogBytes <= 0 {
+		opts.maxLogBytes = 24000
+	}
 	fs := flag.NewFlagSet("kubectl-fixora", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&opts.namespace, "namespace", "default", "namespace")
@@ -391,21 +418,21 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.allNS, "all-namespaces", false, "scan all namespaces")
 	fs.BoolVar(&opts.allNS, "A", false, "scan all namespaces")
 	fs.StringVar(&opts.context, "context", "", "kube context")
-	fs.StringVar(&opts.output, "output", "text", "output format: text, json, yaml, markdown")
-	fs.StringVar(&opts.output, "o", "text", "output format")
+	fs.StringVar(&opts.output, "output", opts.output, "output format: text, json, yaml, markdown")
+	fs.StringVar(&opts.output, "o", opts.output, "output format")
 	fs.BoolVar(&opts.includeLogs, "include-logs", false, "include bounded pod logs")
 	fs.BoolVar(&opts.useAI, "ai", false, "use OpenAI-compatible AI analysis")
 	fs.BoolVar(&opts.autoFix, "auto-fix", false, "generate an explicit local fix plan")
 	fs.BoolVar(&opts.apply, "apply", false, "apply generated local patch")
 	fs.StringVar(&opts.outFile, "out", "", "output file")
 	fs.BoolVar(&opts.verbose, "verbose", false, "verbose output")
-	fs.BoolVar(&opts.redact, "redact", true, "redact sensitive values")
+	fs.BoolVar(&opts.redact, "redact", opts.redact, "redact sensitive values")
 	fs.StringVar(&opts.filters, "filter", "", "comma-separated analyzer filters")
 	fs.StringVar(&opts.filters, "filters", "", "comma-separated analyzer filters")
 	fs.BoolVar(&opts.wide, "wide", false, "wide terminal output")
 	fs.BoolVar(&opts.noColor, "no-color", false, "disable terminal color")
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
-	fs.BoolVar(&opts.paranoid, "paranoid", false, "avoid secret-sensitive evidence and force redaction")
+	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -420,9 +447,10 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.envName, "env-name", "", "environment variable name for concrete env patch")
 	fs.StringVar(&opts.configMap, "configmap", "", "ConfigMap name for concrete env patch")
 	fs.StringVar(&opts.configKey, "config-key", "", "ConfigMap key for concrete env patch")
-	fs.DurationVar(&opts.timeout, "timeout", 90*time.Second, "overall command timeout, for example 30s or 2m")
-	fs.IntVar(&opts.logTail, "log-tail", 120, "pod log lines to collect when --include-logs is set")
-	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", 24000, "maximum bytes to collect per pod log stream")
+	fs.DurationVar(&opts.timeout, "timeout", opts.timeout, "overall command timeout, for example 30s or 2m")
+	fs.IntVar(&opts.logTail, "log-tail", opts.logTail, "pod log lines to collect when --include-logs is set")
+	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
+	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
 	fs.Var(&opts.lintFiles, "filename", "manifest, chart, or kustomize path to lint")
 	if err := fs.Parse(args); err != nil {
@@ -553,6 +581,21 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
+		if hasArg(args[1:], "--resolved") || hasArg(args[1:], "--show-sources") {
+			resolved, err := config.Resolved()
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return 1
+			}
+			if !hasArg(args[1:], "--show-sources") {
+				flat := map[string]any{}
+				for key, value := range resolved {
+					flat[key] = value.Value
+				}
+				return output.Write(stdout, "json", flat)
+			}
+			return output.Write(stdout, "json", resolved)
+		}
 		return output.Write(stdout, "json", config.Public(cfg))
 	}
 	if args[0] == "path" {
@@ -571,6 +614,43 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, "configuration updated")
 		return 0
+	}
+	if args[0] == "unset" {
+		if err := config.Unset(args[1:]); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "configuration updated")
+		return 0
+	}
+	if args[0] == "reset" {
+		if err := config.Reset(); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "configuration reset")
+		return 0
+	}
+	if args[0] == "validate" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		result := config.Validate(cfg)
+		code := output.Write(stdout, "json", result)
+		if !result.Valid {
+			return 1
+		}
+		return code
+	}
+	if args[0] == "export" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return output.Write(stdout, "json", config.Export(cfg, hasArg(args[1:], "--show-secrets")))
 	}
 	fmt.Fprintf(stderr, "error: unknown config command %q\n", args[0])
 	return 2
@@ -670,7 +750,8 @@ Commands:
   lint -f path                 Lint manifests, Helm chart, or Kustomize overlay
   version                      Print version
   auth set provider key        Store AI provider credentials locally
-  config view|set|path         Manage local CLI configuration
+  config view|set|unset|validate|export|reset|path
+                               Manage local CLI configuration
   cache path|clear             Inspect or clear local AI cache
   ai doctor|profiles           Validate AI setup and list prompt profiles
   memory list|clear            Inspect or clear local scenario memory
@@ -693,6 +774,7 @@ Global flags:
       --timeout duration       Overall command timeout (default 90s)
       --log-tail int           Pod log lines to collect with --include-logs (default 120)
       --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
+      --apply-dry-run          Run server-side dry-run before --apply (default true)
   -f, --filename string        Manifest, chart, or Kustomize path for lint
       --container string       Target container for concrete patches
       --image string           Pinned replacement image
@@ -720,6 +802,15 @@ func firstArg(values []string, fallbacks ...string) string {
 		}
 	}
 	return ""
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func estimateTokens(f analyzer.Finding) int {

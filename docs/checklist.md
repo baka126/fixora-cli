@@ -31,7 +31,7 @@
 - [x] Anthropic provider.
 - [x] Noop provider for deterministic/offline mode.
 - [x] Environment-driven API key, model, and base URL.
-- [x] Local `auth` and `config` commands.
+- [x] Local `auth` and `config` commands with validation, redacted export, resolved source view, unset, and reset.
 - [x] Structured AI result attached to findings.
 - [x] Fallback handling for non-JSON AI responses.
 - [x] Local file cache for AI responses.

@@ -79,6 +79,9 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 		return nil, err
 	}
 	cfg, _ := config.Load()
+	if profile := strings.TrimSpace(os.Getenv("FIXORA_AI_PROFILE")); profile != "" {
+		cfg.Profile = profile
+	}
 	payloadWithProfile := config.ProfilePrompt(cfg.Profile) + "\n\nFinding:\n" + string(payload)
 	switch c.Provider {
 	case "ollama":

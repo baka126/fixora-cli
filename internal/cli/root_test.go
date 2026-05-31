@@ -58,3 +58,66 @@ func TestParseProductionBounds(t *testing.T) {
 		t.Fatalf("expected lint file app.yaml, got %#v", opts.lintFiles)
 	}
 }
+
+func TestConfigCommandsAreSecretSafe(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"auth", "set", "openai", "secret-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("auth set failed: code=%d stderr=%s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"config", "view"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("config view failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "secret-token") {
+		t.Fatalf("config view leaked secret: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "aiApiKeySet") {
+		t.Fatalf("config view did not show key presence: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"config", "export"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("config export failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "secret-token") || !strings.Contains(stdout.String(), "REDACTED") {
+		t.Fatalf("config export should redact secret by default: %s", stdout.String())
+	}
+}
+
+func TestConfigResolvedAndValidate(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"config", "set", "timeout", "45s"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("config set failed: code=%d stderr=%s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"config", "view", "--resolved", "--show-sources"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("config resolved failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"source": "config"`) || !strings.Contains(stdout.String(), `"value": "45s"`) {
+		t.Fatalf("expected resolved source/value, got %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"config", "validate"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("config validate failed: code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `"valid": true`) {
+		t.Fatalf("expected valid config, got %s", stdout.String())
+	}
+}

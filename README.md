@@ -80,6 +80,44 @@ kubectl fixora memory list
 kubectl fixora serve 127.0.0.1:8089
 ```
 
+## Config Management
+
+Fixora loads configuration in this order:
+
+```text
+CLI flags > environment variables > config file > defaults
+```
+
+Inspect the local config without exposing secrets:
+
+```sh
+kubectl fixora config view
+kubectl fixora config view --resolved
+kubectl fixora config view --resolved --show-sources
+kubectl fixora config path
+```
+
+Validate and manage settings:
+
+```sh
+kubectl fixora config validate
+kubectl fixora config set timeout 45s
+kubectl fixora config set log_tail 80
+kubectl fixora config set max_log_bytes 16000
+kubectl fixora config set default_output json
+kubectl fixora config unset timeout
+kubectl fixora config export
+kubectl fixora config reset
+```
+
+`config export` redacts API keys by default. `config view` never prints the API key; it only reports whether a key is set. For production clusters, prefer environment variables for secrets:
+
+```sh
+export FIXORA_AI_API_KEY="..."
+```
+
+`auth set` is convenient for local development, but it stores the AI key in the local config file with `0600` permissions. `config validate` warns when a plaintext key is present.
+
 ## AI Configuration
 
 AI is disabled unless `--ai` is passed. Credentials can be provided through environment variables or `kubectl fixora auth set`.
