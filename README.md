@@ -189,6 +189,14 @@ kubectl fixora incidents -A --filter Pod,Deployment,Service,Ingress
 
 The catalog includes workload, networking, storage, policy, node, Kyverno, Trivy, OLM, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services or TLS Secret references, HPA targets and resource requests, PDB disruption blocking, admission webhook backends, Gateway API conditions/backend refs, risky RBAC, risky pod security context, PersistentVolume failures, and multiple default StorageClasses. Missing CRDs or denied reads are skipped cleanly.
 
+For larger production clusters, analyzer reads can use the typed Kubernetes client stack instead of shelling out to `kubectl`:
+
+```sh
+kubectl fixora incidents -A --typed-client
+```
+
+This path uses `client-go`, dynamic discovery, and a controller-runtime client for typed Pods, Events, Nodes, logs, and generic resource reads. The original `kubectl` path remains available as the default fallback for maximum compatibility.
+
 ## MCP
 
 Fixora can run as a local MCP stdio server for AI assistants:

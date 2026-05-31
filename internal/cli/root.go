@@ -52,6 +52,7 @@ type options struct {
 	paranoid      bool
 	preview       bool
 	forceRisky    bool
+	typedClient   bool
 	repoPath      string
 	strategy      string
 	branch        string
@@ -134,7 +135,18 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	k := kube.NewKubectl(opts.context)
 	k.LogTail = opts.logTail
 	k.LogLimitBytes = opts.maxLogBytes
-	a := analyzer.New(k, analyzer.Options{
+	var reader kube.Reader = k
+	if opts.typedClient {
+		typed, err := kube.NewTypedClient(opts.context)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: typed Kubernetes client: %v\n", err)
+			return 1
+		}
+		typed.LogTail = opts.logTail
+		typed.LogLimitBytes = opts.maxLogBytes
+		reader = typed
+	}
+	a := analyzer.New(reader, analyzer.Options{
 		Namespace:   opts.namespace,
 		AllNS:       opts.allNS,
 		IncludeLogs: opts.includeLogs,
@@ -513,6 +525,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
+	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -1025,6 +1038,7 @@ Global flags:
       --strategy string        Fix strategy such as rollback, right-size, repair-selector
       --preview                Preview patch plan only
       --force-risky            Allow risky concrete fixes after review
+      --typed-client           Use client-go/controller-runtime typed client for analyzer reads
       --timeout duration       Overall command timeout (default 90s)
       --log-tail int           Pod log lines to collect with --include-logs (default 120)
       --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)

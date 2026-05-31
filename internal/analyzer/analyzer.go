@@ -14,7 +14,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/redact"
 )
 
-func New(k kube.Kubectl, opts Options) Analyzer {
+func New(k kube.Reader, opts Options) Analyzer {
 	return Analyzer{k: k, opts: opts}
 }
 

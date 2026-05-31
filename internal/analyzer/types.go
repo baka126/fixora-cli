@@ -11,7 +11,7 @@ type Options struct {
 }
 
 type Analyzer struct {
-	k    kube.Kubectl
+	k    kube.Reader
 	opts Options
 }
 
