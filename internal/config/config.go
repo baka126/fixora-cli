@@ -14,21 +14,40 @@ import (
 const SchemaVersion = 1
 
 type Config struct {
-	SchemaVersion   int      `json:"schemaVersion"`
-	AIProvider      string   `json:"aiProvider,omitempty"`
-	AIBaseURL       string   `json:"aiBaseURL,omitempty"`
-	AIModel         string   `json:"aiModel,omitempty"`
-	AIAPIKey        string   `json:"aiApiKey,omitempty"`
-	Profile         string   `json:"profile,omitempty"`
-	CacheEnabled    bool     `json:"cacheEnabled"`
-	Timeout         string   `json:"timeout,omitempty"`
-	LogTail         int      `json:"logTail,omitempty"`
-	MaxLogBytes     int      `json:"maxLogBytes,omitempty"`
-	DefaultOutput   string   `json:"defaultOutput,omitempty"`
-	Redact          bool     `json:"redact"`
-	Paranoid        bool     `json:"paranoid,omitempty"`
-	ApplyDryRun     bool     `json:"applyRequiresDryRun"`
-	CustomAnalyzers []string `json:"customAnalyzers,omitempty"`
+	SchemaVersion   int                 `json:"schemaVersion"`
+	AIProvider      string              `json:"aiProvider,omitempty"`
+	AIBaseURL       string              `json:"aiBaseURL,omitempty"`
+	AIModel         string              `json:"aiModel,omitempty"`
+	AIAPIKey        string              `json:"aiApiKey,omitempty"`
+	Profile         string              `json:"profile,omitempty"`
+	CacheEnabled    bool                `json:"cacheEnabled"`
+	Timeout         string              `json:"timeout,omitempty"`
+	LogTail         int                 `json:"logTail,omitempty"`
+	MaxLogBytes     int                 `json:"maxLogBytes,omitempty"`
+	DefaultOutput   string              `json:"defaultOutput,omitempty"`
+	Redact          bool                `json:"redact"`
+	Paranoid        bool                `json:"paranoid,omitempty"`
+	ApplyDryRun     bool                `json:"applyRequiresDryRun"`
+	CustomAnalyzers []string            `json:"customAnalyzers,omitempty"`
+	ActiveProfile   string              `json:"activeProfile,omitempty"`
+	Profiles        map[string]Settings `json:"profiles,omitempty"`
+	Contexts        map[string]Settings `json:"contexts,omitempty"`
+}
+
+type Settings struct {
+	Namespace     string `json:"namespace,omitempty"`
+	AIProvider    string `json:"aiProvider,omitempty"`
+	AIBaseURL     string `json:"aiBaseURL,omitempty"`
+	AIModel       string `json:"aiModel,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	CacheEnabled  *bool  `json:"cacheEnabled,omitempty"`
+	Timeout       string `json:"timeout,omitempty"`
+	LogTail       *int   `json:"logTail,omitempty"`
+	MaxLogBytes   *int   `json:"maxLogBytes,omitempty"`
+	DefaultOutput string `json:"defaultOutput,omitempty"`
+	Redact        *bool  `json:"redact,omitempty"`
+	Paranoid      *bool  `json:"paranoid,omitempty"`
+	ApplyDryRun   *bool  `json:"applyRequiresDryRun,omitempty"`
 }
 
 type ResolvedValue struct {
@@ -77,6 +96,9 @@ func Load() (Config, error) {
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = SchemaVersion
 	}
+	if cfg.ActiveProfile != "" {
+		cfg.ApplySettings(cfg.Profiles[cfg.ActiveProfile])
+	}
 	return cfg, nil
 }
 
@@ -123,6 +145,9 @@ func Public(cfg Config) map[string]any {
 		"paranoid":        cfg.Paranoid,
 		"applyDryRun":     cfg.ApplyDryRun,
 		"customAnalyzers": cfg.CustomAnalyzers,
+		"activeProfile":   cfg.ActiveProfile,
+		"profiles":        profileNames(cfg.Profiles),
+		"contexts":        profileNames(cfg.Contexts),
 	}
 }
 
@@ -177,6 +202,7 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("paranoid", cfg.Paranoid, sourceFor(raw, "paranoid"))
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
+	add("activeProfile", cfg.ActiveProfile, sourceFor(raw, "activeProfile"))
 	return out, nil
 }
 
@@ -247,6 +273,140 @@ func Set(args []string) error {
 		return fmt.Errorf("unknown config key %q", args[0])
 	}
 	return Save(cfg)
+}
+
+func ProfileCommand(args []string) (any, error) {
+	if len(args) == 0 || args[0] == "list" {
+		cfg, err := loadStored()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"active": cfg.ActiveProfile, "profiles": profileNames(cfg.Profiles)}, nil
+	}
+	cfg, err := loadStored()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]Settings{}
+	}
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("config profile create requires a name")
+		}
+		cfg.Profiles[args[1]] = settingsFromConfig(LoadOrDefault(cfg))
+	case "use":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("config profile use requires a name")
+		}
+		if _, ok := cfg.Profiles[args[1]]; !ok {
+			return nil, fmt.Errorf("profile %q does not exist", args[1])
+		}
+		cfg.ActiveProfile = args[1]
+	case "delete":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("config profile delete requires a name")
+		}
+		delete(cfg.Profiles, args[1])
+		if cfg.ActiveProfile == args[1] {
+			cfg.ActiveProfile = ""
+		}
+	case "set":
+		if len(args) < 4 {
+			return nil, fmt.Errorf("config profile set requires name, key, and value")
+		}
+		settings := cfg.Profiles[args[1]]
+		if err := setSetting(&settings, args[2], args[3]); err != nil {
+			return nil, err
+		}
+		cfg.Profiles[args[1]] = settings
+	default:
+		return nil, fmt.Errorf("unknown config profile command %q", args[0])
+	}
+	return map[string]any{"active": cfg.ActiveProfile, "profiles": profileNames(cfg.Profiles)}, saveStored(cfg)
+}
+
+func ContextCommand(args []string) (any, error) {
+	if len(args) == 0 || args[0] == "list" {
+		cfg, err := loadStored()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"contexts": cfg.Contexts}, nil
+	}
+	cfg, err := loadStored()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Contexts == nil {
+		cfg.Contexts = map[string]Settings{}
+	}
+	switch args[0] {
+	case "set":
+		if len(args) < 4 {
+			return nil, fmt.Errorf("config context set requires context, key, and value")
+		}
+		settings := cfg.Contexts[args[1]]
+		if err := setSetting(&settings, args[2], args[3]); err != nil {
+			return nil, err
+		}
+		cfg.Contexts[args[1]] = settings
+	case "unset":
+		if len(args) < 2 {
+			return nil, fmt.Errorf("config context unset requires a context")
+		}
+		delete(cfg.Contexts, args[1])
+	default:
+		return nil, fmt.Errorf("unknown config context command %q", args[0])
+	}
+	return map[string]any{"contexts": cfg.Contexts}, saveStored(cfg)
+}
+
+func (cfg *Config) ApplySettings(s Settings) {
+	if s.AIProvider != "" {
+		cfg.AIProvider = s.AIProvider
+	}
+	if s.AIBaseURL != "" {
+		cfg.AIBaseURL = s.AIBaseURL
+	}
+	if s.AIModel != "" {
+		cfg.AIModel = s.AIModel
+	}
+	if s.Profile != "" {
+		cfg.Profile = s.Profile
+	}
+	if s.CacheEnabled != nil {
+		cfg.CacheEnabled = *s.CacheEnabled
+	}
+	if s.Timeout != "" {
+		cfg.Timeout = s.Timeout
+	}
+	if s.LogTail != nil {
+		cfg.LogTail = *s.LogTail
+	}
+	if s.MaxLogBytes != nil {
+		cfg.MaxLogBytes = *s.MaxLogBytes
+	}
+	if s.DefaultOutput != "" {
+		cfg.DefaultOutput = s.DefaultOutput
+	}
+	if s.Redact != nil {
+		cfg.Redact = *s.Redact
+	}
+	if s.Paranoid != nil {
+		cfg.Paranoid = *s.Paranoid
+	}
+	if s.ApplyDryRun != nil {
+		cfg.ApplyDryRun = *s.ApplyDryRun
+	}
+}
+
+func (cfg Config) ContextSettings(name string) Settings {
+	if name == "" {
+		return Settings{}
+	}
+	return cfg.Contexts[name]
 }
 
 func Unset(args []string) error {
@@ -395,6 +555,151 @@ func Auth(args []string) error {
 		cfg.AIModel = args[3]
 	}
 	return Save(cfg)
+}
+
+func loadStored() (Config, error) {
+	cfg := Default()
+	path, err := Path()
+	if err != nil {
+		return cfg, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return cfg, nil
+	}
+	if err != nil {
+		return cfg, err
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, err
+	}
+	if cfg.SchemaVersion == 0 {
+		cfg.SchemaVersion = SchemaVersion
+	}
+	return cfg, nil
+}
+
+func saveStored(cfg Config) error {
+	return Save(cfg)
+}
+
+func LoadOrDefault(cfg Config) Config {
+	def := Default()
+	if cfg.AIProvider == "" {
+		cfg.AIProvider = def.AIProvider
+	}
+	if cfg.AIModel == "" {
+		cfg.AIModel = def.AIModel
+	}
+	if cfg.Profile == "" {
+		cfg.Profile = def.Profile
+	}
+	if cfg.Timeout == "" {
+		cfg.Timeout = def.Timeout
+	}
+	if cfg.LogTail == 0 {
+		cfg.LogTail = def.LogTail
+	}
+	if cfg.MaxLogBytes == 0 {
+		cfg.MaxLogBytes = def.MaxLogBytes
+	}
+	if cfg.DefaultOutput == "" {
+		cfg.DefaultOutput = def.DefaultOutput
+	}
+	return cfg
+}
+
+func settingsFromConfig(cfg Config) Settings {
+	cacheEnabled := cfg.CacheEnabled
+	logTail := cfg.LogTail
+	maxLogBytes := cfg.MaxLogBytes
+	redact := cfg.Redact
+	paranoid := cfg.Paranoid
+	applyDryRun := cfg.ApplyDryRun
+	return Settings{
+		AIProvider:    cfg.AIProvider,
+		AIBaseURL:     cfg.AIBaseURL,
+		AIModel:       cfg.AIModel,
+		Profile:       cfg.Profile,
+		CacheEnabled:  &cacheEnabled,
+		Timeout:       cfg.Timeout,
+		LogTail:       &logTail,
+		MaxLogBytes:   &maxLogBytes,
+		DefaultOutput: cfg.DefaultOutput,
+		Redact:        &redact,
+		Paranoid:      &paranoid,
+		ApplyDryRun:   &applyDryRun,
+	}
+}
+
+func setSetting(settings *Settings, key, value string) error {
+	switch strings.ToLower(key) {
+	case "namespace":
+		settings.Namespace = value
+	case "ai.provider", "provider":
+		settings.AIProvider = value
+	case "ai.base_url", "base_url", "baseurl":
+		settings.AIBaseURL = value
+	case "ai.model", "model":
+		settings.AIModel = value
+	case "profile", "ai.profile":
+		settings.Profile = value
+	case "cache.enabled":
+		v, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.CacheEnabled = &v
+	case "timeout":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("invalid timeout %q: %w", value, err)
+		}
+		settings.Timeout = value
+	case "log_tail", "logtail", "log-tail":
+		v, err := parseInt(value)
+		if err != nil {
+			return err
+		}
+		settings.LogTail = &v
+	case "max_log_bytes", "maxlogbytes", "max-logs-bytes":
+		v, err := parseInt(value)
+		if err != nil {
+			return err
+		}
+		settings.MaxLogBytes = &v
+	case "default_output", "defaultoutput", "output":
+		settings.DefaultOutput = value
+	case "redact":
+		v, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.Redact = &v
+	case "paranoid":
+		v, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.Paranoid = &v
+	case "apply_requires_dry_run", "applydryrun":
+		v, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		settings.ApplyDryRun = &v
+	default:
+		return fmt.Errorf("unknown setting key %q", key)
+	}
+	return nil
+}
+
+func profileNames(values map[string]Settings) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func fileKeys() (map[string]bool, error) {

@@ -16,6 +16,10 @@ import (
 )
 
 func Write(ctx context.Context, k kube.Kubectl, out string, finding analyzer.Finding, plan fix.Plan) error {
+	return WriteProfile(ctx, k, out, finding, plan, "incident")
+}
+
+func WriteProfile(ctx context.Context, k kube.Kubectl, out string, finding analyzer.Finding, plan fix.Plan, profile string) error {
 	if out == "" {
 		out = "fixora-bundle.tgz"
 	}
@@ -30,9 +34,41 @@ func Write(ctx context.Context, k kube.Kubectl, out string, finding analyzer.Fin
 	defer tw.Close()
 	addJSON(tw, "finding.json", finding)
 	addJSON(tw, "plan.json", plan)
-	addJSON(tw, "graph.json", graph.Build(ctx, k, finding))
 	addText(tw, "report.md", report.Markdown(finding))
+	switch profile {
+	case "network":
+		addJSON(tw, "graph.json", graph.Build(ctx, k, finding))
+		addJSON(tw, "services.json", resourceItems(ctx, k, finding.Namespace, "services"))
+		addJSON(tw, "endpoints.json", resourceItems(ctx, k, finding.Namespace, "endpoints"))
+		addJSON(tw, "ingresses.json", resourceItems(ctx, k, finding.Namespace, "ingresses"))
+	case "storage":
+		addJSON(tw, "pvcs.json", resourceItems(ctx, k, finding.Namespace, "pvc"))
+		addJSON(tw, "storageclasses.json", resourceItems(ctx, k, "", "storageclasses"))
+	case "security":
+		addJSON(tw, "events.json", events(ctx, k, finding.Namespace))
+		addJSON(tw, "policyreports.json", resourceItems(ctx, k, finding.Namespace, "policyreports.wgpolicyk8s.io"))
+		addJSON(tw, "networkpolicies.json", resourceItems(ctx, k, finding.Namespace, "networkpolicies"))
+	default:
+		addJSON(tw, "graph.json", graph.Build(ctx, k, finding))
+		addJSON(tw, "events.json", events(ctx, k, finding.Namespace))
+	}
 	return nil
+}
+
+func resourceItems(ctx context.Context, k kube.Kubectl, namespace, resource string) any {
+	items, err := k.GetResourceItems(ctx, namespace, namespace == "", resource)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	return items
+}
+
+func events(ctx context.Context, k kube.Kubectl, namespace string) any {
+	items, err := k.GetEvents(ctx, namespace)
+	if err != nil {
+		return map[string]string{"error": err.Error()}
+	}
+	return items
 }
 
 func addJSON(tw *tar.Writer, name string, value any) {

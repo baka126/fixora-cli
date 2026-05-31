@@ -188,6 +188,21 @@ func (k Kubectl) DryRunApply(ctx context.Context, file string) error {
 	return err
 }
 
+func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {
+	full := []string{}
+	if k.Context != "" {
+		full = append(full, "--context", k.Context)
+	}
+	full = append(full, "diff", "-f", file)
+	cmd := exec.CommandContext(ctx, "kubectl", full...)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil && text == "" {
+		return "", err
+	}
+	return text, nil
+}
+
 func (k Kubectl) AuthCanI(ctx context.Context, namespace, serviceAccount, verb, resource string) (string, error) {
 	args := []string{"auth", "can-i", verb, resource}
 	if serviceAccount != "" {

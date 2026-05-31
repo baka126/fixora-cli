@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   test:
@@ -120,9 +121,28 @@ jobs:
         working-directory: dist
         run: sha256sum *.tar.gz > checksums.txt
 
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM
+        working-directory: dist
+        run: syft dir:. -o spdx-json=sbom.spdx.json
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts
+        working-directory: dist
+        run: |
+          for file in *.tar.gz checksums.txt sbom.spdx.json; do
+            cosign sign-blob --yes "$file" --bundle "$file.bundle"
+          done
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
+            dist/sbom.spdx.json
+            dist/*.bundle

@@ -69,7 +69,8 @@ kubectl fixora patch deployment/api -n prod --repo ./charts/api --source-patch
 kubectl fixora patch deployment/api -n prod --preview
 kubectl fixora rollback deployment/api -n prod --preview
 kubectl fixora report deployment/api -n prod --include-logs --ai --out report.md
-kubectl fixora bundle deployment/api -n prod --out fixora-bundle.tgz
+kubectl fixora bundle deployment/api -n prod --profile incident --out fixora-bundle.tgz
+kubectl fixora bundle deployment/api -n prod --profile network --out fixora-network.tgz
 kubectl fixora cost nodes
 kubectl fixora predict -A
 kubectl fixora lint -f manifests/deployment.yaml
@@ -115,6 +116,11 @@ kubectl fixora config set log_tail 80
 kubectl fixora config set max_log_bytes 16000
 kubectl fixora config set default_output json
 kubectl fixora config unset timeout
+kubectl fixora config profile create prod
+kubectl fixora config profile set prod timeout 45s
+kubectl fixora config profile use prod
+kubectl fixora config context set prod-us-east namespace platform
+kubectl fixora config context set prod-us-east paranoid true
 kubectl fixora config export
 kubectl fixora config reset
 ```
@@ -124,6 +130,8 @@ kubectl fixora config reset
 ```sh
 export FIXORA_AI_API_KEY="..."
 ```
+
+Named profiles let teams keep reusable local/production defaults. Context overrides apply when `--context <name>` is provided, with CLI flags still taking precedence.
 
 `auth set` is convenient for local development, but it stores the AI key in the local config file with `0600` permissions. `config validate` warns when a plaintext key is present.
 
@@ -173,7 +181,7 @@ The catalog includes workload, networking, storage, policy, node, Kyverno, and K
 - `policy-check -f <path>` runs production policy lint without touching the cluster.
 - `patch --preview` shows the fix plan, risk, confidence, blocked reasons, and rollback command without writing files.
 - `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
-- `bundle` creates a redacted audit bundle for sharing.
+- `bundle --profile incident|network|storage|security` creates scoped redacted audit bundles for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.
 - `watch incidents` polls incident state until interrupted.
 - `memory` stores local scenario history so repeated failures can reuse previous context.
@@ -223,6 +231,18 @@ The plugin is intentionally conservative:
 - `incidents`, `health`, and `ui` return partial results when optional resource checks are forbidden or unavailable, and include skipped checks instead of failing the whole scan.
 
 For production clusters, start from the minimal read-only RBAC example in `docs/rbac.yaml` and remove optional CRD permissions your cluster does not use.
+
+## Release Verification
+
+Tagged releases publish checksums, an SPDX SBOM, and keyless Sigstore bundles for release artifacts. Verify downloaded artifacts before installing:
+
+```sh
+sha256sum -c checksums.txt
+cosign verify-blob kubectl-fixora_v0.2.0_linux_amd64.tar.gz \
+  --bundle kubectl-fixora_v0.2.0_linux_amd64.tar.gz.bundle \
+  --certificate-identity-regexp 'https://github.com/baka126/fixora-cli/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 ## Free vs Paid Boundary
 

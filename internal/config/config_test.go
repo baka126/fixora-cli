@@ -110,3 +110,35 @@ func TestSetRejectsAPIKeyAndInvalidValues(t *testing.T) {
 		t.Fatal("expected invalid boolean error")
 	}
 }
+
+func TestProfileAndContextCommands(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+
+	if _, err := ProfileCommand([]string{"create", "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProfileCommand([]string{"set", "prod", "timeout", "45s"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ProfileCommand([]string{"use", "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Timeout != "45s" {
+		t.Fatalf("expected active profile timeout, got %#v", cfg.Timeout)
+	}
+
+	if _, err := ContextCommand([]string{"set", "prod-cluster", "namespace", "platform"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := loadStored()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ContextSettings("prod-cluster").Namespace != "platform" {
+		t.Fatalf("expected context namespace override, got %#v", stored.Contexts)
+	}
+}

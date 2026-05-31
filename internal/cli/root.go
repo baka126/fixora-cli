@@ -254,14 +254,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				opts.outFile = "fixora-patch.yaml"
 			}
 			if opts.sourcePatch {
-				path, err := ops.WriteSourcePatch(opts.repoPath, opts.outFile, plan)
+				sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 				if err != nil {
 					fmt.Fprintf(stderr, "error: source patch: %v\n", err)
 					return 1
 				}
-				fmt.Fprintf(stdout, "wrote source patch %s\n", path)
-				_ = memory.Add(finding, plan, "source-patch-generated")
-				return 0
+				return output.Write(stdout, opts.output, sourcePatch)
 			}
 			if err := os.WriteFile(opts.outFile, []byte(plan.PatchYAML()), 0o600); err != nil {
 				fmt.Fprintf(stderr, "error: write patch: %v\n", err)
@@ -416,7 +414,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if out == "" {
 			out = "fixora-bundle.tgz"
 		}
-		if err := bundle.Write(ctx, k, out, finding, plan); err != nil {
+		if err := bundle.WriteProfile(ctx, k, out, finding, plan, firstArg([]string{opts.profile}, "incident")); err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -503,7 +501,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
-	fs.StringVar(&opts.profile, "profile", "", "AI prompt profile")
+	fs.StringVar(&opts.profile, "profile", "", "AI prompt profile or bundle profile")
 	fs.IntVar(&opts.aiBudget, "ai-budget-tokens", 0, "maximum estimated AI prompt tokens")
 	fs.StringVar(&opts.container, "container", "", "target container for concrete patch generation")
 	fs.StringVar(&opts.image, "image", "", "pinned replacement image for concrete image patch")
@@ -524,10 +522,47 @@ func parseFlags(args []string) (options, []string, error) {
 	if err := fs.Parse(args); err != nil {
 		return opts, nil, err
 	}
+	visited := visitedFlags(fs)
+	if settings := cfg.ContextSettings(opts.context); opts.context != "" {
+		if settings.Namespace != "" && !visited["namespace"] && !visited["n"] {
+			opts.namespace = settings.Namespace
+		}
+		if settings.DefaultOutput != "" && !visited["output"] && !visited["o"] {
+			opts.output = settings.DefaultOutput
+		}
+		if settings.Redact != nil && !visited["redact"] {
+			opts.redact = *settings.Redact
+		}
+		if settings.Paranoid != nil && !visited["paranoid"] {
+			opts.paranoid = *settings.Paranoid
+		}
+		if settings.Timeout != "" && !visited["timeout"] {
+			if timeout, err := time.ParseDuration(settings.Timeout); err == nil {
+				opts.timeout = timeout
+			}
+		}
+		if settings.LogTail != nil && !visited["log-tail"] {
+			opts.logTail = *settings.LogTail
+		}
+		if settings.MaxLogBytes != nil && !visited["max-logs-bytes"] {
+			opts.maxLogBytes = *settings.MaxLogBytes
+		}
+		if settings.ApplyDryRun != nil && !visited["apply-dry-run"] {
+			opts.applyDryRun = *settings.ApplyDryRun
+		}
+	}
 	if opts.allNS {
 		opts.namespace = ""
 	}
 	return opts, fs.Args(), nil
+}
+
+func visitedFlags(fs *flag.FlagSet) map[string]bool {
+	visited := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
 }
 
 func runStatus(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl) int {
@@ -755,6 +790,14 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 		}
 		return output.Write(stdout, "json", config.Export(cfg, hasArg(args[1:], "--show-secrets")))
 	}
+	if args[0] == "profile" {
+		result, err := config.ProfileCommand(args[1:])
+		return output.WriteOrError(stdout, stderr, "json", result, err)
+	}
+	if args[0] == "context" {
+		result, err := config.ContextCommand(args[1:])
+		return output.WriteOrError(stdout, stderr, "json", result, err)
+	}
 	fmt.Fprintf(stderr, "error: unknown config command %q\n", args[0])
 	return 2
 }
@@ -863,6 +906,7 @@ Commands:
   auth set provider key        Store AI provider credentials locally
   config view|set|unset|validate|export|reset|path
                                Manage local CLI configuration
+  config profile|context       Manage named config profiles and kube-context overrides
   cache path|clear             Inspect or clear local AI cache
   ai doctor|profiles           Validate AI setup and list prompt profiles
   memory list|clear            Inspect or clear local scenario memory
@@ -879,6 +923,7 @@ Global flags:
       --redact                 Redact sensitive values (default true)
       --filter string          Comma-separated analyzers, for example Pod,Deployment,Service
       --proof                  Show evidence proof
+      --profile string         AI prompt profile or bundle profile
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
       --preview                Preview patch plan only

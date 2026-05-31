@@ -5,6 +5,7 @@
 - [x] Kubectl plugin binary name: `kubectl-fixora`.
 - [x] Standard commands: `status`, `doctor`, `filters`, `integrations`, `incidents`, `analyze`, `explain`, `why`, `graph`, `trace`, `storage`, `rbac`, `dns`, `security`, `node-pressure`, `repo`, `validate`, `plan`, `diff`, `patch`, `report`, `bundle`, `cost`, `predict`, `lint`, `auth`, `config`, `cache`, `custom-analyzers`, `ai`, `memory`, `ui`, `serve`, `version`.
 - [x] Production workflows: `health`, `runbook`, `readiness`, `changes`, `rollback`, `preflight`, `policy-check`, `watch incidents`, and `patch --source-patch`.
+- [x] Advanced production hardening: GitOps source patch helpers, bundle profiles, config profiles/context overrides, SBOM, and keyless artifact signing.
 - [x] Works from the user's kubeconfig and selected context.
 - [x] Namespace and all-namespace scanning flags.
 - [x] JSON, YAML, Markdown, and text-oriented output modes.

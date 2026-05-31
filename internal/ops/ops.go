@@ -54,6 +54,7 @@ type Preflight struct {
 	Valid    bool                  `json:"valid"`
 	Lint     []analyzer.LintResult `json:"lint"`
 	DryRun   string                `json:"dryRun"`
+	Diff     string                `json:"diff,omitempty"`
 	Warnings []string              `json:"warnings,omitempty"`
 }
 
@@ -184,6 +185,15 @@ func DetectChanges(ctx context.Context, k kube.Kubectl, namespace, resource stri
 			}
 		}
 	}
+	events, _ := k.GetEvents(ctx, namespace)
+	for _, event := range events {
+		if strings.Contains(event.Message, name) || strings.Contains(event.Metadata.Name, name) {
+			changes = append(changes, Change{Resource: resource, Namespace: ns, Signal: "event/" + event.Reason, Value: trim(event.Message, 220)})
+		}
+	}
+	for _, image := range collectImages(obj) {
+		changes = append(changes, Change{Resource: resource, Namespace: ns, Signal: "image", Value: image})
+	}
 	return changes, nil
 }
 
@@ -212,6 +222,11 @@ func RunPreflight(ctx context.Context, k kube.Kubectl, file string) Preflight {
 		return p
 	}
 	p.DryRun = "ok"
+	if diff, err := k.Diff(ctx, file); err == nil {
+		p.Diff = trim(diff, 4000)
+	} else {
+		p.Warnings = append(p.Warnings, "kubectl diff unavailable: "+err.Error())
+	}
 	p.Valid = !hasHighLint(lint)
 	return p
 }
@@ -231,6 +246,33 @@ func WriteSourcePatch(repoPath, outFile string, plan fix.Plan) (string, error) {
 		return "", err
 	}
 	return target, nil
+}
+
+func collectImages(obj map[string]any) []string {
+	images := map[string]bool{}
+	var walk func(any)
+	walk = func(value any) {
+		switch v := value.(type) {
+		case map[string]any:
+			if image, ok := v["image"].(string); ok && image != "" {
+				images[image] = true
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(obj)
+	out := make([]string, 0, len(images))
+	for image := range images {
+		out = append(out, image)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func trim(value string, limit int) string {
