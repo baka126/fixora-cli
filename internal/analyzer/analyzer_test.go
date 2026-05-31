@@ -95,3 +95,33 @@ func assertLintContains(t *testing.T, results []LintResult, want string) {
 	}
 	t.Fatalf("expected lint result containing %q, got %#v", want, results)
 }
+
+func TestPrecisionHelpersFindIngressBackends(t *testing.T) {
+	services := ingressBackendServices(map[string]any{
+		"defaultBackend": map[string]any{
+			"service": map[string]any{"name": "api"},
+		},
+		"rules": []any{map[string]any{
+			"http": map[string]any{
+				"paths": []any{map[string]any{
+					"backend": map[string]any{"serviceName": "legacy"},
+				}},
+			},
+		}},
+	})
+	got := strings.Join(services, ",")
+	if got != "api,legacy" {
+		t.Fatalf("expected api,legacy, got %q", got)
+	}
+}
+
+func TestScanReportEnvelopeStatus(t *testing.T) {
+	report := ScanReport{Findings: []Finding{{ID: "ns/pod/fail"}}}
+	envelope := report.Envelope()
+	if envelope.APIVersion != "fixora.dev/v1alpha1" || envelope.Kind != "AnalysisReport" {
+		t.Fatalf("unexpected envelope identity: %#v", envelope)
+	}
+	if envelope.Status != "ProblemDetected" || envelope.Problems != 1 {
+		t.Fatalf("unexpected envelope status: %#v", envelope)
+	}
+}

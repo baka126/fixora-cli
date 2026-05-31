@@ -149,11 +149,32 @@ export FIXORA_AI_BASE_URL="https://api.openai.com/v1"
 Supported provider modes:
 
 - `openai`: OpenAI-compatible `/chat/completions`.
+- `groq`: Groq OpenAI-compatible chat completions.
+- `localai`: LocalAI OpenAI-compatible chat completions, no API key required by default.
+- `customrest`: custom OpenAI-compatible endpoint; set `FIXORA_AI_BASE_URL`.
 - `ollama`: local Ollama `/api/chat`, no API key required.
 - `anthropic`: Anthropic Messages API.
+- `gemini` or `google`: Google Gemini GenerateContent API.
+- `azureopenai`: Azure OpenAI deployment endpoint; set `FIXORA_AI_BASE_URL` to the deployment base.
 - `noop`: deterministic analyzer output only.
 
-The request includes redacted Kubernetes evidence. The CLI never sends Secret values because it does not read Secret data by default.
+Gemini example:
+
+```sh
+export FIXORA_AI_PROVIDER="gemini"
+export FIXORA_AI_API_KEY="$GEMINI_API_KEY"
+export FIXORA_AI_MODEL="gemini-1.5-flash"
+```
+
+Azure OpenAI example:
+
+```sh
+export FIXORA_AI_PROVIDER="azureopenai"
+export FIXORA_AI_API_KEY="$AZURE_OPENAI_API_KEY"
+export FIXORA_AI_BASE_URL="https://<resource>.openai.azure.com/openai/deployments/<deployment>"
+```
+
+The request includes redacted Kubernetes evidence. The CLI never sends Secret values because it does not read Secret data by default. JSON, YAML, and Markdown incident output uses a stable `AnalysisReport` envelope with `status`, `problems`, `results`, `skipped`, and `summary` fields.
 
 ## Analyzer Filters
 
@@ -163,7 +184,7 @@ The request includes redacted Kubernetes evidence. The CLI never sends Secret va
 kubectl fixora incidents -A --filter Pod,Deployment,Service,Ingress
 ```
 
-The catalog includes workload, networking, storage, policy, node, Kyverno, and KEDA-style analyzers. Missing CRDs are skipped cleanly.
+The catalog includes workload, networking, storage, policy, node, Kyverno, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services, HPA targets and resource requests, risky pod security context, PersistentVolume failures, and multiple default StorageClasses. Missing CRDs or denied reads are skipped cleanly.
 
 ## High-Impact Workflows
 

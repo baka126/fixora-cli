@@ -173,7 +173,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			writeSkipped(stdout, scan.Skipped)
 			return 0
 		}
-		return output.Write(stdout, opts.output, scan)
+		return output.Write(stdout, opts.output, scan.Envelope())
 	case "analyze", "explain", "why":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: analyze requires a resource, for example deployment/api")

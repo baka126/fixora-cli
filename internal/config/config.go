@@ -466,9 +466,9 @@ func Reset() error {
 
 func Validate(cfg Config) ValidationResult {
 	result := ValidationResult{Valid: true}
-	providers := []string{"openai", "ollama", "anthropic", "noop"}
+	providers := []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "noop"}
 	if !slices.Contains(providers, strings.ToLower(cfg.AIProvider)) {
-		result.Errors = append(result.Errors, "aiProvider must be one of openai, ollama, anthropic, noop")
+		result.Errors = append(result.Errors, "aiProvider must be one of "+strings.Join(providers, ", "))
 	}
 	if !slices.Contains(Profiles(), strings.ToLower(cfg.Profile)) {
 		result.Errors = append(result.Errors, "profile must be one of "+strings.Join(Profiles(), ", "))

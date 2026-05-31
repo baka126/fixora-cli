@@ -4,3 +4,5 @@ dist/
 *.out
 coverage.txt
 .DS_Store
+k8sgpt/
+kubectl-fixora

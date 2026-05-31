@@ -50,6 +50,9 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 	registryFindings, registrySkipped := a.runRegistry(ctx)
 	findings = append(findings, registryFindings...)
 	skipped = append(skipped, registrySkipped...)
+	precisionFindings, precisionSkipped := a.runPrecisionAnalyzers(ctx)
+	findings = append(findings, precisionFindings...)
+	skipped = append(skipped, precisionSkipped...)
 	findings = dedupe(findings)
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Severity != findings[j].Severity {
@@ -58,6 +61,22 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 		return findings[i].Namespace+"/"+findings[i].PodName < findings[j].Namespace+"/"+findings[j].PodName
 	})
 	return ScanReport{Findings: findings, Skipped: skipped, Summary: summarizeScan(findings, skipped)}
+}
+
+func (r ScanReport) Envelope() ScanEnvelope {
+	status := "OK"
+	if len(r.Findings) > 0 {
+		status = "ProblemDetected"
+	}
+	return ScanEnvelope{
+		APIVersion: "fixora.dev/v1alpha1",
+		Kind:       "AnalysisReport",
+		Status:     status,
+		Problems:   len(r.Findings),
+		Results:    r.Findings,
+		Skipped:    r.Skipped,
+		Summary:    r.Summary,
+	}
 }
 
 func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding, error) {

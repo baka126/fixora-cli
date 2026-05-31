@@ -21,6 +21,16 @@ type ScanReport struct {
 	Summary  ScanSummary    `json:"summary"`
 }
 
+type ScanEnvelope struct {
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Status     string         `json:"status"`
+	Problems   int            `json:"problems"`
+	Results    []Finding      `json:"results"`
+	Skipped    []SkippedCheck `json:"skipped,omitempty"`
+	Summary    ScanSummary    `json:"summary"`
+}
+
 type SkippedCheck struct {
 	Name   string `json:"name"`
 	Reason string `json:"reason"`
