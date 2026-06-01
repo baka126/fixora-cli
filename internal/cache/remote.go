@@ -30,6 +30,7 @@ func (s Store) RemoteConfigPath() string {
 }
 
 func (s Store) SetRemote(cfg RemoteConfig) error {
+	fmt.Fprintln(os.Stderr, "warning: remote caching is currently a stub and not fully implemented")
 	cfg.Type = strings.ToLower(strings.TrimSpace(cfg.Type))
 	switch cfg.Type {
 	case "s3":

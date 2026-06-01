@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
@@ -26,16 +27,45 @@ func List(ctx context.Context, k kube.Kubectl) []Status {
 	}
 }
 
+func findServiceByLabels(ctx context.Context, k kube.Kubectl, target string) (string, string, bool, error) {
+	selectors := []string{
+		"app.kubernetes.io/name=" + target,
+		"app=" + target,
+		"k8s-app=" + target,
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	var lastErr error
+	for _, sel := range selectors {
+		if err := k.GetJSON(ctx, &list, "get", "services", "-A", "-l", sel, "-o", "json"); err == nil {
+			for _, item := range list.Items {
+				name, ns := meta(item)
+				if strings.Contains(strings.ToLower(name), target) {
+					return name, ns, true, nil
+				}
+			}
+		} else {
+			lastErr = err
+		}
+	}
+	return "", "", false, lastErr
+}
+
 func alertmanager(ctx context.Context, k kube.Kubectl) Status {
-	items, err := k.GetResourceItems(ctx, "", true, "services")
+	name, ns, found, err := findServiceByLabels(ctx, k, "alertmanager")
+	if found {
+		return Status{Name: "Alertmanager", Detected: true, Detail: ns + "/" + name, Analyzer: "AlertCorrelation", FreeLocal: true}
+	}
+	name, ns, found, nameErr := findServiceByName(ctx, k, "alertmanager")
+	if found {
+		return Status{Name: "Alertmanager", Detected: true, Detail: ns + "/" + name, Analyzer: "AlertCorrelation", FreeLocal: true}
+	}
 	if err != nil {
 		return Status{Name: "Alertmanager", Detail: err.Error(), FreeLocal: true}
 	}
-	for _, item := range items {
-		name, ns := meta(item)
-		if strings.Contains(strings.ToLower(name), "alertmanager") {
-			return Status{Name: "Alertmanager", Detected: true, Detail: ns + "/" + name, Analyzer: "AlertCorrelation", FreeLocal: true}
-		}
+	if nameErr != nil {
+		return Status{Name: "Alertmanager", Detail: nameErr.Error(), FreeLocal: true}
 	}
 	return Status{Name: "Alertmanager", Detail: "no alertmanager service detected", FreeLocal: true}
 }
@@ -51,17 +81,35 @@ func trivy(ctx context.Context, k kube.Kubectl) Status {
 }
 
 func prometheus(ctx context.Context, k kube.Kubectl) Status {
-	items, err := k.GetResourceItems(ctx, "", true, "services")
+	name, ns, found, err := findServiceByLabels(ctx, k, "prometheus")
+	if found {
+		return Status{Name: "Prometheus", Detected: true, Detail: ns + "/" + name, Analyzer: "PrometheusConfig", FreeLocal: true}
+	}
+	name, ns, found, nameErr := findServiceByName(ctx, k, "prometheus")
+	if found {
+		return Status{Name: "Prometheus", Detected: true, Detail: ns + "/" + name, Analyzer: "PrometheusConfig", FreeLocal: true}
+	}
 	if err != nil {
 		return Status{Name: "Prometheus", Detail: err.Error(), FreeLocal: true}
 	}
-	for _, item := range items {
-		name, ns := meta(item)
-		if strings.Contains(strings.ToLower(name), "prometheus") {
-			return Status{Name: "Prometheus", Detected: true, Detail: ns + "/" + name, Analyzer: "PrometheusConfig", FreeLocal: true}
-		}
+	if nameErr != nil {
+		return Status{Name: "Prometheus", Detail: nameErr.Error(), FreeLocal: true}
 	}
 	return Status{Name: "Prometheus", Detail: "no prometheus service detected", FreeLocal: true}
+}
+
+func findServiceByName(ctx context.Context, k kube.Kubectl, target string) (string, string, bool, error) {
+	items, err := k.GetResourceItems(ctx, "", true, "services")
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, item := range items {
+		name, ns := meta(item)
+		if strings.Contains(strings.ToLower(name), target) {
+			return name, ns, true, nil
+		}
+	}
+	return "", "", false, nil
 }
 
 func aws(ctx context.Context, k kube.Kubectl) Status {
@@ -104,20 +152,5 @@ func countDetail(count int, label string) string {
 	if count == 1 {
 		return "1 " + strings.TrimSuffix(label, "s")
 	}
-	return strings.TrimSpace(strings.Join([]string{itoa(count), label}, " "))
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	pos := len(buf)
-	n := i
-	for n > 0 {
-		pos--
-		buf[pos] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[pos:])
+	return strings.TrimSpace(strings.Join([]string{strconv.Itoa(count), label}, " "))
 }

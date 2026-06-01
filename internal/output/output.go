@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
+
+	"github.com/fixora/kubectl-fixora/internal/version"
 )
 
 func WriteOrError(stdout, stderr io.Writer, format string, value any, err error) int {
@@ -59,7 +62,7 @@ func writeSARIF(w io.Writer, value any) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"version": "2.1.0",
 		"runs": []map[string]any{{
-			"tool":    map[string]any{"driver": map[string]any{"name": "fixora-cli"}},
+			"tool":    map[string]any{"driver": map[string]any{"name": "fixora-cli", "version": version.Version}},
 			"results": results,
 		}},
 	})
@@ -88,8 +91,15 @@ func writePrometheus(w io.Writer, value any) {
 	}
 	fmt.Fprintln(w, "# HELP fixora_findings_total Fixora findings by severity")
 	fmt.Fprintln(w, "# TYPE fixora_findings_total gauge")
-	for severity, count := range counts {
-		fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", severity, count)
+	
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	
+	for _, severity := range keys {
+		fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", severity, counts[severity])
 	}
 	fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", "all", len(findings))
 }
@@ -167,7 +177,13 @@ func writeYAMLValue(w io.Writer, value any, indent int) {
 	pad := strings.Repeat(" ", indent)
 	switch v := value.(type) {
 	case map[string]any:
-		for key, val := range v {
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			val := v[key]
 			if isScalar(val) {
 				fmt.Fprintf(w, "%s%s: %v\n", pad, key, val)
 			} else {

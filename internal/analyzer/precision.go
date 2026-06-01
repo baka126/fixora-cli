@@ -1,17 +1,16 @@
 package analyzer
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
 )
 
-func (a Analyzer) runPrecisionAnalyzers(ctx context.Context) ([]Finding, []SkippedCheck) {
+func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	type precisionAnalyzer struct {
 		name    string
 		aliases []string
-		run     func(context.Context) ([]Finding, error)
+		run     func(*ScanContext) ([]Finding, error)
 	}
 	analyzers := []precisionAnalyzer{
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
@@ -41,12 +40,12 @@ func (a Analyzer) runPrecisionAnalyzers(ctx context.Context) ([]Finding, []Skipp
 	return findings, skipped
 }
 
-func (a Analyzer) analyzeServiceEndpoints(ctx context.Context) ([]Finding, error) {
-	services, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "services")
+func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
+	services, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "services")
 	if err != nil {
 		return nil, err
 	}
-	endpoints, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "endpoints")
+	endpoints, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "endpoints")
 	if err != nil {
 		return nil, err
 	}
@@ -118,12 +117,12 @@ func (a Analyzer) analyzeServiceEndpoints(ctx context.Context) ([]Finding, error
 	return out, nil
 }
 
-func (a Analyzer) analyzeIngressBackends(ctx context.Context) ([]Finding, error) {
-	ingresses, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "ingresses")
+func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
+	ingresses, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "ingresses")
 	if err != nil {
 		return nil, err
 	}
-	services, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "services")
+	services, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "services")
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +204,8 @@ func (a Analyzer) analyzeIngressBackends(ctx context.Context) ([]Finding, error)
 	return out, nil
 }
 
-func (a Analyzer) analyzeHPATargets(ctx context.Context) ([]Finding, error) {
-	hpas, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "hpa")
+func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
+	hpas, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "hpa")
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +237,7 @@ func (a Analyzer) analyzeHPATargets(ctx context.Context) ([]Finding, error) {
 			continue
 		}
 		targetResource := strings.ToLower(targetKind) + "/" + targetName
-		targetObj, targetErr := a.k.GetResource(ctx, namespace, targetResource)
+		targetObj, targetErr := ctx.GetResource(namespace, targetResource)
 		if targetErr != nil {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "HPA/"+name+"/MissingTarget/"+targetKind+"/"+targetName),
@@ -294,8 +293,8 @@ func (a Analyzer) analyzeHPATargets(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzePodSecurity(ctx context.Context) ([]Finding, error) {
-	pods, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "pods")
+func (a Analyzer) analyzePodSecurity(ctx *ScanContext) ([]Finding, error) {
+	pods, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
 	if err != nil {
 		return nil, err
 	}
@@ -327,8 +326,8 @@ func (a Analyzer) analyzePodSecurity(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzePDBs(ctx context.Context) ([]Finding, error) {
-	pdbs, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "pdb")
+func (a Analyzer) analyzePDBs(ctx *ScanContext) ([]Finding, error) {
+	pdbs, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pdb")
 	if err != nil {
 		return nil, err
 	}
@@ -372,10 +371,10 @@ func (a Analyzer) analyzePDBs(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzeWebhooks(ctx context.Context) ([]Finding, error) {
+func (a Analyzer) analyzeWebhooks(ctx *ScanContext) ([]Finding, error) {
 	out := []Finding{}
 	for _, resource := range []string{"mutatingwebhookconfigurations", "validatingwebhookconfigurations"} {
-		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		items, err := ctx.GetResourceItems("", true, resource)
 		if err != nil {
 			continue
 		}
@@ -406,15 +405,15 @@ func (a Analyzer) analyzeWebhooks(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzeGatewayAPI(ctx context.Context) ([]Finding, error) {
+func (a Analyzer) analyzeGatewayAPI(ctx *ScanContext) ([]Finding, error) {
 	out := []Finding{}
-	services, _ := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, "services")
+	services, _ := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "services")
 	serviceSet := map[string]bool{}
 	for _, service := range services {
 		serviceSet[objectKey(service)] = true
 	}
 	for _, resource := range []string{"gatewayclasses.gateway.networking.k8s.io", "gateways.gateway.networking.k8s.io", "httproutes.gateway.networking.k8s.io"} {
-		items, err := a.k.GetResourceItems(ctx, a.opts.Namespace, a.opts.AllNS, resource)
+		items, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, resource)
 		if err != nil {
 			continue
 		}
@@ -481,10 +480,10 @@ func (a Analyzer) analyzeGatewayAPI(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzeRBAC(ctx context.Context) ([]Finding, error) {
+func (a Analyzer) analyzeRBAC(ctx *ScanContext) ([]Finding, error) {
 	out := []Finding{}
 	for _, resource := range []string{"roles", "clusterroles"} {
-		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		items, err := ctx.GetResourceItems("", true, resource)
 		if err != nil {
 			continue
 		}
@@ -517,7 +516,7 @@ func (a Analyzer) analyzeRBAC(ctx context.Context) ([]Finding, error) {
 		}
 	}
 	for _, resource := range []string{"rolebindings", "clusterrolebindings"} {
-		items, err := a.k.GetResourceItems(ctx, "", true, resource)
+		items, err := ctx.GetResourceItems("", true, resource)
 		if err != nil {
 			continue
 		}
@@ -549,9 +548,9 @@ func (a Analyzer) analyzeRBAC(ctx context.Context) ([]Finding, error) {
 	return out, nil
 }
 
-func (a Analyzer) analyzeStorage(ctx context.Context) ([]Finding, error) {
+func (a Analyzer) analyzeStorage(ctx *ScanContext) ([]Finding, error) {
 	out := []Finding{}
-	pvs, pvErr := a.k.GetResourceItems(ctx, "", true, "pv")
+	pvs, pvErr := ctx.GetResourceItems("", true, "pv")
 	if pvErr == nil {
 		for _, pv := range pvs {
 			_, name := objectNamespaceName(pv)
@@ -577,7 +576,7 @@ func (a Analyzer) analyzeStorage(ctx context.Context) ([]Finding, error) {
 			}
 		}
 	}
-	storageClasses, scErr := a.k.GetResourceItems(ctx, "", true, "storageclasses")
+	storageClasses, scErr := ctx.GetResourceItems("", true, "storageclasses")
 	if scErr == nil {
 		defaults := []string{}
 		for _, sc := range storageClasses {
@@ -835,13 +834,13 @@ func httpRouteBackendRefs(route map[string]any) []backendRef {
 	return out
 }
 
-func (a Analyzer) objectNameExists(ctx context.Context, namespace, resource, name string) bool {
+func (a Analyzer) objectNameExists(ctx *ScanContext, namespace, resource, name string) bool {
 	args := []string{"get", resource, name}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	args = append(args, "-o", "name")
-	_, err := a.k.Run(ctx, args...)
+	_, err := ctx.Reader.Run(ctx.Context, args...)
 	return err == nil
 }
 

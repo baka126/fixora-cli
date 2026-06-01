@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Kubectl struct {
@@ -103,7 +104,7 @@ func (k Kubectl) DoctorReport(ctx context.Context, namespace string, allNS bool)
 
 func (k Kubectl) GetPods(ctx context.Context, namespace string, allNS bool) (PodList, error) {
 	var pods PodList
-	args := []string{"get", "pods"}
+	args := []string{"get", "pods", "--chunk-size=500"}
 	args = append(args, scopeArgs(namespace, allNS)...)
 	args = append(args, "-o", "json")
 	err := k.GetJSON(ctx, &pods, args...)
@@ -131,7 +132,7 @@ func (k Kubectl) GetResourceItems(ctx context.Context, namespace string, allNS b
 	var list struct {
 		Items []map[string]any `json:"items"`
 	}
-	args := []string{"get", resource}
+	args := []string{"get", resource, "--chunk-size=500"}
 	args = append(args, scopeArgs(namespace, allNS)...)
 	args = append(args, "-o", "json")
 	if err := k.GetJSON(ctx, &list, args...); err != nil {
@@ -142,7 +143,7 @@ func (k Kubectl) GetResourceItems(ctx context.Context, namespace string, allNS b
 
 func (k Kubectl) GetEvents(ctx context.Context, namespace string) ([]Event, error) {
 	var events EventList
-	args := []string{"get", "events"}
+	args := []string{"get", "events", "--chunk-size=500"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	} else {
@@ -157,7 +158,7 @@ func (k Kubectl) GetEvents(ctx context.Context, namespace string) ([]Event, erro
 
 func (k Kubectl) GetNodes(ctx context.Context) ([]Node, error) {
 	var nodes NodeList
-	err := k.GetJSON(ctx, &nodes, "get", "nodes", "-o", "json")
+	err := k.GetJSON(ctx, &nodes, "get", "nodes", "--chunk-size=500", "-o", "json")
 	return nodes.Items, err
 }
 
@@ -216,11 +217,16 @@ func (k Kubectl) AuthCanI(ctx context.Context, namespace, serviceAccount, verb, 
 }
 
 func (k Kubectl) GetJSON(ctx context.Context, target any, args ...string) error {
-	out, err := k.Run(ctx, args...)
-	if err != nil {
-		return err
+	var err error
+	for i := 0; i < 3; i++ {
+		out, runErr := k.Run(ctx, args...)
+		if runErr == nil {
+			return json.Unmarshal(out, target)
+		}
+		err = runErr
+		time.Sleep(time.Duration(1<<i) * 100 * time.Millisecond)
 	}
-	return json.Unmarshal(out, target)
+	return err
 }
 
 func (k Kubectl) Run(ctx context.Context, args ...string) ([]byte, error) {

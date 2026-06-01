@@ -1,6 +1,97 @@
 package analyzer
 
-import "github.com/fixora/kubectl-fixora/internal/kube"
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
+)
+
+type ScanContext struct {
+	context.Context
+	Reader  kube.Reader
+	Opts    Options
+	mu      sync.Mutex
+	pods    *kube.PodList
+	events  []kube.Event
+	nodes   []kube.Node
+	items   map[string][]map[string]any
+	objects map[string]map[string]any
+}
+
+func NewScanContext(ctx context.Context, k kube.Reader, opts Options) *ScanContext {
+	return &ScanContext{
+		Context: ctx,
+		Reader:  k,
+		Opts:    opts,
+		items:   make(map[string][]map[string]any),
+		objects: make(map[string]map[string]any),
+	}
+}
+
+func (s *ScanContext) GetPods() (kube.PodList, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pods != nil {
+		return *s.pods, nil
+	}
+	pods, err := s.Reader.GetPods(s, s.Opts.Namespace, s.Opts.AllNS)
+	if err == nil {
+		s.pods = &pods
+	}
+	return pods, err
+}
+
+func (s *ScanContext) GetEvents() ([]kube.Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.events != nil {
+		return s.events, nil
+	}
+	ns := ""
+	if !s.Opts.AllNS {
+		ns = s.Opts.Namespace
+	}
+	events, err := s.Reader.GetEvents(s, ns)
+	if err == nil {
+		s.events = events
+	}
+	return events, err
+}
+
+func (s *ScanContext) GetResourceItems(namespace string, allNS bool, resource string) ([]map[string]any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%v:%s", namespace, allNS, resource)
+	if items, ok := s.items[key]; ok {
+		return items, nil
+	}
+	items, err := s.Reader.GetResourceItems(s, namespace, allNS, resource)
+	if err == nil {
+		s.items[key] = items
+	}
+	return items, err
+}
+
+func (s *ScanContext) GetResource(namespace, resource string) (map[string]any, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := namespace + "/" + resource
+	if obj, ok := s.objects[key]; ok {
+		return obj, nil
+	}
+	obj, err := s.Reader.GetResource(s, namespace, resource)
+	if err == nil {
+		s.objects[key] = obj
+	}
+	return obj, err
+}
+
+type AnalyzerPlugin interface {
+	Name() string
+	Analyze(ctx *ScanContext) ([]Finding, error)
+}
 
 type Options struct {
 	Namespace   string
@@ -58,10 +149,12 @@ type Finding struct {
 	Summary         string           `json:"summary"`
 	Evidence        []Evidence       `json:"evidence"`
 	OwnerChain      []string         `json:"ownerChain,omitempty"`
-	GitOps          GitOpsHints      `json:"gitops,omitempty"`
-	Recommendations []Recommendation `json:"recommendations"`
-	Logs            []LogSnippet     `json:"logs,omitempty"`
-	AI              *AIResult        `json:"ai,omitempty"`
+	GitOps            GitOpsHints      `json:"gitops,omitempty"`
+	ChangeCorrelation string           `json:"changeCorrelation,omitempty"`
+	RecentChanges     []string         `json:"recentChanges,omitempty"`
+	Recommendations   []Recommendation `json:"recommendations"`
+	Logs              []LogSnippet     `json:"logs,omitempty"`
+	AI                *AIResult        `json:"ai,omitempty"`
 }
 
 type Evidence struct {

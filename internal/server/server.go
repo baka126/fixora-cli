@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/redact"
 )
 
 type Options struct {
@@ -42,7 +44,7 @@ func Serve(ctx context.Context, opts Options) error {
 		}
 		findings, err := a.ScanIncidents(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, redact.Text(err.Error()), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, findings)
@@ -55,7 +57,7 @@ func Serve(ctx context.Context, opts Options) error {
 		resource := strings.TrimPrefix(r.URL.Path, "/analyze/")
 		finding, err := a.AnalyzeResource(r.Context(), resource)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, redact.Text(err.Error()), http.StatusBadRequest)
 			return
 		}
 		writeJSON(w, finding)
@@ -89,7 +91,12 @@ func authorized(r *http.Request, token string) bool {
 	if token == "" {
 		return true
 	}
-	return r.Header.Get("Authorization") == "Bearer "+token
+	expected := "Bearer " + token
+	actual := r.Header.Get("Authorization")
+	if len(actual) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

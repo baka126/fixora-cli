@@ -1,10 +1,14 @@
 package analyzer
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func TestLintFindsProductionRisks(t *testing.T) {
@@ -124,4 +128,88 @@ func TestScanReportEnvelopeStatus(t *testing.T) {
 	if envelope.Status != "ProblemDetected" || envelope.Problems != 1 {
 		t.Fatalf("unexpected envelope status: %#v", envelope)
 	}
+}
+
+func TestScanReportKeepsPodFindingsWhenEventsFail(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "api", Namespace: "prod"},
+			Status: kube.PodStatus{
+				ContainerStatuses: []kube.ContainerStatus{{
+					Name: "api",
+					State: map[string]kube.StatusState{
+						"waiting": {Reason: "CrashLoopBackOff"},
+					},
+				}},
+			},
+		}}},
+		eventsErr: fmt.Errorf("events forbidden"),
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected pod finding despite events error, got %#v", report)
+	}
+	foundEventsSkip := false
+	for _, skipped := range report.Skipped {
+		if skipped.Name == "events" {
+			foundEventsSkip = true
+		}
+	}
+	if !foundEventsSkip {
+		t.Fatalf("expected skipped events check, got %#v", report.Skipped)
+	}
+}
+
+func TestTopOwnerKeepsJobIdentity(t *testing.T) {
+	pod := kube.Pod{Metadata: kube.ObjectMeta{
+		Name:      "worker",
+		Namespace: "prod",
+		OwnerRefs: []kube.OwnerReference{{
+			Kind: "Job",
+			Name: "data-migration-2026",
+		}},
+	}}
+	if got := topOwnerKind(pod); got != "Job" {
+		t.Fatalf("expected Job owner kind, got %q", got)
+	}
+	if got := topOwnerName(pod); got != "data-migration-2026" {
+		t.Fatalf("expected full Job owner name, got %q", got)
+	}
+}
+
+type fakeReader struct {
+	pods      kube.PodList
+	eventsErr error
+}
+
+func (f fakeReader) GetPods(context.Context, string, bool) (kube.PodList, error) {
+	return f.pods, nil
+}
+
+func (f fakeReader) GetPod(context.Context, string, string) (kube.Pod, error) {
+	return kube.Pod{}, fmt.Errorf("not implemented")
+}
+
+func (f fakeReader) GetResource(context.Context, string, string) (map[string]any, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (f fakeReader) GetResourceItems(context.Context, string, bool, string) ([]map[string]any, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (f fakeReader) GetEvents(context.Context, string) ([]kube.Event, error) {
+	return nil, f.eventsErr
+}
+
+func (f fakeReader) GetNodes(context.Context) ([]kube.Node, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (f fakeReader) Logs(context.Context, string, string, bool) (string, error) {
+	return "", nil
+}
+
+func (f fakeReader) Run(context.Context, ...string) ([]byte, error) {
+	return nil, fmt.Errorf("not implemented")
 }

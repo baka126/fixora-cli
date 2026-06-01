@@ -91,7 +91,7 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
+		return cfg, fmt.Errorf("failed to parse config %s: %w", path, err)
 	}
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = SchemaVersion
@@ -576,7 +576,7 @@ func loadStored() (Config, error) {
 		return cfg, err
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
+		return cfg, fmt.Errorf("failed to parse config %s: %w", path, err)
 	}
 	if cfg.SchemaVersion == 0 {
 		cfg.SchemaVersion = SchemaVersion

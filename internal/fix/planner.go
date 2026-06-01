@@ -27,7 +27,6 @@ type Plan struct {
 	BlockedReasons   []string `json:"blockedReasons,omitempty"`
 	Guardrails       []string `json:"guardrails,omitempty"`
 	PatchTemplate    string   `json:"patchTemplate"`
-	ApplyCommand     string   `json:"applyCommand,omitempty"`
 	RollbackCommand  string   `json:"rollbackCommand,omitempty"`
 }
 
@@ -89,52 +88,49 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Pin a verified replacement image for the failing container.", Preview: plan.PatchTemplate})
 		plan.Confidence = 70
 		plan.Warnings = append(plan.Warnings, "Verify the replacement image exists, is pinned by tag or digest, and supports the node CPU architecture before applying.")
-		plan.Commands = append(plan.Commands, "crane digest <image> or docker manifest inspect <image>")
+		plan.Verification = append(plan.Verification, "crane digest <image> or docker manifest inspect <image>")
 	case strings.Contains(finding.Status, "OOMKilled"):
 		plan.PatchTemplate = resourcesPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Set memory and CPU requests/limits from observed usage with headroom.", Preview: plan.PatchTemplate})
 		plan.Confidence = 62
 		plan.Warnings = append(plan.Warnings, "Right-size from observed usage. Do not only raise limits if the process is intentionally allocating too much memory.")
-		plan.Commands = append(plan.Commands, "query Prometheus p95/p99 memory before choosing request and limit")
+		plan.Verification = append(plan.Verification, "query Prometheus p95/p99 memory before choosing request and limit")
 	case strings.Contains(finding.Status, "CrashLoopBackOff"):
 		plan.PatchTemplate = runtimePatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Patch command, args, probe, env, or securityContext only after confirming the actual root cause.", Preview: plan.PatchTemplate})
 		plan.Confidence = 55
 		plan.BlockedReasons = append(plan.BlockedReasons, "CrashLoopBackOff fixes require workload-specific root-cause proof before apply.")
-		plan.Warnings = append(plan.Warnings, "Crash fixes are workload-specific. Validate command, args, env, probes, permissions, and dependencies before applying.")
-	case strings.Contains(finding.Status, "Config"):
+	case strings.Contains(finding.Status, "CreateContainerConfigError"):
 		plan.PatchTemplate = envPatchTemplate(finding)
-		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Reference an existing ConfigMap key without embedding secret values.", Preview: plan.PatchTemplate})
-		plan.Confidence = 68
-		plan.Warnings = append(plan.Warnings, "Do not write secret values into plain manifests. Reference existing Secrets or create them with kubectl/secret tooling.")
-	case finding.ResourceKind == "Service" && strings.Contains(finding.Status, "NoEndpoints"):
-		plan.Strategy = "repair-selector"
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Inject the missing ConfigMap or Secret reference.", Preview: plan.PatchTemplate})
+		plan.Confidence = 80
+		plan.Warnings = append(plan.Warnings, "Ensure the referenced ConfigMap/Secret exists in the same namespace before applying.")
+	case strings.Contains(finding.Status, "NoEndpoints") || strings.Contains(finding.Status, "ConnectionRefused"):
 		plan.PatchTemplate = serviceSelectorPatchTemplate(finding)
-		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Repair Service selector only when pod labels prove the intended backend.", Preview: plan.PatchTemplate})
-		plan.Confidence = 58
-		plan.Warnings = append(plan.Warnings, "Selector fixes can reroute traffic. Require endpoint proof before applying.")
-	case strings.Contains(finding.Status, "MissingResourceRequests"):
-		plan.Strategy = "add-requests"
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Repair the Service selector to match running pods.", Preview: plan.PatchTemplate})
+		plan.Strategy = "repair-selector"
+		plan.Confidence = 85
+	case strings.Contains(finding.Status, "HPA"):
 		plan.PatchTemplate = hpaRequestsPatchTemplate(finding)
-		plan.Patches = append(plan.Patches, Patch{Type: "workload-patch", Target: resource, Description: "Add CPU/memory requests to the HPA scale target workload.", Preview: plan.PatchTemplate})
-		plan.Confidence = 66
-	case strings.Contains(finding.Status, "DisruptionsBlocked"):
-		plan.Strategy = "pdb-safe-adjust"
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Add resource requests to the scale target so the HPA can calculate metrics.", Preview: plan.PatchTemplate})
+		plan.Confidence = 90
+		plan.Warnings = append(plan.Warnings, "Without CPU/memory requests, the HPA cannot compute utilization percentage.")
+	case strings.Contains(finding.Status, "Evicted"):
 		plan.PatchTemplate = pdbPatchTemplate(finding)
-		plan.Patches = append(plan.Patches, Patch{Type: "policy-patch", Target: resource, Description: "Adjust PDB only after workload health and rollout safety are verified.", Preview: plan.PatchTemplate})
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Configure PodDisruptionBudget to protect critical workloads from node draining.", Preview: plan.PatchTemplate})
 		plan.Confidence = 60
-		plan.Warnings = append(plan.Warnings, "Relaxing PDB can reduce availability during voluntary disruption.")
-	case strings.Contains(finding.Status, "MissingWebhookService"), strings.Contains(finding.Status, "FailClosedWebhook"):
-		plan.Strategy = "webhook-unblock"
+		plan.Warnings = append(plan.Warnings, "Do not set maxUnavailable: 0 as it blocks node upgrades.")
+	case strings.Contains(finding.Status, "Webhook"):
 		plan.PatchTemplate = webhookPatchTemplate(finding)
-		plan.Patches = append(plan.Patches, Patch{Type: "temporary-policy-patch", Target: resource, Description: "Temporarily lower webhook blast radius while restoring webhook backend.", Preview: plan.PatchTemplate})
-		plan.Confidence = 64
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Bypass failing admission webhook temporarily.", Preview: plan.PatchTemplate})
+		plan.Confidence = 40
+		plan.BlockedReasons = append(plan.BlockedReasons, "Modifying admission webhooks requires high-privilege review.")
 		plan.Warnings = append(plan.Warnings, "Webhook changes affect admission safety. Prefer restoring backend Service before changing failure policy.")
 	default:
 		plan.PatchTemplate = genericPatchTemplate(finding)
 		plan.BlockedReasons = append(plan.BlockedReasons, "No deterministic patch strategy matched this status.")
 	}
-	plan.ApplyCommand = fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)
+	plan.Commands = []string{fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)}
 	plan.RollbackCommand = rollbackCommand(finding)
 	if plan.RollbackCommand != "" {
 		plan.Rollback = append(plan.Rollback, plan.RollbackCommand)

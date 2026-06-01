@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"unicode"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/redact"
@@ -21,38 +23,101 @@ func New(k kube.Reader, opts Options) Analyzer {
 func (a Analyzer) ScanIncidents(ctx context.Context) ([]Finding, error) {
 	report := a.ScanReport(ctx)
 	if len(report.Findings) == 0 && len(report.Skipped) > 0 {
-		return nil, fmt.Errorf(report.Skipped[0].Reason)
+		return nil, fmt.Errorf("%s", report.Skipped[0].Reason)
 	}
 	return report.Findings, nil
 }
 
 func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
+	sctx := NewScanContext(ctx, a.k, a.opts)
 	findings := []Finding{}
 	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
-	if len(selected) == 0 || selected["pod"] || selected["pods"] {
-		pods, err := a.k.GetPods(ctx, a.opts.Namespace, a.opts.AllNS)
-		if err != nil {
-			skipped = append(skipped, SkippedCheck{Name: "pods", Reason: err.Error()})
-		} else {
-			events, err := a.k.GetEvents(ctx, a.eventNamespace())
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if len(selected) == 0 || selected["pod"] || selected["pods"] {
+			pods, err := sctx.GetPods()
 			if err != nil {
+				mu.Lock()
+				skipped = append(skipped, SkippedCheck{Name: "pods", Reason: err.Error()})
+				mu.Unlock()
+				return
+			}
+			events, err := sctx.GetEvents()
+			if err != nil {
+				mu.Lock()
 				skipped = append(skipped, SkippedCheck{Name: "events", Reason: err.Error()})
+				mu.Unlock()
+				events = nil
 			}
-			for _, pod := range pods.Items {
-				finding, ok := a.findingForPod(ctx, pod, events)
-				if ok {
-					findings = append(findings, finding)
+
+			eventIndex := make(map[string][]kube.Event)
+			unindexedEvents := []kube.Event{}
+			for _, e := range events {
+				if e.InvolvedObject.Name != "" {
+					key := firstNonEmpty(e.InvolvedObject.Namespace, e.Metadata.Namespace) + "/" + e.InvolvedObject.Name
+					eventIndex[key] = append(eventIndex[key], e)
+					continue
 				}
+				unindexedEvents = append(unindexedEvents, e)
 			}
+
+			var logWg sync.WaitGroup
+			sem := make(chan struct{}, 10) // Bounded concurrency for log fetching
+			for _, p := range pods.Items {
+				p := p
+				logWg.Add(1)
+				go func() {
+					defer logWg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
+					key := p.Metadata.Namespace + "/" + p.Metadata.Name
+					relatedEvents := append([]kube.Event{}, eventIndex[key]...)
+					for _, event := range unindexedEvents {
+						if event.Metadata.Namespace == p.Metadata.Namespace && strings.Contains(event.Message, p.Metadata.Name) {
+							relatedEvents = append(relatedEvents, event)
+						}
+					}
+					finding, ok := a.findingForPod(sctx, p, relatedEvents)
+					if ok {
+						mu.Lock()
+						findings = append(findings, finding)
+						mu.Unlock()
+					}
+				}()
+			}
+			logWg.Wait()
 		}
-	}
-	registryFindings, registrySkipped := a.runRegistry(ctx)
-	findings = append(findings, registryFindings...)
-	skipped = append(skipped, registrySkipped...)
-	precisionFindings, precisionSkipped := a.runPrecisionAnalyzers(ctx)
-	findings = append(findings, precisionFindings...)
-	skipped = append(skipped, precisionSkipped...)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		registryFindings, registrySkipped := a.runRegistry(sctx)
+		mu.Lock()
+		findings = append(findings, registryFindings...)
+		skipped = append(skipped, registrySkipped...)
+		mu.Unlock()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		precisionFindings, precisionSkipped := a.runPrecisionAnalyzers(sctx)
+		mu.Lock()
+		findings = append(findings, precisionFindings...)
+		skipped = append(skipped, precisionSkipped...)
+		mu.Unlock()
+	}()
+
+	wg.Wait()
+
 	findings = dedupe(findings)
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Severity != findings[j].Severity {
@@ -213,6 +278,11 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 		},
 		Recommendations: recommendationsForStatus(status, pod),
 	}
+
+	corr, recent := CorrelateRecentEvents(events)
+	f.ChangeCorrelation = corr
+	f.RecentChanges = recent
+
 	for _, event := range events {
 		if event.Metadata.Namespace == pod.Metadata.Namespace && strings.Contains(event.Message, pod.Metadata.Name) {
 			f.Evidence = append(f.Evidence, Evidence{Label: "Event " + event.Reason, Value: event.Message})
@@ -220,10 +290,10 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 	}
 	if a.opts.IncludeLogs {
 		if logs, err := a.k.Logs(ctx, pod.Metadata.Namespace, pod.Metadata.Name, false); err == nil && logs != "" {
-			f.Logs = append(f.Logs, LogSnippet{Source: "current", Text: a.redact(logs)})
+			f.Logs = append(f.Logs, LogSnippet{Source: "current", Text: AggregateLogs(a.redact(logs))})
 		}
 		if logs, err := a.k.Logs(ctx, pod.Metadata.Namespace, pod.Metadata.Name, true); err == nil && logs != "" {
-			f.Logs = append(f.Logs, LogSnippet{Source: "previous", Text: a.redact(logs)})
+			f.Logs = append(f.Logs, LogSnippet{Source: "previous", Text: AggregateLogs(a.redact(logs))})
 		}
 	}
 	return f, true
@@ -238,7 +308,7 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 	return Finding{
 		ID:           namespace + "/" + kind + "/" + name,
 		Namespace:    namespace,
-		ResourceKind: strings.Title(kind),
+		ResourceKind: toTitle(kind),
 		ResourceName: name,
 		Status:       status,
 		Severity:     "info",
@@ -252,6 +322,15 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 			SafeByDefault: true,
 		}},
 	}
+}
+
+func toTitle(s string) string {
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
 }
 
 func (a Analyzer) healthyFinding(pod kube.Pod) Finding {

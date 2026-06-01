@@ -15,7 +15,7 @@ func TestExplainGeminiParsesStructuredContent(t *testing.T) {
 	var gotPath, gotKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotKey = r.URL.Query().Get("key")
+		gotKey = r.Header.Get("x-goog-api-key")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"candidates": []map[string]any{{

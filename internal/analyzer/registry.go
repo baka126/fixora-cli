@@ -1,7 +1,6 @@
 package analyzer
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -53,7 +52,7 @@ func ListAnalyzers(filters []string) []Definition {
 	return out
 }
 
-func (a Analyzer) runRegistry(ctx context.Context) ([]Finding, []SkippedCheck) {
+func (a Analyzer) runRegistry(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	findings := []Finding{}
 	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
@@ -86,8 +85,8 @@ func (a Analyzer) runRegistry(ctx context.Context) ([]Finding, []SkippedCheck) {
 	return findings, skipped
 }
 
-func (a Analyzer) analyzeResourceList(ctx context.Context, def Definition, namespace string, allNS bool) ([]Finding, error) {
-	items, err := a.k.GetResourceItems(ctx, namespace, allNS, def.Resource)
+func (a Analyzer) analyzeResourceList(ctx *ScanContext, def Definition, namespace string, allNS bool) ([]Finding, error) {
+	items, err := ctx.GetResourceItems(namespace, allNS, def.Resource)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/graph"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/redact"
 	"github.com/fixora/kubectl-fixora/internal/report"
 )
 
@@ -32,25 +33,31 @@ func WriteProfile(ctx context.Context, k kube.Kubectl, out string, finding analy
 	defer gz.Close()
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
-	addJSON(tw, "finding.json", finding)
-	addJSON(tw, "plan.json", plan)
-	addText(tw, "report.md", report.Markdown(finding))
+	if err := addJSON(tw, "finding.json", finding); err != nil {
+		return err
+	}
+	if err := addJSON(tw, "plan.json", plan); err != nil {
+		return err
+	}
+	if err := addText(tw, "report.md", report.Markdown(finding)); err != nil {
+		return err
+	}
 	switch profile {
 	case "network":
-		addJSON(tw, "graph.json", graph.Build(ctx, k, finding))
-		addJSON(tw, "services.json", resourceItems(ctx, k, finding.Namespace, "services"))
-		addJSON(tw, "endpoints.json", resourceItems(ctx, k, finding.Namespace, "endpoints"))
-		addJSON(tw, "ingresses.json", resourceItems(ctx, k, finding.Namespace, "ingresses"))
+		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil { return err }
+		if err := addJSON(tw, "services.json", resourceItems(ctx, k, finding.Namespace, "services")); err != nil { return err }
+		if err := addJSON(tw, "endpoints.json", resourceItems(ctx, k, finding.Namespace, "endpoints")); err != nil { return err }
+		if err := addJSON(tw, "ingresses.json", resourceItems(ctx, k, finding.Namespace, "ingresses")); err != nil { return err }
 	case "storage":
-		addJSON(tw, "pvcs.json", resourceItems(ctx, k, finding.Namespace, "pvc"))
-		addJSON(tw, "storageclasses.json", resourceItems(ctx, k, "", "storageclasses"))
+		if err := addJSON(tw, "pvcs.json", resourceItems(ctx, k, finding.Namespace, "pvc")); err != nil { return err }
+		if err := addJSON(tw, "storageclasses.json", resourceItems(ctx, k, "", "storageclasses")); err != nil { return err }
 	case "security":
-		addJSON(tw, "events.json", events(ctx, k, finding.Namespace))
-		addJSON(tw, "policyreports.json", resourceItems(ctx, k, finding.Namespace, "policyreports.wgpolicyk8s.io"))
-		addJSON(tw, "networkpolicies.json", resourceItems(ctx, k, finding.Namespace, "networkpolicies"))
+		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil { return err }
+		if err := addJSON(tw, "policyreports.json", resourceItems(ctx, k, finding.Namespace, "policyreports.wgpolicyk8s.io")); err != nil { return err }
+		if err := addJSON(tw, "networkpolicies.json", resourceItems(ctx, k, finding.Namespace, "networkpolicies")); err != nil { return err }
 	default:
-		addJSON(tw, "graph.json", graph.Build(ctx, k, finding))
-		addJSON(tw, "events.json", events(ctx, k, finding.Namespace))
+		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil { return err }
+		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil { return err }
 	}
 	return nil
 }
@@ -71,13 +78,19 @@ func events(ctx context.Context, k kube.Kubectl, namespace string) any {
 	return items
 }
 
-func addJSON(tw *tar.Writer, name string, value any) {
-	data, _ := json.MarshalIndent(value, "", "  ")
-	addText(tw, name, string(data))
+func addJSON(tw *tar.Writer, name string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return addText(tw, name, string(data))
 }
 
-func addText(tw *tar.Writer, name, value string) {
-	data := []byte(value)
-	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Now()})
-	_, _ = tw.Write(data)
+func addText(tw *tar.Writer, name, value string) error {
+	data := []byte(redact.Text(value))
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), ModTime: time.Now()}); err != nil {
+		return err
+	}
+	_, err := tw.Write(data)
+	return err
 }

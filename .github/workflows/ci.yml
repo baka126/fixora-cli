@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        
+    - name: Build
+      run: make build
+      
+    - name: Test
+      run: make test-coverage
+
+    - name: Govulncheck
+      if: matrix.os == 'ubuntu-latest'
+      uses: golang/govulncheck-action@v1
+      with:
+        go-version-file: go.mod
+        
+    - name: golangci-lint
+      if: matrix.os == 'ubuntu-latest'
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.59

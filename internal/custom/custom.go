@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -60,6 +61,10 @@ func Run(ctx context.Context, finding analyzer.Finding) ([]Result, error) {
 			results = append(results, RunHTTP(ctx, path, finding))
 			continue
 		}
+		if !filepath.IsAbs(path) || strings.Contains(path, "..") {
+			results = append(results, Result{Path: path, Status: "error", Error: "custom analyzer path must be absolute and cannot contain directory traversal"})
+			continue
+		}
 		runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		cmd := exec.CommandContext(runCtx, path)
 		cmd.Stdin = bytes.NewReader(payload)
@@ -83,6 +88,9 @@ func ValidateAnalyzerConfig(cfg AnalyzerConfig) error {
 	case "exec":
 		if strings.TrimSpace(cfg.Command) == "" {
 			return fmt.Errorf("exec custom analyzer requires command")
+		}
+		if !filepath.IsAbs(cfg.Command) || strings.Contains(cfg.Command, "..") {
+			return fmt.Errorf("exec custom analyzer command must be an absolute path without directory traversal")
 		}
 	case "http":
 		parsed, err := url.Parse(cfg.URL)

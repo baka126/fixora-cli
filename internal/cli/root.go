@@ -53,6 +53,7 @@ type options struct {
 	preview       bool
 	forceRisky    bool
 	typedClient   bool
+	tui           bool
 	repoPath      string
 	strategy      string
 	branch        string
@@ -75,6 +76,7 @@ type options struct {
 	sourcePatch   bool
 	watchInterval time.Duration
 	lintFiles     listFlag
+	maxFindings   int
 }
 
 type listFlag []string
@@ -123,12 +125,19 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
+	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if cmd == "serve" || cmd == "watch" {
-		ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if cmd == "serve" || cmd == "watch" || (cmd == "ui" && opts.tui) {
+		ctx, cancel = baseCtx, func() {}
 	} else {
-		ctx, cancel = context.WithTimeout(context.Background(), opts.timeout)
+		if opts.timeout > 0 {
+			ctx, cancel = context.WithTimeout(baseCtx, opts.timeout)
+		} else {
+			ctx, cancel = baseCtx, func() {}
+		}
 	}
 	defer cancel()
 
@@ -156,8 +165,14 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 
 	switch cmd {
 	case "status":
+		if opts.output == "text" {
+			fmt.Fprintln(stderr, "Gathering status...")
+		}
 		return runStatus(ctx, stdout, stderr, opts, k)
 	case "doctor":
+		if opts.output == "text" {
+			fmt.Fprintln(stderr, "Running doctor checks...")
+		}
 		return runDoctorReport(ctx, stdout, stderr, opts, k)
 	case "filters", "analyzers":
 		return output.Write(stdout, opts.output, analyzer.ListAnalyzers(splitCSV(opts.filters)))
@@ -190,6 +205,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "incidents":
+		if opts.output == "text" {
+			fmt.Fprintln(stderr, "Scanning for incidents...")
+		}
 		scan := a.ScanReport(ctx)
 		if opts.output == "text" {
 			termui.Findings(stdout, scan.Findings, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
@@ -201,6 +219,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: analyze requires a resource, for example deployment/api")
 			return 2
+		}
+		if opts.output == "text" {
+			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
 		finding, err := a.AnalyzeResource(ctx, rest[0])
 		if err != nil {
@@ -221,6 +242,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if len(rest) == 0 {
 			fmt.Fprintf(stderr, "error: %s requires a resource, for example deployment/api\n", cmd)
 			return 2
+		}
+		if opts.output == "text" {
+			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
 		finding, err := a.AnalyzeResource(ctx, rest[0])
 		if err != nil {
@@ -303,11 +327,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 						return 1
 					}
 				}
-				if err := k.Apply(ctx, opts.outFile); err != nil {
-					fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
-					return 1
+				if termui.ConfirmApply(plan.PatchTemplate) {
+					if err := k.Apply(ctx, opts.outFile); err != nil {
+						fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
+						return 1
+					}
+					fmt.Fprintln(stdout, "applied patch")
 				}
-				fmt.Fprintln(stdout, "applied patch")
 			}
 			if opts.repoPath != "" && (opts.branch != "" || opts.commit) {
 				if err := repo.PrepareBranch(ctx, opts.repoPath, opts.branch, opts.commit, "fixora: add remediation patch for "+finding.ResourceKind+"/"+finding.ResourceName); err != nil {
@@ -447,10 +473,29 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "wrote %s\n", out)
 		return 0
 	case "ui":
+		if opts.tui {
+			if err := termui.RunTUI(ctx, reader, termui.TUIOptions{
+				Context:     opts.context,
+				Namespace:   opts.namespace,
+				AllNS:       opts.allNS,
+				IncludeLogs: opts.includeLogs,
+				Redact:      opts.redact,
+				Filters:     splitCSV(opts.filters),
+				Refresh:     opts.watchInterval,
+				ScanTimeout: opts.timeout,
+				ApplyDryRun: opts.applyDryRun,
+				AIProvider:  os.Getenv("FIXORA_AI_PROVIDER"),
+				Output:      stdout,
+			}); err != nil {
+				fmt.Fprintf(stderr, "error: tui: %v\n", err)
+				return 1
+			}
+			return 0
+		}
 		scan := a.ScanReport(ctx)
 		termui.Findings(stdout, scan.Findings, termui.Options{Wide: true, NoColor: opts.noColor})
 		writeSkipped(stdout, scan.Skipped)
-		fmt.Fprintln(stdout, "\nTip: run `kubectl fixora why <resource> --proof` for an incident detail view.")
+		fmt.Fprintln(stdout, "\nTip: run `kubectl fixora ui --tui -A --include-logs` for the interactive production triage dashboard.")
 		return 0
 	case "watch":
 		return runWatch(ctx, stdout, stderr, opts, a, rest)
@@ -465,6 +510,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if len(paths) == 0 {
 			fmt.Fprintln(stderr, "error: lint requires -f, --helm, or --kustomize path")
 			return 2
+		}
+		if opts.output == "text" {
+			fmt.Fprintln(stderr, "Linting files...")
 		}
 		results, err := analyzer.Lint(paths)
 		return output.WriteOrError(stdout, stderr, opts.output, results, err)
@@ -526,6 +574,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
+	fs.BoolVar(&opts.tui, "tui", false, "enable interactive terminal dashboard for the ui command")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -547,6 +596,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
 	fs.DurationVar(&opts.watchInterval, "watch-interval", 5*time.Second, "watch polling interval")
+	fs.IntVar(&opts.maxFindings, "max-findings", 8, "maximum findings to display in watch mode")
 	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
 	fs.Var(&opts.lintFiles, "filename", "manifest, chart, or kustomize path to lint")
 	if err := fs.Parse(args); err != nil {
@@ -644,10 +694,11 @@ func runWatch(ctx context.Context, stdout, stderr io.Writer, opts options, a ana
 	}
 	for {
 		scan := a.ScanReport(ctx)
+		fmt.Fprint(stdout, "\033[H\033[2J") // clear screen
 		fmt.Fprintf(stdout, "\n%s findings=%d high=%d medium=%d skipped=%d\n", time.Now().Format(time.RFC3339), scan.Summary.Findings, scan.Summary.HighSeverity, scan.Summary.MediumSeverity, scan.Summary.SkippedChecks)
 		for i, finding := range scan.Findings {
-			if i >= 8 {
-				fmt.Fprintf(stdout, "... %d more findings\n", len(scan.Findings)-i)
+			if i >= opts.maxFindings {
+				fmt.Fprintf(stdout, "... %d more findings\n", len(scan.Findings)-opts.maxFindings)
 				break
 			}
 			fmt.Fprintf(stdout, "- %s %s/%s %s\n", finding.Severity, finding.ResourceKind, finding.ResourceName, finding.Status)
@@ -1008,7 +1059,7 @@ Commands:
   report <kind/name> --out md  Export a local markdown report
   cost nodes|workloads         Estimate node/workload costs
   predict                      Show future-risk signals from local evidence
-  lint -f path                 Lint manifests, Helm chart, or Kustomize overlay
+  lint -f path                 Lint manifests, Helm chart, or Kustomize overlay (Note: uses string-matching, may flag comments)
   version                      Print version
   auth set provider key        Store AI provider credentials locally
   config view|set|unset|validate|export|reset|path
@@ -1032,6 +1083,7 @@ Global flags:
       --redact                 Redact sensitive values (default true)
       --filter string          Comma-separated analyzers, for example Pod,Deployment,Service
       --proof                  Show evidence proof
+      --tui                    Enable interactive dashboard for the ui command
       --profile string         AI prompt profile or bundle profile
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
@@ -1045,6 +1097,7 @@ Global flags:
       --apply-dry-run          Run server-side dry-run before --apply (default true)
       --source-patch           Write patch into --repo for GitOps source review
       --watch-interval duration Watch polling interval (default 5s)
+      --max-findings int       Maximum findings to display in watch mode (default 8)
   -f, --filename string        Manifest, chart, or Kustomize path for lint
       --container string       Target container for concrete patches
       --image string           Pinned replacement image

@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -38,32 +40,32 @@ type TypedClient struct {
 }
 
 func NewTypedClient(contextName string) (*TypedClient, error) {
+	fallback := NewKubectl(contextName)
 	cfg, err := typedRESTConfig(contextName)
 	if err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	dynamicClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	runtimeClient, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
-		return nil, err
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
 	}
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
-	fallback := NewKubectl(contextName)
 	return &TypedClient{
 		Context:       contextName,
 		LogTail:       fallback.LogTail,
@@ -82,17 +84,23 @@ func typedRESTConfig(contextName string) (*rest.Config, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
 	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
-	if err == nil {
-		return cfg, nil
+	if err != nil {
+		inCluster, inClusterErr := rest.InClusterConfig()
+		if inClusterErr == nil {
+			cfg = inCluster
+		} else {
+			return nil, err
+		}
 	}
-	inCluster, inClusterErr := rest.InClusterConfig()
-	if inClusterErr == nil {
-		return inCluster, nil
-	}
-	return nil, err
+	cfg.QPS = 50
+	cfg.Burst = 100
+	return cfg, nil
 }
 
 func (c *TypedClient) Status(ctx context.Context) (Status, error) {
+	if c.Discovery == nil {
+		return c.Fallback.Status(ctx)
+	}
 	version, err := c.Discovery.ServerVersion()
 	if err != nil {
 		return Status{}, err
@@ -101,18 +109,37 @@ func (c *TypedClient) Status(ctx context.Context) (Status, error) {
 }
 
 func (c *TypedClient) GetPods(ctx context.Context, namespace string, allNS bool) (PodList, error) {
-	listOpts := metav1.ListOptions{}
+	if c.Clientset == nil {
+		return c.Fallback.GetPods(ctx, namespace, allNS)
+	}
 	ns := namespaceForTyped(namespace, allNS)
-	pods, err := c.Clientset.CoreV1().Pods(ns).List(ctx, listOpts)
-	if err != nil {
-		return PodList{}, err
+	var allItems []corev1.Pod
+	var continueToken string
+	for {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
+		pods, err := withRetry(func() (*corev1.PodList, error) {
+			return c.Clientset.CoreV1().Pods(ns).List(ctx, listOpts)
+		})
+		if err != nil {
+			return PodList{}, err
+		}
+		allItems = append(allItems, pods.Items...)
+		continueToken = pods.Continue
+		if continueToken == "" {
+			break
+		}
 	}
 	var out PodList
-	return out, convertTyped(pods, &out)
+	return out, convertTyped(&corev1.PodList{Items: allItems}, &out)
 }
 
 func (c *TypedClient) GetPod(ctx context.Context, namespace, name string) (Pod, error) {
-	pod, err := c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if c.Clientset == nil {
+		return c.Fallback.GetPod(ctx, namespace, name)
+	}
+	pod, err := withRetry(func() (*corev1.Pod, error) {
+		return c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	})
 	if err != nil {
 		return Pod{}, err
 	}
@@ -121,29 +148,65 @@ func (c *TypedClient) GetPod(ctx context.Context, namespace, name string) (Pod, 
 }
 
 func (c *TypedClient) GetEvents(ctx context.Context, namespace string) ([]Event, error) {
-	events, err := c.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
+	if c.Clientset == nil {
+		return c.Fallback.GetEvents(ctx, namespace)
+	}
+	var allItems []corev1.Event
+	var continueToken string
+	for {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
+		events, err := withRetry(func() (*corev1.EventList, error) {
+			return c.Clientset.CoreV1().Events(namespace).List(ctx, listOpts)
+		})
+		if err != nil {
+			return nil, err
+		}
+		allItems = append(allItems, events.Items...)
+		continueToken = events.Continue
+		if continueToken == "" {
+			break
+		}
 	}
 	var out EventList
-	return out.Items, convertTyped(events, &out)
+	return out.Items, convertTyped(&corev1.EventList{Items: allItems}, &out)
 }
 
 func (c *TypedClient) GetNodes(ctx context.Context) ([]Node, error) {
-	nodes, err := c.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
+	if c.Clientset == nil {
+		return c.Fallback.GetNodes(ctx)
+	}
+	var allItems []corev1.Node
+	var continueToken string
+	for {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
+		nodes, err := withRetry(func() (*corev1.NodeList, error) {
+			return c.Clientset.CoreV1().Nodes().List(ctx, listOpts)
+		})
+		if err != nil {
+			return nil, err
+		}
+		allItems = append(allItems, nodes.Items...)
+		continueToken = nodes.Continue
+		if continueToken == "" {
+			break
+		}
 	}
 	var out NodeList
-	return out.Items, convertTyped(nodes, &out)
+	return out.Items, convertTyped(&corev1.NodeList{Items: allItems}, &out)
 }
 
 func (c *TypedClient) GetResource(ctx context.Context, namespace, resource string) (map[string]any, error) {
+	if c.Mapper == nil || c.Dynamic == nil {
+		return c.Fallback.GetResource(ctx, namespace, resource)
+	}
 	gvr, name, err := c.resourceRef(resource)
 	if err != nil {
 		return nil, err
 	}
-	obj, err := c.dynamicResource(gvr, namespace).Get(ctx, name, metav1.GetOptions{})
+	obj, err := withRetry(func() (*unstructured.Unstructured, error) {
+		res := c.dynamicResource(gvr, namespace)
+		return res.Get(ctx, name, metav1.GetOptions{})
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -151,17 +214,31 @@ func (c *TypedClient) GetResource(ctx context.Context, namespace, resource strin
 }
 
 func (c *TypedClient) GetResourceItems(ctx context.Context, namespace string, allNS bool, resource string) ([]map[string]any, error) {
+	if c.Mapper == nil || c.Dynamic == nil {
+		return c.Fallback.GetResourceItems(ctx, namespace, allNS, resource)
+	}
 	gvr, _, err := c.resourceRef(resource)
 	if err != nil {
 		return nil, err
 	}
-	list, err := c.dynamicResource(gvr, namespaceForTyped(namespace, allNS)).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	items := make([]map[string]any, 0, len(list.Items))
-	for _, item := range list.Items {
-		items = append(items, item.Object)
+	var items []map[string]any
+	var continueToken string
+	for {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
+		list, err := withRetry(func() (*unstructured.UnstructuredList, error) {
+			res := c.dynamicResource(gvr, namespaceForTyped(namespace, allNS))
+			return res.List(ctx, listOpts)
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range list.Items {
+			items = append(items, item.Object)
+		}
+		continueToken = list.GetContinue()
+		if continueToken == "" {
+			break
+		}
 	}
 	return items, nil
 }
@@ -249,4 +326,18 @@ func convertTyped(source, target any) error {
 		return err
 	}
 	return stdjson.Unmarshal(data, target)
+}
+
+func withRetry[T any](f func() (T, error)) (T, error) {
+	var err error
+	var zero T
+	for i := 0; i < 3; i++ {
+		res, reqErr := f()
+		if reqErr == nil {
+			return res, nil
+		}
+		err = reqErr
+		time.Sleep(time.Duration(1<<i) * 100 * time.Millisecond)
+	}
+	return zero, err
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -153,10 +152,10 @@ func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	if len(decoded.Message.Content) > 0 {
-		return parseAIContent(decoded.Message.Content[0].Text), nil
+		return parseAIContent(decoded.Message.Content[0].Text)
 	}
 	if decoded.Text != "" {
-		return parseAIContent(decoded.Text), nil
+		return parseAIContent(decoded.Text)
 	}
 	return nil, fmt.Errorf("AI provider returned no content")
 }
@@ -195,15 +194,15 @@ func (c Client) explainHuggingFace(ctx context.Context, payload string) (*analyz
 		GeneratedText string `json:"generated_text"`
 	}
 	if err := json.Unmarshal(data, &decoded); err == nil && len(decoded) > 0 {
-		return parseAIContent(decoded[0].GeneratedText), nil
+		return parseAIContent(decoded[0].GeneratedText)
 	}
 	var single struct {
 		GeneratedText string `json:"generated_text"`
 	}
 	if err := json.Unmarshal(data, &single); err == nil && single.GeneratedText != "" {
-		return parseAIContent(single.GeneratedText), nil
+		return parseAIContent(single.GeneratedText)
 	}
-	return parseAIContent(string(data)), nil
+	return parseAIContent(string(data))
 }
 
 func (c Client) explainCloudGateway(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -334,7 +333,7 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("AI provider returned no choices")
 	}
-	return parseAIContent(decoded.Choices[0].Message.Content), nil
+	return parseAIContent(decoded.Choices[0].Message.Content)
 }
 
 func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -355,12 +354,12 @@ func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	endpoint := fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(c.BaseURL, "/"), c.Model)
-	if c.APIKey != "" {
-		endpoint += "?key=" + url.QueryEscape(c.APIKey)
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
+	}
+	if c.APIKey != "" {
+		req.Header.Set("x-goog-api-key", c.APIKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
@@ -396,7 +395,7 @@ func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AI
 	if len(decoded.Candidates) == 0 || len(decoded.Candidates[0].Content.Parts) == 0 {
 		return nil, fmt.Errorf("AI provider returned no content")
 	}
-	return parseAIContent(decoded.Candidates[0].Content.Parts[0].Text), nil
+	return parseAIContent(decoded.Candidates[0].Content.Parts[0].Text)
 }
 
 func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -431,7 +430,7 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 	if decoded.Error != "" {
 		return nil, fmt.Errorf("%s", decoded.Error)
 	}
-	return parseAIContent(decoded.Message.Content), nil
+	return parseAIContent(decoded.Message.Content)
 }
 
 func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -476,10 +475,10 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 	if len(decoded.Content) == 0 {
 		return nil, fmt.Errorf("AI provider returned no content")
 	}
-	return parseAIContent(decoded.Content[0].Text), nil
+	return parseAIContent(decoded.Content[0].Text)
 }
 
-func parseAIContent(content string) *analyzer.AIResult {
+func parseAIContent(content string) (*analyzer.AIResult, error) {
 	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
@@ -487,14 +486,9 @@ func parseAIContent(content string) *analyzer.AIResult {
 	content = strings.TrimSpace(content)
 	var result analyzer.AIResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return &analyzer.AIResult{
-			Summary:        "AI returned a non-JSON response.",
-			RootCause:      content,
-			RecommendedFix: "Review the response manually before acting.",
-			Warnings:       []string{"Non-JSON AI response could not be structured."},
-		}
+		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content: %q)", err, content)
 	}
-	return &result
+	return &result, nil
 }
 
 func defaultBaseURL(provider string) string {

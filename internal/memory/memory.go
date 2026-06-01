@@ -2,12 +2,18 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
+)
+
+const (
+	maxRecords = 1000
+	recordTTL  = 30 * 24 * time.Hour
 )
 
 type Record struct {
@@ -21,9 +27,40 @@ type Record struct {
 	Namespace string    `json:"namespace,omitempty"`
 }
 
+func lock() (func(), error) {
+	lockFile := path() + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockFile), 0o700); err != nil {
+		return func() {}, err
+	}
+	for i := 0; i < 50; i++ {
+		f, err := os.OpenFile(lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			f.Close()
+			return func() { os.Remove(lockFile) }, nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return func() {}, fmt.Errorf("timeout acquiring memory file lock")
+}
+
 func Add(f analyzer.Finding, p fix.Plan, outcome string) error {
-	records, _ := List()
-	records = append(records, Record{
+	unlock, err := lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	records, _ := listUnlocked()
+	cutoff := time.Now().Add(-recordTTL)
+	valid := make([]Record, 0, len(records)+1)
+	
+	for _, r := range records {
+		if r.Time.After(cutoff) {
+			valid = append(valid, r)
+		}
+	}
+	
+	valid = append(valid, Record{
 		Time:      time.Now(),
 		Key:       Key(f),
 		Resource:  f.ResourceKind + "/" + f.ResourceName,
@@ -33,10 +70,24 @@ func Add(f analyzer.Finding, p fix.Plan, outcome string) error {
 		Outcome:   outcome,
 		Namespace: f.Namespace,
 	})
-	return save(records)
+	
+	if len(valid) > maxRecords {
+		valid = valid[len(valid)-maxRecords:]
+	}
+	
+	return saveUnlocked(valid)
 }
 
 func List() ([]Record, error) {
+	unlock, err := lock()
+	if err != nil {
+		return listUnlocked()
+	}
+	defer unlock()
+	return listUnlocked()
+}
+
+func listUnlocked() ([]Record, error) {
 	data, err := os.ReadFile(path())
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -49,6 +100,11 @@ func List() ([]Record, error) {
 }
 
 func Clear() error {
+	unlock, err := lock()
+	if err != nil {
+		return os.Remove(path())
+	}
+	defer unlock()
 	return os.Remove(path())
 }
 
@@ -68,15 +124,20 @@ func Key(f analyzer.Finding) string {
 	return f.ResourceKind + "|" + f.Status + "|" + f.Category + "|" + f.Summary
 }
 
-func save(records []Record) error {
-	if err := os.MkdirAll(filepath.Dir(path()), 0o700); err != nil {
+func saveUnlocked(records []Record) error {
+	p := path()
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path(), data, 0o600)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
 }
 
 func path() string {

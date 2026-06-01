@@ -1,5 +1,7 @@
 # kubectl-fixora
 
+[![Documentation](https://img.shields.io/badge/docs-GitHub_Pages-blue.svg)](https://baka126.github.io/fixora-cli/)
+
 `kubectl-fixora` is a standalone free kubectl plugin for local Kubernetes diagnostics. It does not talk to the Fixora controller/backend. It uses the current kubeconfig, reads local cluster evidence through `kubectl`, and can optionally call AI providers for explanations.
 
 ## Scope
@@ -80,6 +82,7 @@ kubectl fixora watch incidents -A
 kubectl fixora repo ./charts/api
 kubectl fixora validate ./charts/api
 kubectl fixora ui -A
+kubectl fixora ui --tui -A --include-logs
 kubectl fixora auth set openai "$OPENAI_API_KEY"
 kubectl fixora config view
 kubectl fixora cache stats
@@ -244,6 +247,7 @@ Remote cache configuration is opt-in because production evidence can be sensitiv
 - `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
 - `bundle --profile incident|network|storage|security` creates scoped redacted audit bundles for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.
+- `ui --tui` enables the optional interactive Bubble Tea dashboard on demand. It keeps the default output script-friendly while adding a full-screen SRE triage view with incident filtering, command palette, refresh, severity health score, fix-plan/runbook pane, owner graph, events, logs, and focused workload/network/storage/security views.
 - `watch incidents` polls incident state until interrupted.
 - `memory` stores local scenario history so repeated failures can reuse previous context.
 

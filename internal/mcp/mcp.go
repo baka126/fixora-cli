@@ -15,6 +15,11 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/ops"
 )
 
+// Server implements the Model Context Protocol (MCP) over stdio.
+// The MCP server runs over stdio which is intrinsically authenticated
+// by the execution context (the parent process creating the pipes).
+// Do NOT expose this directly over a network socket without wrapping
+// it in an authenticated transport layer.
 type Server struct {
 	Kubectl     kube.Kubectl
 	AnalyzerOpt analyzer.Options
@@ -41,6 +46,8 @@ type responseError struct {
 
 func (s Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(in)
+	buf := make([]byte, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
 	encoder := json.NewEncoder(out)
 	for scanner.Scan() {
 		select {

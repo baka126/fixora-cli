@@ -106,11 +106,18 @@ type EventList struct {
 }
 
 type Event struct {
-	Metadata ObjectMeta `json:"metadata"`
-	Type     string     `json:"type"`
-	Reason   string     `json:"reason"`
-	Message  string     `json:"message"`
-	LastTime string     `json:"lastTimestamp"`
+	Metadata       ObjectMeta      `json:"metadata"`
+	InvolvedObject ObjectReference `json:"involvedObject"`
+	Type           string          `json:"type"`
+	Reason         string          `json:"reason"`
+	Message        string          `json:"message"`
+	LastTime       string          `json:"lastTimestamp"`
+}
+
+type ObjectReference struct {
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }
 
 type NodeList struct {
