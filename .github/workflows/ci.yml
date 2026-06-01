@@ -30,10 +30,10 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       uses: golang/govulncheck-action@v1
       with:
-        go-version-file: go.mod
+        go-version-input: '1.26.3'
         
     - name: golangci-lint
       if: matrix.os == 'ubuntu-latest'
-      uses: golangci/golangci-lint-action@v6
+      uses: golangci/golangci-lint-action@v9
       with:
-        version: v1.59
+        version: v2.12

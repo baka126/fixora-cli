@@ -53,13 +53,13 @@ func Add(f analyzer.Finding, p fix.Plan, outcome string) error {
 	records, _ := listUnlocked()
 	cutoff := time.Now().Add(-recordTTL)
 	valid := make([]Record, 0, len(records)+1)
-	
+
 	for _, r := range records {
 		if r.Time.After(cutoff) {
 			valid = append(valid, r)
 		}
 	}
-	
+
 	valid = append(valid, Record{
 		Time:      time.Now(),
 		Key:       Key(f),
@@ -70,11 +70,11 @@ func Add(f analyzer.Finding, p fix.Plan, outcome string) error {
 		Outcome:   outcome,
 		Namespace: f.Namespace,
 	})
-	
+
 	if len(valid) > maxRecords {
 		valid = valid[len(valid)-maxRecords:]
 	}
-	
+
 	return saveUnlocked(valid)
 }
 

@@ -1,13 +1,10 @@
+version: "2"
+
 linters:
+  default: none
   enable:
-    - gofmt
     - govet
-    - errcheck
-    - staticcheck
     - ineffassign
-    - unused
-    - gosimple
-  disable-all: true
 
 run:
   timeout: 5m

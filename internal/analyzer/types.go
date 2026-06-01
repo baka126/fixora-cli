@@ -138,17 +138,17 @@ type ScanSummary struct {
 }
 
 type Finding struct {
-	ID              string           `json:"id"`
-	Namespace       string           `json:"namespace"`
-	ResourceKind    string           `json:"resourceKind"`
-	ResourceName    string           `json:"resourceName"`
-	PodName         string           `json:"podName,omitempty"`
-	Status          string           `json:"status"`
-	Severity        string           `json:"severity"`
-	Category        string           `json:"category"`
-	Summary         string           `json:"summary"`
-	Evidence        []Evidence       `json:"evidence"`
-	OwnerChain      []string         `json:"ownerChain,omitempty"`
+	ID                string           `json:"id"`
+	Namespace         string           `json:"namespace"`
+	ResourceKind      string           `json:"resourceKind"`
+	ResourceName      string           `json:"resourceName"`
+	PodName           string           `json:"podName,omitempty"`
+	Status            string           `json:"status"`
+	Severity          string           `json:"severity"`
+	Category          string           `json:"category"`
+	Summary           string           `json:"summary"`
+	Evidence          []Evidence       `json:"evidence"`
+	OwnerChain        []string         `json:"ownerChain,omitempty"`
 	GitOps            GitOpsHints      `json:"gitops,omitempty"`
 	ChangeCorrelation string           `json:"changeCorrelation,omitempty"`
 	RecentChanges     []string         `json:"recentChanges,omitempty"`

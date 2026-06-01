@@ -119,17 +119,17 @@ func (g *Graph) edge(from, to, reason string) {
 		g.edgeSet = make(map[string]bool)
 		g.adj = make(map[string][]string)
 	}
-	
+
 	key := from + "|" + to + "|" + reason
 	if g.edgeSet[key] {
 		return
 	}
-	
+
 	// Cycle detection: check if there's a path from `to` to `from`
 	if g.hasPath(to, from) {
 		return
 	}
-	
+
 	g.edgeSet[key] = true
 	g.adj[from] = append(g.adj[from], to)
 	g.Edges = append(g.Edges, Edge{From: from, To: to, Reason: reason})

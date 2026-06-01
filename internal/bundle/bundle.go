@@ -44,20 +44,42 @@ func WriteProfile(ctx context.Context, k kube.Kubectl, out string, finding analy
 	}
 	switch profile {
 	case "network":
-		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil { return err }
-		if err := addJSON(tw, "services.json", resourceItems(ctx, k, finding.Namespace, "services")); err != nil { return err }
-		if err := addJSON(tw, "endpoints.json", resourceItems(ctx, k, finding.Namespace, "endpoints")); err != nil { return err }
-		if err := addJSON(tw, "ingresses.json", resourceItems(ctx, k, finding.Namespace, "ingresses")); err != nil { return err }
+		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "services.json", resourceItems(ctx, k, finding.Namespace, "services")); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "endpoints.json", resourceItems(ctx, k, finding.Namespace, "endpoints")); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "ingresses.json", resourceItems(ctx, k, finding.Namespace, "ingresses")); err != nil {
+			return err
+		}
 	case "storage":
-		if err := addJSON(tw, "pvcs.json", resourceItems(ctx, k, finding.Namespace, "pvc")); err != nil { return err }
-		if err := addJSON(tw, "storageclasses.json", resourceItems(ctx, k, "", "storageclasses")); err != nil { return err }
+		if err := addJSON(tw, "pvcs.json", resourceItems(ctx, k, finding.Namespace, "pvc")); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "storageclasses.json", resourceItems(ctx, k, "", "storageclasses")); err != nil {
+			return err
+		}
 	case "security":
-		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil { return err }
-		if err := addJSON(tw, "policyreports.json", resourceItems(ctx, k, finding.Namespace, "policyreports.wgpolicyk8s.io")); err != nil { return err }
-		if err := addJSON(tw, "networkpolicies.json", resourceItems(ctx, k, finding.Namespace, "networkpolicies")); err != nil { return err }
+		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "policyreports.json", resourceItems(ctx, k, finding.Namespace, "policyreports.wgpolicyk8s.io")); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "networkpolicies.json", resourceItems(ctx, k, finding.Namespace, "networkpolicies")); err != nil {
+			return err
+		}
 	default:
-		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil { return err }
-		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil { return err }
+		if err := addJSON(tw, "graph.json", graph.Build(ctx, k, finding)); err != nil {
+			return err
+		}
+		if err := addJSON(tw, "events.json", events(ctx, k, finding.Namespace)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

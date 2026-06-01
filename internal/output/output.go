@@ -91,13 +91,13 @@ func writePrometheus(w io.Writer, value any) {
 	}
 	fmt.Fprintln(w, "# HELP fixora_findings_total Fixora findings by severity")
 	fmt.Fprintln(w, "# TYPE fixora_findings_total gauge")
-	
+
 	keys := make([]string, 0, len(counts))
 	for k := range counts {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	
+
 	for _, severity := range keys {
 		fmt.Fprintf(w, "fixora_findings_total{severity=%q} %d\n", severity, counts[severity])
 	}
