@@ -327,7 +327,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 						return 1
 					}
 				}
-				if termui.ConfirmApply(plan.PatchTemplate) {
+				if termui.ConfirmApply(ctx, k, plan.PatchTemplate, os.Stdin, stdout) {
 					if err := k.Apply(ctx, opts.outFile); err != nil {
 						fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
 						return 1

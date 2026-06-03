@@ -932,7 +932,7 @@ func (c *gatedApplyCommand) Run() error {
 		return fmt.Errorf("edited patch is empty")
 	}
 	fmt.Fprintf(stdout, "\nFixora gated apply for %s in namespace %s\n", firstNonEmpty(c.resource, "resource"), firstNonEmpty(c.namespace, "default"))
-	if !ConfirmApply(patch) {
+	if !ConfirmApply(c.ctx, c.k, patch, c.stdin, stdout) {
 		fmt.Fprintln(stdout, "apply cancelled")
 		return nil
 	}

@@ -2,15 +2,38 @@ package termui
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
-func ConfirmApply(patch string) bool {
-	fmt.Println(patch)
-	fmt.Print("Would you like to apply this fix? [y/N]: ")
-	reader := bufio.NewReader(os.Stdin)
+func ConfirmApply(ctx context.Context, k kube.Reader, patch string, in io.Reader, out io.Writer) bool {
+	if in == nil {
+		in = os.Stdin
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	file, err := os.CreateTemp("", "fixora-diff-*.yaml")
+	if err == nil {
+		file.WriteString(patch)
+		file.Close()
+		diffOut, _ := k.Run(ctx, "diff", "-f", file.Name())
+		os.Remove(file.Name())
+		if len(diffOut) > 0 {
+			fmt.Fprintln(out, string(diffOut))
+		} else {
+			fmt.Fprintln(out, patch)
+		}
+	} else {
+		fmt.Fprintln(out, patch)
+	}
+	fmt.Fprint(out, "\nWould you like to apply this fix? [y/N]: ")
+	reader := bufio.NewReader(in)
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		return false
