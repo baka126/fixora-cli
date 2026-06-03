@@ -21,7 +21,7 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 	if pod, err := c.GetTypedPod(ctx, namespace, name); err == nil {
 		updateAttemptFromPod(&result, pod)
 		if terminalFailure(result.ExitReason) || pod.Status.Phase == corev1.PodFailed {
-			enrichFailure(context.Background(), c, namespace, name, &result)
+			enrichFailure(c, namespace, name, &result)
 			return result
 		}
 		if pod.Status.Phase == corev1.PodRunning && podReady(pod) {
@@ -41,12 +41,12 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 		select {
 		case <-ctx.Done():
 			result.Message = "verification timed out"
-			enrichFailure(ctx, c, namespace, name, &result)
+			enrichFailure(c, namespace, name, &result)
 			return result
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
 				result.Message = "pod watch ended before verification completed"
-				enrichFailure(ctx, c, namespace, name, &result)
+				enrichFailure(c, namespace, name, &result)
 				return result
 			}
 			pod, ok := event.Object.(*corev1.Pod)
@@ -55,7 +55,7 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 			}
 			updateAttemptFromPod(&result, pod)
 			if terminalFailure(result.ExitReason) {
-				enrichFailure(context.Background(), c, namespace, name, &result)
+				enrichFailure(c, namespace, name, &result)
 				return result
 			}
 			if pod.Status.Phase == corev1.PodRunning && podReady(pod) {
@@ -64,7 +64,7 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 				return result
 			}
 			if pod.Status.Phase == corev1.PodFailed {
-				enrichFailure(context.Background(), c, namespace, name, &result)
+				enrichFailure(c, namespace, name, &result)
 				return result
 			}
 		}
@@ -122,7 +122,9 @@ func terminalFailure(reason string) bool {
 	}
 }
 
-func enrichFailure(ctx context.Context, c *kube.TypedClient, namespace, name string, attempt *Attempt) {
+func enrichFailure(c *kube.TypedClient, namespace, name string, attempt *Attempt) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	if logs, err := c.Logs(ctx, namespace, name, false); err == nil && strings.TrimSpace(logs) != "" {
 		attempt.Logs = append(attempt.Logs, logs)
 	}

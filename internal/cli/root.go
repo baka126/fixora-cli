@@ -484,6 +484,11 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "wrote %s\n", out)
 		return 0
+	case "cluster":
+		opts.tui = true
+		opts.allNS = true
+		opts.namespace = ""
+		fallthrough
 	case "ui":
 		if opts.tui {
 			if err := termui.RunTUI(ctx, reader, termui.TUIOptions{
@@ -1197,6 +1202,7 @@ Commands:
   policy-check -f path         Run production policy checks against manifests
   watch incidents              Poll incident state until interrupted
   ui                           Show a compact terminal incident dashboard
+  cluster                      Show an interactive full-screen cluster-wide dashboard
   bundle <kind/name>           Write a redacted audit bundle
   incidents                    List current failing workloads
   analyze <kind/name>          Analyze one resource locally

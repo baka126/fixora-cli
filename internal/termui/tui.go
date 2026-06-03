@@ -188,12 +188,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.switchingNS = false
 			case "enter":
 				if i, ok := m.nsList.SelectedItem().(nsItem); ok {
-					m.opts.Namespace = string(i)
-					m.opts.AllNS = false
+					ns := string(i)
+					if ns == "<All Namespaces>" {
+						m.opts.Namespace = ""
+						m.opts.AllNS = true
+					} else {
+						m.opts.Namespace = ns
+						m.opts.AllNS = false
+					}
 					m.switchingNS = false
 					m.a = analyzer.New(m.k, analyzer.Options{
 						Namespace:   m.opts.Namespace,
-						AllNS:       false,
+						AllNS:       m.opts.AllNS,
 						IncludeLogs: m.opts.IncludeLogs,
 						Redact:      m.opts.Redact,
 						Filters:     m.opts.Filters,
@@ -225,6 +231,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "n":
 			m.switchingNS = true
 			return m, fetchNamespacesCmd(m.ctx, m.k)
+		case "C":
+			m.opts.AllNS = !m.opts.AllNS
+			if m.opts.AllNS {
+				m.opts.Namespace = ""
+			}
+			m.a = analyzer.New(m.k, analyzer.Options{
+				Namespace:   m.opts.Namespace,
+				AllNS:       m.opts.AllNS,
+				IncludeLogs: m.opts.IncludeLogs,
+				Redact:      m.opts.Redact,
+				Filters:     m.opts.Filters,
+			})
+			return m, m.scanCmd()
 		case "enter":
 			return m, nil
 		case "a":
@@ -417,7 +436,7 @@ func (m tuiModel) header() string {
 	provider := firstNonEmpty(m.opts.AIProvider, "local")
 	ns := m.opts.Namespace
 	if m.opts.AllNS {
-		ns = "all"
+		ns = "<All Namespaces>"
 	}
 	spinView := "  "
 	if m.scanning {
@@ -920,7 +939,7 @@ func helpText() string {
 		"Fixora TUI keys",
 		"j/k or arrows: move selected incident",
 		"1-9: switch production views, tab/shift+tab: cycle views",
-		"r: rescan, n: namespace picker, /: filter incidents, colon: command palette",
+		"r: rescan, n: namespace picker, C: toggle cluster-wide, /: filter incidents, colon: command palette",
 		"i: AI root cause, f: fix plan, s: shadow verify, a: apply, e: edit/apply",
 		"p: push/open verified GitHub PR or GitLab MR, g: dependency graph",
 		"?: close help, q: quit",
@@ -1076,6 +1095,7 @@ func fetchNamespacesCmd(ctx context.Context, k kube.Reader) tea.Cmd {
 		}
 		lines := strings.Split(string(out), "\n")
 		var nss []string
+		nss = append(nss, "<All Namespaces>")
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line != "" {

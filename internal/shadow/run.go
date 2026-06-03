@@ -84,9 +84,6 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *Result) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if ctx.Err() == nil {
-		cleanupCtx = ctx
-	}
 	if plan.Clone != nil {
 		if err := c.DeletePod(cleanupCtx, plan.Clone.Namespace, plan.Clone.Name); err == nil {
 			result.Cleanup = appendUnique(result.Cleanup, "deleted pod/"+plan.Clone.Name)

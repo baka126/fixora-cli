@@ -25,12 +25,13 @@ func revisePatch(ctx context.Context, aiProvider ai.Provider, patch string, atte
 	finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "Current Patch", Value: patch})
 	res, err := aiProvider.Explain(ctx, finding)
 	if err == nil && res.RecommendedFix != "" && !strings.Contains(res.RecommendedFix, "Review the response manually") {
-		revised := res.RecommendedFix
+		revised := strings.TrimSpace(res.RecommendedFix)
 		if strings.HasPrefix(revised, "```yaml") {
 			revised = strings.TrimPrefix(revised, "```yaml")
 		} else if strings.HasPrefix(revised, "```") {
 			revised = strings.TrimPrefix(revised, "```")
 		}
+		revised = strings.TrimSpace(revised)
 		revised = strings.TrimSuffix(revised, "```")
 		return strings.TrimSpace(revised), true
 	}
