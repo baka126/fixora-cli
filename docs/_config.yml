@@ -1,0 +1,6 @@
+theme: jekyll-theme-cayman
+title: Fixora CLI
+description: AI-Powered Kubernetes Forensic Detective & Remediation Engine
+url: ""
+plugins:
+  - jekyll-seo-tag

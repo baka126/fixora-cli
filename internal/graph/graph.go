@@ -1,0 +1,208 @@
+package graph
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/kube"
+)
+
+const maxDepth = 10
+
+type Node struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+type Edge struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+type Graph struct {
+	Root  string `json:"root"`
+	Nodes []Node `json:"nodes"`
+	Edges []Edge `json:"edges"`
+
+	nodeSet map[string]bool
+	edgeSet map[string]bool
+	adj     map[string][]string
+}
+
+func Build(ctx context.Context, k kube.Kubectl, f analyzer.Finding) Graph {
+	g := Graph{
+		Root:    id(f.ResourceKind, f.ResourceName),
+		nodeSet: make(map[string]bool),
+		edgeSet: make(map[string]bool),
+		adj:     make(map[string][]string),
+	}
+	g.add(Node{ID: g.Root, Kind: f.ResourceKind, Name: f.ResourceName, Namespace: f.Namespace, Status: f.Status})
+	if f.PodName != "" || strings.EqualFold(f.ResourceKind, "pod") {
+		podName := f.PodName
+		if podName == "" {
+			podName = f.ResourceName
+		}
+		podID := id("Pod", podName)
+		g.add(Node{ID: podID, Kind: "Pod", Name: podName, Namespace: f.Namespace, Status: f.Status})
+		g.edge(g.Root, podID, "owns")
+
+		if pod, err := k.GetPod(ctx, f.Namespace, podName); err == nil {
+			for _, container := range pod.Spec.Containers {
+				for _, env := range container.Env {
+					if strings.HasPrefix(env.Value, "http://") || strings.HasPrefix(env.Value, "https://") {
+						if u, err := url.Parse(env.Value); err == nil && u.Hostname() != "" {
+							svcID := id("Service", u.Hostname())
+							g.add(Node{ID: svcID, Kind: "Service", Name: u.Hostname(), Namespace: f.Namespace})
+							g.edge(podID, svcID, "calls")
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, owner := range f.OwnerChain {
+		parts := strings.SplitN(owner, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ownerID := id(parts[0], parts[1])
+		g.add(Node{ID: ownerID, Kind: parts[0], Name: parts[1], Namespace: f.Namespace})
+		if ownerID != g.Root {
+			g.edge(ownerID, g.Root, "owner-chain")
+		}
+	}
+	services, _ := k.GetResourceItems(ctx, f.Namespace, false, "services")
+	for _, svc := range services {
+		name := metaName(svc)
+		svcID := id("Service", name)
+		g.add(Node{ID: svcID, Kind: "Service", Name: name, Namespace: f.Namespace})
+		g.edge(svcID, g.Root, "selects")
+	}
+	pvcs, _ := k.GetResourceItems(ctx, f.Namespace, false, "pvc")
+	for _, pvc := range pvcs {
+		name := metaName(pvc)
+		pvcID := id("PVC", name)
+		g.add(Node{ID: pvcID, Kind: "PVC", Name: name, Namespace: f.Namespace, Status: compactStatus(pvc)})
+		g.edge(g.Root, pvcID, "mounts")
+	}
+	if f.GitOps.HelmRelease != "" {
+		helmID := id("HelmRelease", f.GitOps.HelmRelease)
+		g.add(Node{ID: helmID, Kind: "HelmRelease", Name: f.GitOps.HelmRelease, Namespace: f.Namespace})
+		g.edge(helmID, g.Root, "renders")
+	}
+	return g
+}
+
+func (g *Graph) add(n Node) {
+	if g.nodeSet == nil {
+		g.nodeSet = make(map[string]bool)
+	}
+	if g.nodeSet[n.ID] {
+		return
+	}
+	g.nodeSet[n.ID] = true
+	g.Nodes = append(g.Nodes, n)
+}
+
+func (g *Graph) edge(from, to, reason string) {
+	if from == "" || to == "" || from == to {
+		return
+	}
+	if g.edgeSet == nil {
+		g.edgeSet = make(map[string]bool)
+		g.adj = make(map[string][]string)
+	}
+
+	key := from + "|" + to + "|" + reason
+	if g.edgeSet[key] {
+		return
+	}
+
+	// Cycle detection: check if there's a path from `to` to `from`
+	if g.hasPath(to, from) {
+		return
+	}
+
+	g.edgeSet[key] = true
+	g.adj[from] = append(g.adj[from], to)
+	g.Edges = append(g.Edges, Edge{From: from, To: to, Reason: reason})
+}
+
+// hasPath checks if there's a path from start to target using DFS with depth limit
+func (g *Graph) hasPath(start, target string) bool {
+	visited := make(map[string]bool)
+	var dfs func(string, int) bool
+	dfs = func(curr string, depth int) bool {
+		if depth > maxDepth {
+			return false
+		}
+		if curr == target {
+			return true
+		}
+		visited[curr] = true
+		for _, next := range g.adj[curr] {
+			if !visited[next] {
+				if dfs(next, depth+1) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return dfs(start, 0)
+}
+
+func Text(g Graph) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Dependency graph: %s\n", g.Root)
+	for _, edge := range g.Edges {
+		fmt.Fprintf(&b, "  %s --%s--> %s\n", edge.From, edge.Reason, edge.To)
+	}
+	if len(g.Edges) == 0 {
+		fmt.Fprintln(&b, "  no related resources discovered")
+	}
+	return b.String()
+}
+
+func Mermaid(g Graph) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "graph TD")
+	fmt.Fprintln(&b, "  classDef unhealthy fill:#ffcccc,stroke:#ff0000;")
+	for _, node := range g.Nodes {
+		fmt.Fprintf(&b, "  %s[\"%s/%s\"]\n", sanitize(node.ID), node.Kind, node.Name)
+		if node.Status != "Healthy" && node.Status != "" {
+			fmt.Fprintf(&b, "  class %s unhealthy;\n", sanitize(node.ID))
+		}
+	}
+	for _, edge := range g.Edges {
+		fmt.Fprintf(&b, "  %s -->|%s| %s\n", sanitize(edge.From), edge.Reason, sanitize(edge.To))
+	}
+	return b.String()
+}
+
+func id(kind, name string) string {
+	return kind + "/" + name
+}
+
+func sanitize(value string) string {
+	value = strings.NewReplacer("/", "_", "-", "_", ".", "_", ":", "_").Replace(value)
+	return value
+}
+
+func metaName(obj map[string]any) string {
+	meta, _ := obj["metadata"].(map[string]any)
+	return fmt.Sprint(meta["name"])
+}
+
+func compactStatus(obj map[string]any) string {
+	status, _ := obj["status"].(map[string]any)
+	phase, _ := status["phase"].(string)
+	return phase
+}
