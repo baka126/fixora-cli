@@ -68,6 +68,9 @@ kubectl fixora diff deployment/api -n prod --proof
 kubectl fixora patch deployment/api -n prod --out fixora-patch.yaml
 kubectl fixora patch deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3 --out fixora-patch.yaml
 kubectl fixora patch deployment/api -n prod --repo ./charts/api --source-patch
+kubectl fixora patch deployment/api -n prod --container api --memory-request 512Mi --cpu-request 250m --memory-limit 1Gi --shadow --delivery patch
+kubectl fixora fix statefulset/db -n prod --container db --memory-request 2Gi --cpu-request 500m --memory-limit 4Gi --shadow --delivery pr --repo ./charts/db --branch fixora/db-shadow --pr-base main
+kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3 --shadow --delivery cluster
 kubectl fixora patch deployment/api -n prod --preview
 kubectl fixora rollback deployment/api -n prod --preview
 kubectl fixora report deployment/api -n prod --include-logs --ai --out report.md
@@ -83,6 +86,7 @@ kubectl fixora repo ./charts/api
 kubectl fixora validate ./charts/api
 kubectl fixora ui -A
 kubectl fixora ui --tui -A --include-logs
+kubectl fixora ui --tui -n prod --include-logs --repo ./charts/api --shadow-retries 1 --pr-base main
 kubectl fixora auth set openai "$OPENAI_API_KEY"
 kubectl fixora config view
 kubectl fixora cache stats
@@ -245,9 +249,13 @@ Remote cache configuration is opt-in because production evidence can be sensitiv
 - `fix <resource>` uses a structured production remediation plan with confidence gates, rollback, verification commands, and `applyEligible` checks before any live apply.
 - `fix <resource> --strategy right-size|repair-selector|add-requests|rollback --repo <path> --source-patch` prefers GitOps source patches for production clusters.
 - `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
+- `patch|fix <resource> --shadow` shows a git-style diff, asks permission, creates an isolated shadow Pod from the target Pod or high-level workload template, applies the patch to the clone, deploys a matching NetworkPolicy, waits for readiness, reports parity, then cleans up.
+- `--shadow` supports Pods and high-level Pod-template resources including Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, and CronJob. Helm charts and Kustomize overlays still deliver through `--repo`; Fixora verifies the rendered workload shape by cloning the live template.
+- `--delivery patch|cluster|pr` controls what happens after shadow verification. `patch` leaves a verified local patch, `cluster` performs the normal dry-run and final apply confirmation, and `pr` writes the source patch, commits a branch, pushes it, and opens a PR with `gh`.
 - `bundle --profile incident|network|storage|security` creates scoped redacted audit bundles for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.
-- `ui --tui` enables the optional interactive Bubble Tea dashboard on demand. It keeps the default output script-friendly while adding a full-screen SRE triage view with incident filtering, command palette, refresh, severity health score, fix-plan/runbook pane, owner graph, events, logs, and focused workload/network/storage/security views.
+- `ui --tui` enables the optional interactive Bubble Tea dashboard on demand. It keeps the default output script-friendly while adding a full-screen SRE triage view with incident filtering, command palette, refresh, severity health score, AI root-cause analysis, fix-plan/runbook pane, shadow verification, GitHub/GitLab delivery, owner graph, events, logs, and focused workload/network/storage/security views.
+- In the TUI, select a failed Pod, Deployment, StatefulSet, Helm-managed workload, or related incident, press `i` for AI root cause, `f` for the fix plan, `s` to inspect the diff and deploy a shadow clone, then press `a` for direct cluster apply or `p` to push/open a GitHub PR or GitLab MR from `--repo`.
 - `watch incidents` polls incident state until interrupted.
 - `memory` stores local scenario history so repeated failures can reuse previous context.
 
@@ -293,6 +301,11 @@ The plugin is intentionally conservative:
 - `--paranoid` forces secret-safe redaction behavior.
 - `--ai-budget-tokens` prevents accidental expensive AI calls.
 - `--apply` runs a server-side dry-run first and refuses advisory/TODO patches.
+- `--shadow` requires an apply-eligible concrete patch before creating any sandbox resources.
+- Shadow clones strip `UID`, `ownerReferences`, finalizers, status, node pinning, and original labels so Services should not route traffic to the clone.
+- Shadow verification injects `fixora.io/sandbox=true`, `fixora.io/original-pod`, `fixora.io/session`, and `fixora.io/expires-at` labels/annotations for audit and cleanup.
+- Shadow NetworkPolicies block ingress. Egress is allowed by default for parity and can be blocked with `--shadow-egress deny`.
+- `--keep-shadow` is available for debugging, but production use should let Fixora tear down the shadow Pod and NetworkPolicy automatically.
 - `incidents`, `health`, and `ui` return partial results when optional resource checks are forbidden or unavailable, and include skipped checks instead of failing the whole scan.
 
 For production clusters, start from the minimal read-only RBAC example in `docs/rbac.yaml` and remove optional CRD permissions your cluster does not use.

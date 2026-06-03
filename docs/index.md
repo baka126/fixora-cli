@@ -61,10 +61,13 @@ Mastering these hotkeys will turn you into an incident response wizard:
 | `n` | **Switch Namespace** | Opens a fuzzy-finder overlay to quickly switch cluster namespaces without leaving the app. |
 | `1`-`9` | **Switch Tabs** | Jump between Workloads, Security, Storage, Logs, and Fix Plans. |
 | `/` | **Filter** | Instantly fuzzy-filter the incident table to find specific deployments. |
+| `i` | **AI Root Cause** | Runs the configured AI provider against the selected incident and attaches a structured root cause and recommended fix. |
 | `z` | **Zoom Modal** | Expands the right-hand detail pane to fill your entire terminal window. Great for reading massive AI summaries. |
 | `l` | **Live Logs** | Suspends the UI and drops you into a live `kubectl logs -f` tail stream of the failing container. |
 | `e` | **Interactive Editor** | Suspends the UI and opens the AI's generated patch in your `$EDITOR` (e.g. `vim`). Customize the patch by hand and apply upon saving! |
-| `a` | **Apply Fix** | When viewing the **Fix Plan** tab, pressing `a` will instantly apply the patch to your cluster to resolve the incident! |
+| `s` | **Shadow Verify** | From the **Fix Plan** tab, shows the patch diff, asks permission, deploys an isolated shadow clone, waits for readiness, reports parity, and cleans up. |
+| `a` | **Apply Fix** | When viewing the **Fix Plan** tab, pressing `a` applies an eligible patch through Fixora's confirmation and server dry-run gates. |
+| `p` | **Push Review** | After a successful shadow verification, writes the source patch from `--repo`, commits a branch, pushes it, and opens a GitHub PR or GitLab MR when `gh` or `glab` is installed. |
 | `g` | **Graph Pivot** | On the Graph tab, select an upstream/downstream component and hit `Enter` to refocus the AI on that new component. |
 
 ---

@@ -17,26 +17,37 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/fixora/kubectl-fixora/internal/ai"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/config"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/ops"
+	"github.com/fixora/kubectl-fixora/internal/repo"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 )
 
 type TUIOptions struct {
-	Context     string
-	Namespace   string
-	AllNS       bool
-	IncludeLogs bool
-	Redact      bool
-	Filters     []string
-	Refresh     time.Duration
-	ScanTimeout time.Duration
-	ApplyDryRun bool
-	AIProvider  string
-	Output      io.Writer
-	NoAltScreen bool
+	Context       string
+	Namespace     string
+	AllNS         bool
+	IncludeLogs   bool
+	Redact        bool
+	Filters       []string
+	Refresh       time.Duration
+	ScanTimeout   time.Duration
+	ApplyDryRun   bool
+	ShadowTimeout time.Duration
+	ShadowRetries int
+	KeepShadow    bool
+	ShadowEgress  string
+	RepoPath      string
+	Branch        string
+	PRBase        string
+	PRTitle       string
+	AIProvider    string
+	Output        io.Writer
+	NoAltScreen   bool
 }
 
 type tuiModel struct {
@@ -66,6 +77,9 @@ type tuiModel struct {
 	nsList      list.Model
 	switchingNS bool
 	graphList   list.Model
+	shadow      shadow.Result
+	shadowing   bool
+	aiRunning   bool
 }
 
 type tickMsg time.Time
@@ -74,6 +88,18 @@ type scanMsg struct {
 	err    error
 }
 type applyMsg struct {
+	message string
+	err     error
+}
+type shadowMsg struct {
+	result shadow.Result
+	err    error
+}
+type aiMsg struct {
+	result *analyzer.AIResult
+	err    error
+}
+type deliveryMsg struct {
 	message string
 	err     error
 }
@@ -205,6 +231,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tab == 5 {
 				return m.applyPatchCmd(false)
 			}
+		case "s":
+			if m.tab == 5 {
+				return m.shadowVerifyCmd()
+			}
+		case "i":
+			return m.aiAnalyzeCmd()
+		case "p":
+			if m.tab == 5 {
+				return m.pushVerifiedCmd()
+			}
 		case "e":
 			if m.tab == 5 {
 				return m.applyPatchCmd(true)
@@ -279,6 +315,38 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case applyMsg:
 		if msg.err != nil {
 			m.message = "apply failed: " + msg.err.Error()
+		} else {
+			m.message = msg.message
+		}
+	case shadowMsg:
+		m.shadowing = false
+		if msg.err != nil {
+			m.message = "shadow verification failed: " + msg.err.Error()
+		} else {
+			m.shadow = msg.result
+			if msg.result.Verified {
+				m.message = fmt.Sprintf("shadow verified: parity %d%%", msg.result.Parity)
+			} else {
+				m.message = "shadow verification did not pass"
+			}
+		}
+	case aiMsg:
+		m.aiRunning = false
+		if msg.err != nil {
+			m.message = "ai analysis failed: " + msg.err.Error()
+		} else if msg.result != nil {
+			m.selected.AI = msg.result
+			for i := range m.report.Findings {
+				if m.report.Findings[i].ID == m.selected.ID {
+					m.report.Findings[i].AI = msg.result
+					break
+				}
+			}
+			m.message = "ai root-cause analysis attached"
+		}
+	case deliveryMsg:
+		if msg.err != nil {
+			m.message = "delivery failed: " + msg.err.Error()
 		} else {
 			m.message = msg.message
 		}
@@ -409,6 +477,19 @@ func (m tuiModel) incidentView(width int) string {
 	fmt.Fprintf(&b, "%s\n", titleStyle.Render(f.ResourceKind+"/"+f.ResourceName))
 	fmt.Fprintf(&b, "severity=%s status=%s namespace=%s\n\n", severityText(f.Severity), f.Status, f.Namespace)
 	fmt.Fprintf(&b, "%s\n\n", f.Summary)
+	if m.aiRunning {
+		fmt.Fprintf(&b, "%s\n", titleStyle.Render("AI Root Cause"))
+		fmt.Fprintf(&b, "%s\n\n", mutedStyle.Render("Analyzing selected incident..."))
+	} else if f.AI != nil {
+		fmt.Fprintf(&b, "%s\n", titleStyle.Render("AI Root Cause"))
+		fmt.Fprintf(&b, "Summary: %s\n", trim(f.AI.Summary, width-10))
+		fmt.Fprintf(&b, "Root cause: %s\n", trim(f.AI.RootCause, width-12))
+		fmt.Fprintf(&b, "Fix: %s\n", trim(f.AI.RecommendedFix, width-6))
+		for _, warning := range f.AI.Warnings {
+			fmt.Fprintf(&b, "- Warning: %s\n", trim(warning, width-12))
+		}
+		fmt.Fprintln(&b)
+	}
 	fmt.Fprintf(&b, "%s\n", titleStyle.Render("Evidence"))
 	for _, ev := range limitEvidence(f.Evidence, 8) {
 		fmt.Fprintf(&b, "- %s: %s\n", ev.Label, trim(ev.Value, width-14))
@@ -503,9 +584,49 @@ func (m tuiModel) fixView(width int) string {
 	fmt.Fprintf(&md, "- Risk: `%s`\n", p.Risk)
 	fmt.Fprintf(&md, "- Apply eligible: `%t`\n\n", p.ApplyEligible)
 	if p.ApplyEligible {
-		fmt.Fprintf(&md, "> Press `a` to apply this gated patch, or `e` to edit it before applying. Server dry-run is `%t`.\n\n", m.opts.ApplyDryRun)
+		fmt.Fprintf(&md, "> Press `i` for AI RCA, `s` to verify in a shadow clone, `a` to apply, `e` to edit/apply, or `p` to push a verified PR/MR. Server dry-run is `%t`.\n\n", m.opts.ApplyDryRun)
 	} else {
 		fmt.Fprintf(&md, "> Live apply is disabled until the plan passes Fixora's production gates.\n\n")
+	}
+	if m.shadowing {
+		fmt.Fprintf(&md, "## Shadow Verification\n\n%s\n\n", "Running shadow clone verification...")
+	} else if m.shadow.Resource != "" {
+		fmt.Fprintf(&md, "## Shadow Verification\n\n")
+		fmt.Fprintf(&md, "- Verified: `%t`\n", m.shadow.Verified)
+		fmt.Fprintf(&md, "- Parity: `%d%%`\n", m.shadow.Parity)
+		if m.shadow.CloneName != "" {
+			fmt.Fprintf(&md, "- Clone: `%s`\n", m.shadow.CloneName)
+		}
+		if m.shadow.NetworkPolicyName != "" {
+			fmt.Fprintf(&md, "- NetworkPolicy: `%s`\n", m.shadow.NetworkPolicyName)
+		}
+		for _, attempt := range m.shadow.Attempts {
+			fmt.Fprintf(&md, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)
+			if attempt.ExitReason != "" {
+				fmt.Fprintf(&md, ", reason `%s`", attempt.ExitReason)
+			}
+			if attempt.Message != "" {
+				fmt.Fprintf(&md, ", %s", attempt.Message)
+			}
+			fmt.Fprintf(&md, "\n")
+		}
+		for _, warning := range m.shadow.Warnings {
+			fmt.Fprintf(&md, "- Warning: %s\n", warning)
+		}
+		if m.shadow.Verified {
+			fmt.Fprintf(&md, "\n> Shadow is verified. Press `a` for direct apply or `p` to push/open a GitHub PR or GitLab MR.\n")
+		}
+		fmt.Fprintf(&md, "\n")
+	}
+	if m.selected.AI != nil {
+		fmt.Fprintf(&md, "## AI Root Cause\n\n")
+		fmt.Fprintf(&md, "- Summary: %s\n", m.selected.AI.Summary)
+		fmt.Fprintf(&md, "- Root cause: %s\n", m.selected.AI.RootCause)
+		fmt.Fprintf(&md, "- Recommended fix: %s\n", m.selected.AI.RecommendedFix)
+		for _, command := range m.selected.AI.Commands {
+			fmt.Fprintf(&md, "- Command: `%s`\n", command)
+		}
+		fmt.Fprintf(&md, "\n")
 	}
 	if len(p.BlockedReasons) > 0 {
 		fmt.Fprintf(&md, "## Blocked\n")
@@ -536,7 +657,7 @@ func (m tuiModel) fixView(width int) string {
 }
 
 func (m tuiModel) footer() string {
-	hints := " j/k move  1-9 views  tab next  r refresh  / filter  : command  f fix-plan  g graph  ? help  q quit "
+	hints := " j/k move  1-9 views  tab next  r refresh  i ai  f fix-plan  s shadow  p push  g graph  ? help  q quit "
 	return mutedStyle.Background(lipgloss.Color("236")).Width(m.width).Render(hints)
 }
 
@@ -684,16 +805,23 @@ func (m *tuiModel) updateRows() {
 }
 
 func (m *tuiModel) syncSelected() {
+	previousID := m.selected.ID
 	row := m.table.SelectedRow()
 	if len(row) < 4 {
 		m.selected = analyzer.Finding{}
 		m.plan = fix.Plan{}
+		m.shadow = shadow.Result{}
+		m.shadowing = false
 		return
 	}
 	resource := row[2]
 	for _, f := range m.report.Findings {
 		if f.ResourceKind+"/"+f.ResourceName == resource && f.Namespace == row[1] && f.Status == row[3] {
 			m.selected = f
+			if previousID != "" && previousID != f.ID {
+				m.shadow = shadow.Result{}
+				m.shadowing = false
+			}
 			m.plan = fix.BuildPlan(f)
 			if m.graphList.Title != "" {
 				m.graphList.SetItems(graphItemsForFinding(f))
@@ -793,7 +921,8 @@ func helpText() string {
 		"j/k or arrows: move selected incident",
 		"1-9: switch production views, tab/shift+tab: cycle views",
 		"r: rescan, n: namespace picker, /: filter incidents, colon: command palette",
-		"f: fix plan, a: apply eligible patch, e: edit/apply, g: dependency graph",
+		"i: AI root cause, f: fix plan, s: shadow verify, a: apply, e: edit/apply",
+		"p: push/open verified GitHub PR or GitLab MR, g: dependency graph",
 		"?: close help, q: quit",
 	}, "\n")
 }
@@ -832,6 +961,106 @@ func (m tuiModel) applyPatchCmd(edit bool) (tea.Model, tea.Cmd) {
 			return applyMsg{message: "edited patch applied"}
 		}
 		return applyMsg{message: "patch applied"}
+	})
+}
+
+func (m tuiModel) shadowVerifyCmd() (tea.Model, tea.Cmd) {
+	if m.selected.ID == "" {
+		m.message = "no incident selected"
+		return m, nil
+	}
+	if m.tab != 5 {
+		m.tab = 5
+	}
+	if !m.plan.ApplyEligible {
+		m.message = "shadow blocked: plan is not apply eligible"
+		return m, nil
+	}
+	if strings.TrimSpace(m.plan.PatchTemplate) == "" {
+		m.message = "shadow blocked: patch template is empty"
+		return m, nil
+	}
+	m.shadowing = true
+	cmd := shadowVerifyCommand{
+		ctx:     m.ctx,
+		context: m.opts.Context,
+		req: shadow.Request{
+			Namespace: m.selected.Namespace,
+			Resource:  m.plan.Resource,
+			Patch:     m.plan.PatchTemplate,
+			Finding:   m.selected,
+			Plan:      m.plan,
+			Timeout:   firstDuration(m.opts.ShadowTimeout, m.opts.ScanTimeout, 5*time.Minute),
+			Retries:   m.opts.ShadowRetries,
+			Keep:      m.opts.KeepShadow,
+			Egress:    firstNonEmpty(m.opts.ShadowEgress, "allow"),
+			Delivery:  shadow.DeliveryPatch,
+			Redact:    m.opts.Redact,
+		},
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
+	}
+	return m, tea.Exec(&cmd, func(err error) tea.Msg {
+		if err != nil {
+			return shadowMsg{err: err}
+		}
+		return shadowMsg{result: cmd.result}
+	})
+}
+
+func (m tuiModel) aiAnalyzeCmd() (tea.Model, tea.Cmd) {
+	if m.selected.ID == "" {
+		m.message = "no incident selected"
+		return m, nil
+	}
+	m.aiRunning = true
+	finding := m.selected
+	timeout := firstDuration(m.opts.ScanTimeout, 90*time.Second)
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(m.ctx, timeout)
+		defer cancel()
+		client, err := ai.NewFromEnv()
+		if err != nil {
+			return aiMsg{err: err}
+		}
+		result, err := client.Explain(ctx, finding)
+		if err != nil {
+			return aiMsg{err: err}
+		}
+		return aiMsg{result: result}
+	}
+}
+
+func (m tuiModel) pushVerifiedCmd() (tea.Model, tea.Cmd) {
+	if m.selected.ID == "" {
+		m.message = "no incident selected"
+		return m, nil
+	}
+	if !m.shadow.Verified {
+		m.message = "push blocked: run successful shadow verification first"
+		return m, nil
+	}
+	if strings.TrimSpace(m.opts.RepoPath) == "" {
+		m.message = "push blocked: start TUI with --repo"
+		return m, nil
+	}
+	cmd := verifiedDeliveryCommand{
+		ctx:      m.ctx,
+		repoPath: m.opts.RepoPath,
+		branch:   firstNonEmpty(m.opts.Branch, defaultTUIBranch(m.selected)),
+		base:     m.opts.PRBase,
+		title:    firstNonEmpty(m.opts.PRTitle, "fixora: verified remediation for "+m.selected.ResourceKind+"/"+m.selected.ResourceName),
+		finding:  m.selected,
+		plan:     m.plan,
+		shadow:   m.shadow,
+		stdout:   os.Stdout,
+		stderr:   os.Stderr,
+	}
+	return m, tea.Exec(&cmd, func(err error) tea.Msg {
+		if err != nil {
+			return deliveryMsg{err: err}
+		}
+		return deliveryMsg{message: cmd.message}
 	})
 }
 
@@ -912,6 +1141,109 @@ type gatedApplyCommand struct {
 	stdin     io.Reader
 	stdout    io.Writer
 	stderr    io.Writer
+}
+
+type shadowVerifyCommand struct {
+	ctx     context.Context
+	context string
+	req     shadow.Request
+	result  shadow.Result
+	stdin   io.Reader
+	stdout  io.Writer
+	stderr  io.Writer
+}
+
+type verifiedDeliveryCommand struct {
+	ctx      context.Context
+	repoPath string
+	branch   string
+	base     string
+	title    string
+	finding  analyzer.Finding
+	plan     fix.Plan
+	shadow   shadow.Result
+	message  string
+	stdout   io.Writer
+	stderr   io.Writer
+}
+
+func (c *verifiedDeliveryCommand) Run() error {
+	stdout := firstWriter(c.stdout, os.Stdout)
+	if !c.shadow.Verified {
+		return fmt.Errorf("shadow verification has not passed")
+	}
+	sourcePatch, err := repo.WriteSourcePatch(c.repoPath, "", c.finding, c.plan)
+	if err != nil {
+		return err
+	}
+	if err := repo.PrepareBranchFiles(c.ctx, c.repoPath, c.branch, true, "fixora: verified remediation for "+c.finding.ResourceKind+"/"+c.finding.ResourceName, []string{sourcePatch.Path}); err != nil {
+		return err
+	}
+	pr, err := repo.OpenPullRequest(c.ctx, c.repoPath, c.branch, c.base, c.title, tuiPRBody(c.shadow, sourcePatch), true)
+	if err != nil {
+		return err
+	}
+	if pr.URL != "" {
+		c.message = "opened " + firstNonEmpty(pr.Platform, "review") + " review: " + pr.URL
+		fmt.Fprintln(stdout, c.message)
+		return nil
+	}
+	c.message = "pushed verified branch " + pr.Branch
+	if len(pr.Warnings) > 0 {
+		c.message += ": " + strings.Join(pr.Warnings, "; ")
+	}
+	fmt.Fprintln(stdout, c.message)
+	return nil
+}
+
+func (c *verifiedDeliveryCommand) SetStdin(io.Reader) {}
+
+func (c *verifiedDeliveryCommand) SetStdout(w io.Writer) {
+	c.stdout = w
+}
+
+func (c *verifiedDeliveryCommand) SetStderr(w io.Writer) {
+	c.stderr = w
+}
+
+func (c *shadowVerifyCommand) Run() error {
+	stdout := firstWriter(c.stdout, os.Stdout)
+	stderr := firstWriter(c.stderr, os.Stderr)
+	if c.req.Timeout <= 0 {
+		c.req.Timeout = 5 * time.Minute
+	}
+	diff := shadow.PatchDiff(c.req.Resource, c.req.Patch)
+	if !ConfirmShadowDeploy(diff, c.stdin, stdout) {
+		fmt.Fprintln(stdout, "shadow verification cancelled")
+		return nil
+	}
+	client, err := kube.NewTypedClient(c.context)
+	if err != nil {
+		return err
+	}
+	result, err := shadow.Run(c.ctx, client, c.req)
+	if err != nil {
+		return err
+	}
+	c.result = result
+	if result.Verified {
+		fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\n", result.Parity)
+	} else {
+		fmt.Fprintln(stderr, "shadow verification did not pass")
+	}
+	return nil
+}
+
+func (c *shadowVerifyCommand) SetStdin(r io.Reader) {
+	c.stdin = r
+}
+
+func (c *shadowVerifyCommand) SetStdout(w io.Writer) {
+	c.stdout = w
+}
+
+func (c *shadowVerifyCommand) SetStderr(w io.Writer) {
+	c.stderr = w
 }
 
 func (c *gatedApplyCommand) Run() error {
@@ -1023,4 +1355,36 @@ func firstReader(primary io.Reader, fallback io.Reader) io.Reader {
 		return primary
 	}
 	return fallback
+}
+
+func firstDuration(values ...time.Duration) time.Duration {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func defaultTUIBranch(f analyzer.Finding) string {
+	kind := strings.ToLower(strings.ReplaceAll(f.ResourceKind, "/", "-"))
+	name := strings.ToLower(strings.ReplaceAll(f.ResourceName, "/", "-"))
+	return "fixora/verified-" + kind + "-" + name
+}
+
+func tuiPRBody(result shadow.Result, sourcePatch repo.SourcePatch) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Fixora TUI verified this remediation in a shadow clone before delivery.\n\n")
+	fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
+	fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
+	fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
+	fmt.Fprintf(&b, "- Source patch: `%s`\n", sourcePatch.Path)
+	for _, attempt := range result.Attempts {
+		fmt.Fprintf(&b, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)
+		if attempt.ExitReason != "" {
+			fmt.Fprintf(&b, ", reason `%s`", attempt.ExitReason)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }

@@ -89,3 +89,40 @@ subjects:
   - kind: ServiceAccount
     name: kubectl-fixora
     namespace: fixora
+---
+# Optional: grant only to operators who use `kubectl fixora patch|fix --shadow`.
+# This lets Fixora create an isolated clone Pod plus a NetworkPolicy, watch it,
+# collect verification logs/events, and tear the sandbox down.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubectl-fixora-shadow
+  namespace: prod
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - pods/log
+      - events
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs: ["create", "delete", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubectl-fixora-shadow
+  namespace: prod
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubectl-fixora-shadow
+subjects:
+  - kind: ServiceAccount
+    name: kubectl-fixora
+    namespace: fixora

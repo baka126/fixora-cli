@@ -29,6 +29,17 @@ type SourcePatch struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+type PullRequest struct {
+	URL      string   `json:"url,omitempty"`
+	Branch   string   `json:"branch"`
+	Base     string   `json:"base,omitempty"`
+	Title    string   `json:"title"`
+	Platform string   `json:"platform,omitempty"`
+	Pushed   bool     `json:"pushed"`
+	Opened   bool     `json:"opened"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 func Detect(path string) (Mode, error) {
 	if path == "" {
 		path = "."
@@ -119,6 +130,14 @@ func Validate(ctx context.Context, mode Mode) error {
 }
 
 func PrepareBranch(ctx context.Context, repoPath, branch string, commit bool, message string) error {
+	return prepareBranch(ctx, repoPath, branch, commit, message, nil)
+}
+
+func PrepareBranchFiles(ctx context.Context, repoPath, branch string, commit bool, message string, paths []string) error {
+	return prepareBranch(ctx, repoPath, branch, commit, message, paths)
+}
+
+func prepareBranch(ctx context.Context, repoPath, branch string, commit bool, message string, paths []string) error {
 	if branch == "" && !commit {
 		return nil
 	}
@@ -130,7 +149,14 @@ func PrepareBranch(ctx context.Context, repoPath, branch string, commit bool, me
 		}
 	}
 	if commit {
-		add := exec.CommandContext(ctx, "git", "add", ".")
+		addArgs := []string{"add", "."}
+		if len(paths) > 0 {
+			addArgs = []string{"add", "--"}
+			for _, path := range paths {
+				addArgs = append(addArgs, repoRelativePath(repoPath, path))
+			}
+		}
+		add := exec.CommandContext(ctx, "git", addArgs...)
 		add.Dir = repoPath
 		if out, err := add.CombinedOutput(); err != nil {
 			return fmt.Errorf("git add failed: %s", strings.TrimSpace(string(out)))
@@ -142,6 +168,102 @@ func PrepareBranch(ctx context.Context, repoPath, branch string, commit bool, me
 		}
 	}
 	return nil
+}
+
+func repoRelativePath(repoPath, path string) string {
+	if path == "" {
+		return "."
+	}
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return path
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	rel, err := filepath.Rel(absRepo, absPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return path
+	}
+	return rel
+}
+
+func OpenPullRequest(ctx context.Context, repoPath, branch, base, title, body string, push bool) (PullRequest, error) {
+	result := PullRequest{Branch: branch, Base: base, Title: firstNonEmpty(title, "fixora: verified remediation")}
+	if branch == "" {
+		out, err := gitOutput(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+		if err != nil {
+			return result, err
+		}
+		result.Branch = strings.TrimSpace(out)
+	}
+	if push {
+		cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", result.Branch)
+		cmd.Dir = repoPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return result, fmt.Errorf("git push failed: %s", strings.TrimSpace(string(out)))
+		}
+		result.Pushed = true
+	}
+	if _, err := exec.LookPath("gh"); err == nil {
+		return openGitHubPullRequest(ctx, repoPath, result, body)
+	}
+	if _, err := exec.LookPath("glab"); err == nil {
+		return openGitLabMergeRequest(ctx, repoPath, result, body)
+	}
+	result.Warnings = append(result.Warnings, "gh/glab CLI not found; branch is ready but review request was not opened")
+	return result, nil
+}
+
+func openGitHubPullRequest(ctx context.Context, repoPath string, result PullRequest, body string) (PullRequest, error) {
+	args := []string{"pr", "create", "--title", result.Title, "--body", firstNonEmpty(body, "Verified by Fixora shadow clone.")}
+	if result.Base != "" {
+		args = append(args, "--base", result.Base)
+	}
+	if result.Branch != "" {
+		args = append(args, "--head", result.Branch)
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return result, fmt.Errorf("gh pr create failed: %s", strings.TrimSpace(string(out)))
+	}
+	result.URL = strings.TrimSpace(string(out))
+	result.Platform = "github"
+	result.Opened = true
+	return result, nil
+}
+
+func openGitLabMergeRequest(ctx context.Context, repoPath string, result PullRequest, body string) (PullRequest, error) {
+	args := []string{"mr", "create", "--title", result.Title, "--description", firstNonEmpty(body, "Verified by Fixora shadow clone.")}
+	if result.Base != "" {
+		args = append(args, "--target-branch", result.Base)
+	}
+	if result.Branch != "" {
+		args = append(args, "--source-branch", result.Branch)
+	}
+	cmd := exec.CommandContext(ctx, "glab", args...)
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return result, fmt.Errorf("glab mr create failed: %s", strings.TrimSpace(string(out)))
+	}
+	result.URL = strings.TrimSpace(string(out))
+	result.Platform = "gitlab"
+	result.Opened = true
+	return result, nil
+}
+
+func gitOutput(ctx context.Context, repoPath string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = repoPath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }
 
 func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan fix.Plan) (SourcePatch, error) {

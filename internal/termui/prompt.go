@@ -45,3 +45,23 @@ func ConfirmApply(ctx context.Context, k kube.Reader, patch string, in io.Reader
 	}
 	return false
 }
+
+func ConfirmShadowDeploy(diff string, in io.Reader, out io.Writer) bool {
+	if in == nil {
+		in = os.Stdin
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	if strings.TrimSpace(diff) != "" {
+		fmt.Fprintln(out, diff)
+	}
+	fmt.Fprint(out, "\nDeploy shadow clone? [Y/n]: ")
+	reader := bufio.NewReader(in)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "" || response == "y" || response == "yes"
+}

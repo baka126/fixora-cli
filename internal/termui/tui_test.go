@@ -41,3 +41,15 @@ func TestContainsAny(t *testing.T) {
 		t.Fatal("did not expect unrelated term match")
 	}
 }
+
+func TestHelpTextIncludesShadowVerify(t *testing.T) {
+	if !containsAny(helpText(), "shadow verify") {
+		t.Fatal("expected TUI help to mention shadow verify")
+	}
+	if !containsAny(helpText(), "ai root cause") {
+		t.Fatal("expected TUI help to mention AI root cause")
+	}
+	if !containsAny(helpText(), "github pr", "gitlab mr") {
+		t.Fatal("expected TUI help to mention PR/MR delivery")
+	}
+}

@@ -10,10 +10,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -145,6 +147,56 @@ func (c *TypedClient) GetPod(ctx context.Context, namespace, name string) (Pod, 
 	}
 	var out Pod
 	return out, convertTyped(pod, &out)
+}
+
+func (c *TypedClient) GetTypedPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return withRetry(func() (*corev1.Pod, error) {
+		return c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	})
+}
+
+func (c *TypedClient) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return withRetry(func() (*corev1.Pod, error) {
+		return c.Clientset.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	})
+}
+
+func (c *TypedClient) DeletePod(ctx context.Context, namespace, name string) error {
+	if c.Clientset == nil {
+		return fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return c.Clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (c *TypedClient) WatchPod(ctx context.Context, namespace, name string) (watch.Interface, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return c.Clientset.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + name,
+	})
+}
+
+func (c *TypedClient) CreateNetworkPolicy(ctx context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return withRetry(func() (*networkingv1.NetworkPolicy, error) {
+		return c.Clientset.NetworkingV1().NetworkPolicies(policy.Namespace).Create(ctx, policy, metav1.CreateOptions{})
+	})
+}
+
+func (c *TypedClient) DeleteNetworkPolicy(ctx context.Context, namespace, name string) error {
+	if c.Clientset == nil {
+		return fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return c.Clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func (c *TypedClient) GetEvents(ctx context.Context, namespace string) ([]Event, error) {

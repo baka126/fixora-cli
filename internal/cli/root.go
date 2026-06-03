@@ -29,6 +29,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/repo"
 	"github.com/fixora/kubectl-fixora/internal/report"
 	"github.com/fixora/kubectl-fixora/internal/server"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/termui"
 	"github.com/fixora/kubectl-fixora/internal/version"
 )
@@ -74,6 +75,14 @@ type options struct {
 	maxLogBytes   int
 	applyDryRun   bool
 	sourcePatch   bool
+	shadowVerify  bool
+	shadowTimeout time.Duration
+	shadowRetries int
+	keepShadow    bool
+	shadowEgress  string
+	delivery      string
+	prBase        string
+	prTitle       string
 	watchInterval time.Duration
 	lintFiles     listFlag
 	maxFindings   int
@@ -303,7 +312,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			if opts.outFile == "" {
 				opts.outFile = "fixora-patch.yaml"
 			}
-			if opts.sourcePatch {
+			if opts.sourcePatch && !opts.shadowVerify {
 				sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 				if err != nil {
 					fmt.Fprintf(stderr, "error: source patch: %v\n", err)
@@ -316,6 +325,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			fmt.Fprintf(stdout, "wrote %s\n", opts.outFile)
+			if opts.shadowVerify {
+				return runShadowWorkflow(ctx, stdout, stderr, opts, k, finding, plan)
+			}
 			if opts.apply {
 				if !plan.ApplyEligible {
 					fmt.Fprintln(stderr, "error: generated patch is not eligible for production apply; review blockedReasons, provide concrete values, or use --force-risky only after approval")
@@ -475,17 +487,25 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case "ui":
 		if opts.tui {
 			if err := termui.RunTUI(ctx, reader, termui.TUIOptions{
-				Context:     opts.context,
-				Namespace:   opts.namespace,
-				AllNS:       opts.allNS,
-				IncludeLogs: opts.includeLogs,
-				Redact:      opts.redact,
-				Filters:     splitCSV(opts.filters),
-				Refresh:     opts.watchInterval,
-				ScanTimeout: opts.timeout,
-				ApplyDryRun: opts.applyDryRun,
-				AIProvider:  os.Getenv("FIXORA_AI_PROVIDER"),
-				Output:      stdout,
+				Context:       opts.context,
+				Namespace:     opts.namespace,
+				AllNS:         opts.allNS,
+				IncludeLogs:   opts.includeLogs,
+				Redact:        opts.redact,
+				Filters:       splitCSV(opts.filters),
+				Refresh:       opts.watchInterval,
+				ScanTimeout:   opts.timeout,
+				ApplyDryRun:   opts.applyDryRun,
+				ShadowTimeout: opts.shadowTimeout,
+				ShadowRetries: opts.shadowRetries,
+				KeepShadow:    opts.keepShadow,
+				ShadowEgress:  opts.shadowEgress,
+				RepoPath:      opts.repoPath,
+				Branch:        opts.branch,
+				PRBase:        opts.prBase,
+				PRTitle:       opts.prTitle,
+				AIProvider:    os.Getenv("FIXORA_AI_PROVIDER"),
+				Output:        stdout,
 			}); err != nil {
 				fmt.Fprintf(stderr, "error: tui: %v\n", err)
 				return 1
@@ -595,6 +615,14 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
+	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
+	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 5*time.Minute, "shadow clone verification timeout")
+	fs.IntVar(&opts.shadowRetries, "shadow-retries", 0, "number of shadow re-clone attempts after failure")
+	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep shadow Pod and NetworkPolicy after verification")
+	fs.StringVar(&opts.shadowEgress, "shadow-egress", "allow", "shadow egress policy: allow or deny")
+	fs.StringVar(&opts.delivery, "delivery", "patch", "verified shadow delivery: patch, cluster, or pr")
+	fs.StringVar(&opts.prBase, "pr-base", "", "base branch for --delivery=pr")
+	fs.StringVar(&opts.prTitle, "pr-title", "", "pull request title for --delivery=pr")
 	fs.DurationVar(&opts.watchInterval, "watch-interval", 5*time.Second, "watch polling interval")
 	fs.IntVar(&opts.maxFindings, "max-findings", 8, "maximum findings to display in watch mode")
 	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
@@ -663,6 +691,127 @@ func runDoctorReport(ctx context.Context, stdout, stderr io.Writer, opts options
 func runCost(ctx context.Context, stdout, stderr io.Writer, opts options, a analyzer.Analyzer, rest []string) int {
 	costs, err := a.Cost(ctx, rest)
 	return output.WriteOrError(stdout, stderr, opts.output, costs, err)
+}
+
+func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan) int {
+	if !plan.ApplyEligible {
+		fmt.Fprintln(stderr, "error: shadow verification requires an apply-eligible concrete patch; provide concrete values or use --force-risky after approval")
+		return 1
+	}
+	diff := shadow.PatchDiff(plan.Resource, plan.PatchYAML())
+	if !termui.ConfirmShadowDeploy(diff, os.Stdin, stdout) {
+		fmt.Fprintln(stdout, "shadow verification cancelled")
+		return 0
+	}
+	typed, err := kube.NewTypedClient(opts.context)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: typed Kubernetes client: %v\n", err)
+		return 1
+	}
+	typed.LogTail = opts.logTail
+	typed.LogLimitBytes = opts.maxLogBytes
+	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
+	if mode == "" {
+		mode = shadow.DeliveryPatch
+	}
+	if mode != shadow.DeliveryPatch && mode != shadow.DeliveryCluster && mode != shadow.DeliveryPR {
+		fmt.Fprintf(stderr, "error: unsupported --delivery %q; use patch, cluster, or pr\n", opts.delivery)
+		return 2
+	}
+	req := shadow.Request{
+		Namespace:   finding.Namespace,
+		Resource:    plan.Resource,
+		Patch:       plan.PatchYAML(),
+		Finding:     finding,
+		Plan:        plan,
+		Timeout:     opts.shadowTimeout,
+		Retries:     opts.shadowRetries,
+		Keep:        opts.keepShadow,
+		Egress:      opts.shadowEgress,
+		Delivery:    mode,
+		RepoPath:    opts.repoPath,
+		Branch:      opts.branch,
+		PRBase:      opts.prBase,
+		PRTitle:     opts.prTitle,
+		OutFile:     opts.outFile,
+		ApplyDryRun: opts.applyDryRun,
+		Redact:      opts.redact || opts.paranoid,
+	}
+	result, err := shadow.Run(ctx, typed, req)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: shadow verification: %v\n", err)
+		return 1
+	}
+	if !result.Verified {
+		_ = output.Write(stdout, opts.output, result)
+		return 1
+	}
+	switch mode {
+	case shadow.DeliveryPatch:
+		if opts.output == "text" {
+			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\n", result.Parity)
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(stdout, "warning: %s\n", warning)
+			}
+			return 0
+		}
+		return output.Write(stdout, opts.output, result)
+	case shadow.DeliveryCluster:
+		if opts.applyDryRun {
+			if err := k.DryRunApply(ctx, opts.outFile); err != nil {
+				fmt.Fprintf(stderr, "error: server dry-run rejected verified patch: %v\n", err)
+				return 1
+			}
+		}
+		if !termui.ConfirmApply(ctx, k, plan.PatchTemplate, os.Stdin, stdout) {
+			fmt.Fprintln(stdout, "verified apply cancelled")
+			return 0
+		}
+		if err := k.Apply(ctx, opts.outFile); err != nil {
+			fmt.Fprintf(stderr, "error: apply verified patch: %v\n", err)
+			return 1
+		}
+		result.Delivery = "cluster"
+		if opts.output == "text" {
+			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
+			return 0
+		}
+		return output.Write(stdout, opts.output, result)
+	case shadow.DeliveryPR:
+		if opts.repoPath == "" {
+			fmt.Fprintln(stderr, "error: --delivery=pr requires --repo")
+			return 2
+		}
+		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: source patch: %v\n", err)
+			return 1
+		}
+		branch := firstArg([]string{opts.branch, defaultShadowBranch(finding)})
+		if err := repo.PrepareBranchFiles(ctx, opts.repoPath, branch, true, "fixora: verified remediation for "+finding.ResourceKind+"/"+finding.ResourceName, []string{sourcePatch.Path}); err != nil {
+			fmt.Fprintf(stderr, "error: repo workflow: %v\n", err)
+			return 1
+		}
+		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, "fixora: verified remediation for "+finding.ResourceKind+"/"+finding.ResourceName), prBody(result, sourcePatch), true)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: open pull request: %v\n", err)
+			return 1
+		}
+		result.Delivery = "pr"
+		result.PRURL = pr.URL
+		result.Warnings = append(result.Warnings, pr.Warnings...)
+		if opts.output == "text" {
+			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\n", result.Parity)
+			if pr.URL != "" {
+				fmt.Fprintf(stdout, "opened PR: %s\n", pr.URL)
+			} else {
+				fmt.Fprintf(stdout, "prepared PR branch: %s\n", pr.Branch)
+			}
+			return 0
+		}
+		return output.Write(stdout, opts.output, result)
+	}
+	return output.Write(stdout, opts.output, result)
 }
 
 func writeFindings(stdout, stderr io.Writer, opts options, findings []analyzer.Finding, err error) int {
@@ -1096,6 +1245,14 @@ Global flags:
       --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
       --apply-dry-run          Run server-side dry-run before --apply (default true)
       --source-patch           Write patch into --repo for GitOps source review
+      --shadow                 Verify patch in an isolated shadow clone before delivery
+      --shadow-timeout duration Shadow clone verification timeout (default 5m)
+      --shadow-retries int     Shadow re-clone attempts after failure
+      --keep-shadow            Keep shadow Pod and NetworkPolicy after verification
+      --shadow-egress string   Shadow egress policy: allow or deny (default "allow")
+      --delivery string        Verified shadow delivery: patch, cluster, or pr
+      --pr-base string         Base branch for --delivery=pr
+      --pr-title string        Pull request title for --delivery=pr
       --watch-interval duration Watch polling interval (default 5s)
       --max-findings int       Maximum findings to display in watch mode (default 8)
   -f, --filename string        Manifest, chart, or Kustomize path for lint
@@ -1163,4 +1320,27 @@ func concreteOptions(opts options) fix.ConcreteOptions {
 		Strategy:      opts.strategy,
 		ForceRisky:    opts.forceRisky,
 	}
+}
+
+func defaultShadowBranch(finding analyzer.Finding) string {
+	kind := strings.ToLower(strings.ReplaceAll(finding.ResourceKind, "/", "-"))
+	name := strings.ToLower(strings.ReplaceAll(finding.ResourceName, "/", "-"))
+	return "fixora/verified-" + kind + "-" + name
+}
+
+func prBody(result shadow.Result, sourcePatch repo.SourcePatch) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Fixora verified this remediation in a shadow clone before delivery.\n\n")
+	fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
+	fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
+	fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
+	fmt.Fprintf(&b, "- Source patch: `%s`\n", sourcePatch.Path)
+	for _, attempt := range result.Attempts {
+		fmt.Fprintf(&b, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)
+		if attempt.ExitReason != "" {
+			fmt.Fprintf(&b, ", reason `%s`", attempt.ExitReason)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
