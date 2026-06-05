@@ -137,12 +137,7 @@ jobs:
                 capture=0
                 exit
               }
-              if (
-                heading ~ "^## \\[" tag "\\]" ||
-                heading ~ "^## \\[" version "\\]" ||
-                heading ~ "^## " tag "([[:space:]-]|$)" ||
-                heading ~ "^## " version "([[:space:]-]|$)"
-              ) {
+              if (heading ~ "^## \\[" tag "\\]" || heading ~ "^## \\[" version "\\]" || heading ~ "^## " tag "([[:space:]-]|$)" || heading ~ "^## " version "([[:space:]-]|$)") {
                 capture=1
                 found=1
                 next
