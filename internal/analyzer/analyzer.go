@@ -89,12 +89,12 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 						if ctx.Err() != nil {
 							return
 						}
-						
+
 						workerCtx, span := tracer.Start(ctx, "AnalyzePod", trace.WithAttributes(
 							attribute.String("pod.namespace", p.Metadata.Namespace),
 							attribute.String("pod.name", p.Metadata.Name),
 						))
-						
+
 						key := p.Metadata.Namespace + "/" + p.Metadata.Name
 						relatedEvents := append([]kube.Event{}, eventIndex[key]...)
 						for _, event := range unindexedEvents {
