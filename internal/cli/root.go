@@ -43,9 +43,11 @@ type options struct {
 	useAI         bool
 	autoFix       bool
 	apply         bool
+	yes           bool
 	outFile       string
 	verbose       bool
 	redact        bool
+	unsafeAI      bool
 	filters       string
 	wide          bool
 	noColor       bool
@@ -292,7 +294,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 					fmt.Fprintln(stderr, "error: no rollback command available")
 					return 1
 				}
-				if _, err := k.Run(ctx, strings.Fields(rollback.Command)...); err != nil {
+				if _, err := executeRollback(ctx, k, rollback); err != nil {
 					fmt.Fprintf(stderr, "error: rollback failed: %v\n", err)
 					return 1
 				}
@@ -497,6 +499,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				AllNS:         opts.allNS,
 				IncludeLogs:   opts.includeLogs,
 				Redact:        opts.redact,
+				UnsafeAI:      opts.unsafeAI,
 				Filters:       splitCSV(opts.filters),
 				Refresh:       opts.watchInterval,
 				ScanTimeout:   opts.timeout,
@@ -587,9 +590,11 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.useAI, "ai", false, "use OpenAI-compatible AI analysis")
 	fs.BoolVar(&opts.autoFix, "auto-fix", false, "generate an explicit local fix plan")
 	fs.BoolVar(&opts.apply, "apply", false, "apply generated local patch")
+	fs.BoolVar(&opts.yes, "yes", false, "confirm non-interactive verified PR/MR delivery")
 	fs.StringVar(&opts.outFile, "out", "", "output file")
 	fs.BoolVar(&opts.verbose, "verbose", false, "verbose output")
 	fs.BoolVar(&opts.redact, "redact", opts.redact, "redact sensitive values")
+	fs.BoolVar(&opts.unsafeAI, "unsafe-ai-no-redact", false, "allow AI calls with unredacted cluster data")
 	fs.StringVar(&opts.filters, "filter", "", "comma-separated analyzer filters")
 	fs.StringVar(&opts.filters, "filters", "", "comma-separated analyzer filters")
 	fs.BoolVar(&opts.wide, "wide", false, "wide terminal output")
@@ -703,18 +708,6 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		fmt.Fprintln(stderr, "error: shadow verification requires an apply-eligible concrete patch; provide concrete values or use --force-risky after approval")
 		return 1
 	}
-	diff := shadow.PatchDiff(plan.Resource, plan.PatchYAML())
-	if !termui.ConfirmShadowDeploy(diff, os.Stdin, stdout) {
-		fmt.Fprintln(stdout, "shadow verification cancelled")
-		return 0
-	}
-	typed, err := kube.NewTypedClient(opts.context)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: typed Kubernetes client: %v\n", err)
-		return 1
-	}
-	typed.LogTail = opts.logTail
-	typed.LogLimitBytes = opts.maxLogBytes
 	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
 	if mode == "" {
 		mode = shadow.DeliveryPatch
@@ -723,6 +716,28 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		fmt.Fprintf(stderr, "error: unsupported --delivery %q; use patch, cluster, or pr\n", opts.delivery)
 		return 2
 	}
+	if mode == shadow.DeliveryPR {
+		if opts.repoPath == "" {
+			fmt.Fprintln(stderr, "error: --delivery=pr requires --repo")
+			return 2
+		}
+		if !opts.yes {
+			fmt.Fprintln(stderr, "error: --delivery=pr requires --yes because it commits, pushes, and opens a review request")
+			return 2
+		}
+	}
+	diff := shadow.PatchDiff(plan.Resource, plan.PatchYAML())
+	if !termui.ConfirmShadowDeploy(diff, os.Stdin, stdout) {
+		fmt.Fprintln(stdout, "shadow verification cancelled")
+		return 0
+	}
+	typed, err := kube.NewRequiredTypedClient(opts.context, "shadow verification")
+	if err != nil {
+		fmt.Fprintf(stderr, "error: typed Kubernetes client: %v\n", err)
+		return 1
+	}
+	typed.LogTail = opts.logTail
+	typed.LogLimitBytes = opts.maxLogBytes
 	req := shadow.Request{
 		Namespace:   finding.Namespace,
 		Resource:    plan.Resource,
@@ -783,10 +798,6 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		}
 		return output.Write(stdout, opts.output, result)
 	case shadow.DeliveryPR:
-		if opts.repoPath == "" {
-			fmt.Fprintln(stderr, "error: --delivery=pr requires --repo")
-			return 2
-		}
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: source patch: %v\n", err)
@@ -864,6 +875,12 @@ func runWatch(ctx context.Context, stdout, stderr io.Writer, opts options, a ana
 }
 
 func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options, stderr io.Writer) {
+	if !opts.redact && !opts.unsafeAI {
+		if opts.verbose {
+			fmt.Fprintln(stderr, "ai disabled: cluster-data AI calls require --redact or explicit --unsafe-ai-no-redact")
+		}
+		return
+	}
 	if opts.aiBudget > 0 && estimateTokens(*finding) > opts.aiBudget {
 		if opts.verbose {
 			fmt.Fprintf(stderr, "ai skipped: estimated prompt exceeds --ai-budget-tokens\n")
@@ -876,10 +893,14 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 		_ = config.Save(cfg)
 	}
 	cfg, _ := config.Load()
+	aiFinding := *finding
+	if opts.redact {
+		aiFinding = analyzer.RedactFindingForAI(aiFinding)
+	}
 	if cfg.CacheEnabled {
 		store := cache.New()
 		var cached analyzer.AIResult
-		if store.Get(cache.Key(*finding), &cached) {
+		if store.Get(cache.Key(aiFinding), &cached) {
 			finding.AI = &cached
 			return
 		}
@@ -891,7 +912,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 		}
 		return
 	}
-	result, err := client.Explain(ctx, *finding)
+	result, err := client.Explain(ctx, aiFinding)
 	if err != nil {
 		if opts.verbose {
 			fmt.Fprintf(stderr, "ai failed: %v\n", err)
@@ -900,7 +921,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	}
 	finding.AI = result
 	if cfg.CacheEnabled {
-		_ = cache.New().Set(cache.Key(*finding), result)
+		_ = cache.New().Set(cache.Key(aiFinding), result)
 	}
 }
 
@@ -1235,7 +1256,9 @@ Global flags:
       --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
       --auto-fix               Generate explicit local fix plan
       --apply                  Apply generated local patch (never default)
+      --yes                    Confirm non-interactive verified PR/MR delivery
       --redact                 Redact sensitive values (default true)
+      --unsafe-ai-no-redact    Allow AI calls with unredacted cluster data
       --filter string          Comma-separated analyzers, for example Pod,Deployment,Service
       --proof                  Show evidence proof
       --tui                    Enable interactive dashboard for the ui command

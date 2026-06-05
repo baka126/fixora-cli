@@ -131,7 +131,7 @@ func enrichFailure(c *kube.TypedClient, namespace, name string, attempt *Attempt
 	if logs, err := c.Logs(ctx, namespace, name, true); err == nil && strings.TrimSpace(logs) != "" {
 		attempt.Logs = append(attempt.Logs, logs)
 	}
-	events, err := c.GetEvents(ctx, namespace)
+	events, err := c.GetEvents(ctx, namespace, "")
 	if err != nil {
 		return
 	}

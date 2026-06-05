@@ -141,13 +141,16 @@ func (k Kubectl) GetResourceItems(ctx context.Context, namespace string, allNS b
 	return list.Items, nil
 }
 
-func (k Kubectl) GetEvents(ctx context.Context, namespace string) ([]Event, error) {
+func (k Kubectl) GetEvents(ctx context.Context, namespace string, fieldSelector string) ([]Event, error) {
 	var events EventList
 	args := []string{"get", "events", "--chunk-size=500"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	} else {
 		args = append(args, "-A")
+	}
+	if fieldSelector != "" {
+		args = append(args, "--field-selector", fieldSelector)
 	}
 	args = append(args, "-o", "json")
 	if err := k.GetJSON(ctx, &events, args...); err != nil {
@@ -219,12 +222,19 @@ func (k Kubectl) AuthCanI(ctx context.Context, namespace, serviceAccount, verb, 
 func (k Kubectl) GetJSON(ctx context.Context, target any, args ...string) error {
 	var err error
 	for i := 0; i < 3; i++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		out, runErr := k.Run(ctx, args...)
 		if runErr == nil {
 			return json.Unmarshal(out, target)
 		}
 		err = runErr
-		time.Sleep(time.Duration(1<<i) * 100 * time.Millisecond)
+		if i < 2 {
+			if sleepErr := sleepContext(ctx, time.Duration(1<<i)*100*time.Millisecond); sleepErr != nil {
+				return sleepErr
+			}
+		}
 	}
 	return err
 }

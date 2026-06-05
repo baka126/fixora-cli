@@ -111,11 +111,56 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: Extract release notes from changelog
+        id: changelog
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          notes_file="dist/release-notes.md"
+          awk -v tag="$tag" -v version="$version" '
+            BEGIN { capture=0; found=0 }
+            /^## / {
+              heading=$0
+              if (capture) {
+                capture=0
+                exit
+              }
+              if (
+                heading ~ "^## \\[" tag "\\]" ||
+                heading ~ "^## \\[" version "\\]" ||
+                heading ~ "^## " tag "([[:space:]-]|$)" ||
+                heading ~ "^## " version "([[:space:]-]|$)"
+              ) {
+                capture=1
+                found=1
+                next
+              }
+            }
+            capture { print }
+            END {
+              if (!found) {
+                printf("CHANGELOG.md does not contain a release section for %s or %s\n", tag, version) > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' CHANGELOG.md > "$notes_file"
+          if [[ ! -s "$notes_file" ]]; then
+            echo "CHANGELOG.md release section for ${tag} is empty" >&2
+            exit 1
+          fi
+          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
 
       - name: Generate checksums
         working-directory: dist
@@ -141,6 +186,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ steps.changelog.outputs.notes_file }}
           files: |
             dist/*.tar.gz
             dist/checksums.txt

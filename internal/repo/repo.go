@@ -27,6 +27,7 @@ type SourcePatch struct {
 	Mode     string   `json:"mode"`
 	Actions  []string `json:"actions"`
 	Warnings []string `json:"warnings,omitempty"`
+	Preview  string   `json:"preview,omitempty"`
 }
 
 type PullRequest struct {
@@ -38,6 +39,15 @@ type PullRequest struct {
 	Pushed   bool     `json:"pushed"`
 	Opened   bool     `json:"opened"`
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+type ChangeSummary struct {
+	Branch   string
+	Files    []string
+	Stat     string
+	Diff     string
+	Remote   string
+	Provider string
 }
 
 func Detect(path string) (Mode, error) {
@@ -134,6 +144,11 @@ func PrepareBranch(ctx context.Context, repoPath, branch string, commit bool, me
 }
 
 func PrepareBranchFiles(ctx context.Context, repoPath, branch string, commit bool, message string, paths []string) error {
+	if commit {
+		if err := ensureNoUnrelatedChanges(ctx, repoPath, paths); err != nil {
+			return err
+		}
+	}
 	return prepareBranch(ctx, repoPath, branch, commit, message, paths)
 }
 
@@ -266,34 +281,86 @@ func gitOutput(ctx context.Context, repoPath string, args ...string) (string, er
 	return string(out), nil
 }
 
+func SummarizeChange(ctx context.Context, repoPath, branch string, paths []string) ChangeSummary {
+	s := ChangeSummary{Branch: branch, Files: make([]string, 0, len(paths)), Provider: detectProvider(ctx, repoPath)}
+	for _, path := range paths {
+		s.Files = append(s.Files, repoRelativePath(repoPath, path))
+	}
+	diffArgs := append([]string{"diff", "--stat", "--"}, s.Files...)
+	if out, err := gitOutput(ctx, repoPath, diffArgs...); err == nil {
+		s.Stat = strings.TrimSpace(out)
+	}
+	if out, err := gitOutput(ctx, repoPath, "remote", "get-url", "origin"); err == nil {
+		s.Remote = strings.TrimSpace(out)
+	}
+	return s
+}
+
+func SummarizePreview(ctx context.Context, repoPath, branch string, patch SourcePatch) ChangeSummary {
+	s := SummarizeChange(ctx, repoPath, branch, []string{patch.Path})
+	s.Diff = patch.Preview
+	if s.Stat == "" {
+		s.Stat = strings.Join(patch.Actions, "; ")
+	}
+	return s
+}
+
+func ensureNoUnrelatedChanges(ctx context.Context, repoPath string, paths []string) error {
+	out, err := gitOutput(ctx, repoPath, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	allowed := map[string]bool{}
+	for _, path := range paths {
+		allowed[repoRelativePath(repoPath, path)] = true
+	}
+	var unrelated []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" || len(line) < 4 {
+			continue
+		}
+		file := strings.TrimSpace(line[3:])
+		file = strings.Trim(file, "\"")
+		if !allowed[file] {
+			unrelated = append(unrelated, file)
+		}
+	}
+	if len(unrelated) > 0 {
+		return fmt.Errorf("unrelated uncommitted changes present: %s", strings.Join(unrelated, ", "))
+	}
+	return nil
+}
+
+func detectProvider(ctx context.Context, repoPath string) string {
+	if _, err := exec.LookPath("gh"); err == nil {
+		return "GitHub PR"
+	}
+	if _, err := exec.LookPath("glab"); err == nil {
+		return "GitLab MR"
+	}
+	return "branch push only"
+}
+
 func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan fix.Plan) (SourcePatch, error) {
-	mode, err := Detect(repoPath)
+	result, err := PreviewSourcePatch(repoPath, outFile, finding, plan)
 	if err != nil {
 		return SourcePatch{}, err
 	}
-	result := SourcePatch{Mode: mode.Type}
-	switch mode.Type {
+	switch result.Mode {
 	case "helm":
-		target := firstNonEmpty(outFile, firstValuesFile(mode), filepath.Join(repoPath, "values.yaml"))
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(repoPath, target)
-		}
-		result.Path = target
-		result.Actions = append(result.Actions, "appended fixoraSuggestedPatch to Helm values for operator review")
-		result.Warnings = append(result.Warnings, "Helm values schemas vary; review and translate fixoraSuggestedPatch into chart-native keys before merge.")
-		return result, appendYAMLBlock(target, "fixoraSuggestedPatch", plan.PatchYAML())
+		return result, appendYAMLBlock(result.Path, "fixoraSuggestedPatch", plan.PatchYAML())
 	case "kustomize":
-		target := firstNonEmpty(outFile, "fixora-patch.yaml")
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(repoPath, target)
+		patchData := plan.PatchYAML()
+		if len(patchData) > 0 && !strings.HasSuffix(patchData, "\n") {
+			patchData += "\n"
 		}
-		result.Path = target
-		result.Actions = append(result.Actions, "wrote strategic-merge patch for Kustomize review")
-		if err := os.WriteFile(target, []byte(plan.PatchYAML()), 0o600); err != nil {
+		if err := os.WriteFile(result.Path, []byte(patchData), 0o600); err != nil {
 			return result, err
 		}
+		mode, _ := Detect(repoPath)
 		if mode.Kustomization != "" {
-			if err := ensureKustomizePatch(mode.Kustomization, filepath.Base(target)); err != nil {
+			if err := ensureKustomizePatch(mode.Kustomization, filepath.Base(result.Path)); err != nil {
 				result.Warnings = append(result.Warnings, "could not update kustomization: "+err.Error())
 			} else {
 				result.Actions = append(result.Actions, "referenced patch from kustomization")
@@ -301,11 +368,48 @@ func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan f
 		}
 		return result, nil
 	default:
+		if strings.Contains(strings.Join(result.Actions, " "), "appended reviewed patch block") {
+			return result, appendYAMLDocument(result.Path, plan.PatchYAML())
+		}
+		patchData := plan.PatchYAML()
+		if len(patchData) > 0 && !strings.HasSuffix(patchData, "\n") {
+			patchData += "\n"
+		}
+		return result, os.WriteFile(result.Path, []byte(patchData), 0o600)
+	}
+}
+
+func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan fix.Plan) (SourcePatch, error) {
+	mode, err := Detect(repoPath)
+	if err != nil {
+		return SourcePatch{}, err
+	}
+	result := SourcePatch{Mode: mode.Type, Preview: plan.PatchYAML()}
+	switch mode.Type {
+	case "helm":
+		target := firstNonEmpty(outFile, firstValuesFile(mode), filepath.Join(repoPath, "values.yaml"))
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(repoPath, target)
+		}
+		result.Path = target
+		result.Actions = append(result.Actions, "appended advisory fixoraSuggestedPatch notes to Helm values for operator review")
+		result.Warnings = append(result.Warnings, "Helm output is advisory only: fixoraSuggestedPatch is not chart-native and may not change rendered manifests.")
+		result.Warnings = append(result.Warnings, "Translate this patch into the chart's supported values schema, then verify with helm template and server dry-run before merge.")
+		return result, nil
+	case "kustomize":
+		target := firstNonEmpty(outFile, "fixora-patch.yaml")
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(repoPath, target)
+		}
+		result.Path = target
+		result.Actions = append(result.Actions, "wrote strategic-merge patch for Kustomize review")
+		return result, nil
+	default:
 		if target := findRawManifest(mode.Files, finding); target != "" {
 			result.Path = target
 			result.Actions = append(result.Actions, "appended reviewed patch block beside matching raw manifest")
 			result.Warnings = append(result.Warnings, "Raw manifest was not structurally edited; merge the reviewed patch block into the resource spec.")
-			return result, appendYAMLDocument(target, plan.PatchYAML())
+			return result, nil
 		}
 		target := firstNonEmpty(outFile, "fixora-patch.yaml")
 		if !filepath.IsAbs(target) {
@@ -313,7 +417,7 @@ func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan f
 		}
 		result.Path = target
 		result.Actions = append(result.Actions, "wrote standalone raw manifest patch")
-		return result, os.WriteFile(target, []byte(plan.PatchYAML()), 0o600)
+		return result, nil
 	}
 }
 

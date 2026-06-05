@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/fix"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func TestLintAcceptsFilenameFlag(t *testing.T) {
@@ -58,6 +63,31 @@ func TestParseProductionBounds(t *testing.T) {
 	}
 	if len(opts.lintFiles) != 1 || opts.lintFiles[0] != "app.yaml" {
 		t.Fatalf("expected lint file app.yaml, got %#v", opts.lintFiles)
+	}
+}
+
+func TestAICallRequiresRedactionUnlessUnsafe(t *testing.T) {
+	var stderr bytes.Buffer
+	finding := analyzer.Finding{Summary: "pod failed", Logs: []analyzer.LogSnippet{{Text: "password=hunter2"}}}
+	augmentWithAI(context.Background(), &finding, options{redact: false, verbose: true}, &stderr)
+	if finding.AI != nil {
+		t.Fatal("expected AI to be blocked when redaction is disabled")
+	}
+	if !strings.Contains(stderr.String(), "require --redact") {
+		t.Fatalf("expected redaction warning, got %s", stderr.String())
+	}
+}
+
+func TestShadowDeliveryPRRequiresYesBeforeMutation(t *testing.T) {
+	finding := analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", Status: "ImagePullBackOff"}
+	plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{Container: "api", Image: "repo/api:v2"})
+	var stdout, stderr bytes.Buffer
+	code := runShadowWorkflow(context.Background(), &stdout, &stderr, options{delivery: "pr", repoPath: t.TempDir()}, kube.Kubectl{}, finding, plan)
+	if code != 2 {
+		t.Fatalf("expected --yes guard exit 2 before shadow mutation, got %d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--yes") {
+		t.Fatalf("expected --yes guard, got stderr=%s", stderr.String())
 	}
 }
 

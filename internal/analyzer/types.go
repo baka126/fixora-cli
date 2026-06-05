@@ -53,7 +53,7 @@ func (s *ScanContext) GetEvents() ([]kube.Event, error) {
 	if !s.Opts.AllNS {
 		ns = s.Opts.Namespace
 	}
-	events, err := s.Reader.GetEvents(s, ns)
+	events, err := s.Reader.GetEvents(s, ns, "")
 	if err == nil {
 		s.events = events
 	}
@@ -94,11 +94,12 @@ type AnalyzerPlugin interface {
 }
 
 type Options struct {
-	Namespace   string
-	AllNS       bool
-	IncludeLogs bool
-	Redact      bool
-	Filters     []string
+	Namespace      string
+	AllNS          bool
+	IncludeLogs    bool
+	Redact         bool
+	Filters        []string
+	MaxConcurrency int
 }
 
 type Analyzer struct {

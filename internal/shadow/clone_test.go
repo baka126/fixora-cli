@@ -67,6 +67,14 @@ spec:
 	}
 }
 
+func TestApplyPatchRejectsMultiDocumentYAML(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"}}
+	err := applyPatchToPod(pod, "kind: Pod\n---\nkind: Service\n")
+	if err == nil {
+		t.Fatal("expected multi-document patch rejection")
+	}
+}
+
 func TestSandboxNetworkPolicyBlocksIngressAndAllowsEgressByDefault(t *testing.T) {
 	policy := sandboxNetworkPolicy("prod", "shadow-netpol", "session-a", "allow")
 	if len(policy.Spec.Ingress) != 0 {

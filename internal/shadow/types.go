@@ -1,6 +1,7 @@
 package shadow
 
 import (
+	"strings"
 	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/ai"
@@ -63,4 +64,15 @@ type Attempt struct {
 	Events     []string `json:"events,omitempty"`
 	Revised    bool     `json:"revised,omitempty"`
 	Message    string   `json:"message,omitempty"`
+}
+
+type PatchValidationError struct {
+	Reasons []string
+}
+
+func (e PatchValidationError) Error() string {
+	if len(e.Reasons) == 0 {
+		return "revised patch rejected"
+	}
+	return "revised patch rejected: " + strings.Join(e.Reasons, "; ")
 }

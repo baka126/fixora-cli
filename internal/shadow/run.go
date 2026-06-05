@@ -3,6 +3,8 @@ package shadow
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,12 +63,15 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			break
 		}
 		if attempt <= req.Retries {
-			revised, ok := revisePatch(ctx, req.AI, req.Patch, verification)
+			revised, ok, reviseErr := revisePatch(ctx, req.AI, req.Patch, req.Plan.Strategy, verification, req.Redact)
 			result.Attempts[len(result.Attempts)-1].Revised = ok
 			if ok {
 				req.Patch = revised
 				result.VerifiedPatch = revised
 			} else {
+				if reviseErr != nil {
+					result.Warnings = appendUnique(result.Warnings, reviseErr.Error())
+				}
 				result.Warnings = appendUnique(result.Warnings, "shadow retry requested but no deterministic safe revision was available")
 				break
 			}
@@ -78,6 +83,9 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	if !req.Keep && lastPlan.Clone != nil {
 		cleanup(ctx, c, lastPlan, &result)
 	}
+	if !req.Keep && len(result.cleanupFailures()) > 0 {
+		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+	}
 	return result, nil
 }
 
@@ -85,15 +93,41 @@ func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *R
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if plan.Clone != nil {
-		if err := c.DeletePod(cleanupCtx, plan.Clone.Namespace, plan.Clone.Name); err == nil {
+		if !isShadowObject(plan.Clone.Labels) {
+			result.Warnings = appendUnique(result.Warnings, fmt.Sprintf("cleanup skipped for pod/%s in namespace %s: missing fixora shadow labels", plan.Clone.Name, plan.Clone.Namespace))
+		} else if err := c.DeletePod(cleanupCtx, plan.Clone.Namespace, plan.Clone.Name); err == nil {
 			result.Cleanup = appendUnique(result.Cleanup, "deleted pod/"+plan.Clone.Name)
+		} else {
+			msg := fmt.Sprintf("cleanup failed for pod/%s in namespace %s: %v", plan.Clone.Name, plan.Clone.Namespace, err)
+			result.Warnings = appendUnique(result.Warnings, msg)
+			fmt.Fprintf(os.Stderr, "ERROR: %s\n", msg)
 		}
 	}
 	if plan.Policy != nil {
-		if err := c.DeleteNetworkPolicy(cleanupCtx, plan.Policy.Namespace, plan.Policy.Name); err == nil {
+		if !isShadowObject(plan.Policy.Labels) {
+			result.Warnings = appendUnique(result.Warnings, fmt.Sprintf("cleanup skipped for networkpolicy/%s in namespace %s: missing fixora shadow labels", plan.Policy.Name, plan.Policy.Namespace))
+		} else if err := c.DeleteNetworkPolicy(cleanupCtx, plan.Policy.Namespace, plan.Policy.Name); err == nil {
 			result.Cleanup = appendUnique(result.Cleanup, "deleted networkpolicy/"+plan.Policy.Name)
+		} else {
+			msg := fmt.Sprintf("cleanup failed for networkpolicy/%s in namespace %s: %v", plan.Policy.Name, plan.Policy.Namespace, err)
+			result.Warnings = appendUnique(result.Warnings, msg)
+			fmt.Fprintf(os.Stderr, "ERROR: %s\n", msg)
 		}
 	}
+}
+
+func (r Result) cleanupFailures() []string {
+	var failures []string
+	for _, warning := range r.Warnings {
+		if strings.HasPrefix(warning, "cleanup failed") {
+			failures = append(failures, warning)
+		}
+	}
+	return failures
+}
+
+func isShadowObject(labels map[string]string) bool {
+	return labels[labelSandbox] == "true" && strings.TrimSpace(labels[labelSession]) != ""
 }
 
 func appendUnique(values []string, next ...string) []string {
