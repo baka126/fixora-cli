@@ -178,23 +178,30 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 			})
 		}
 		for _, secretName := range ingressTLSSecretNames(spec) {
-			if secretName == "" || a.objectNameExists(ctx, namespace, "secret", secretName) {
+			state := a.objectNameState(ctx, namespace, "secret", secretName)
+			if secretName == "" || state.Exists {
 				continue
 			}
+			status := "MissingTLSSecret"
+			summary := "Ingress references a TLS Secret that does not exist."
+			if state.Forbidden {
+				status = "TLSSecretUnreadable"
+				summary = "Ingress references a TLS Secret that exists but is not readable with current RBAC."
+			}
 			out = append(out, Finding{
-				ID:           keyFor(namespace, "Ingress/"+name+"/MissingTLSSecret/"+secretName),
+				ID:           keyFor(namespace, "Ingress/"+name+"/"+status+"/"+secretName),
 				Namespace:    namespace,
 				ResourceKind: "Ingress",
 				ResourceName: name,
-				Status:       "MissingTLSSecret",
+				Status:       status,
 				Severity:     "high",
 				Category:     "networking",
-				Summary:      "Ingress references a TLS Secret that does not exist or is not readable.",
-				Evidence:     []Evidence{{Label: "TLS secret", Value: secretName}},
+				Summary:      summary,
+				Evidence:     []Evidence{{Label: "TLS secret", Value: secretName}, {Label: "State", Value: state.Message}},
 				GitOps:       gitOpsForObject(ingress),
 				Recommendations: []Recommendation{{
 					Title:         "Restore the TLS Secret reference",
-					Description:   "Create the expected Secret through the cluster's certificate workflow or update the Ingress TLS reference. Fixora checks only object existence and does not read Secret values.",
+					Description:   "If missing, restore the Secret through the certificate workflow. If unreadable, grant read diagnostics RBAC before generating fixes. Fixora does not read Secret values.",
 					PatchType:     "ingress",
 					SafeByDefault: false,
 				}},
@@ -390,8 +397,17 @@ func (a Analyzer) analyzeWebhooks(ctx *ScanContext) ([]Finding, error) {
 				clientConfig := nestedMap(webhookMap, "clientConfig")
 				service := nestedMap(clientConfig, "service")
 				serviceName, serviceNS := strValue(service["name"]), strValue(service["namespace"])
-				if serviceName != "" && !a.objectNameExists(ctx, serviceNS, "service", serviceName) {
-					out = append(out, clusterFinding(kind, name, "MissingWebhookService/"+webhookName, "high", "policy", "Admission webhook references a Service that does not exist or is not readable.", []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "Service", Value: keyFor(serviceNS, serviceName)}}))
+				if serviceName != "" {
+					state := a.objectNameState(ctx, serviceNS, "service", serviceName)
+					if !state.Exists {
+						status := "MissingWebhookService/" + webhookName
+						summary := "Admission webhook references a Service that does not exist."
+						if state.Forbidden {
+							status = "WebhookServiceUnreadable/" + webhookName
+							summary = "Admission webhook references a Service that exists but is not readable with current RBAC."
+						}
+						out = append(out, clusterFinding(kind, name, status, "high", "policy", summary, []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "Service", Value: keyFor(serviceNS, serviceName)}, {Label: "State", Value: state.Message}}))
+					}
 				}
 				if seconds := intValue(webhookMap["timeoutSeconds"]); seconds > 10 {
 					out = append(out, clusterFinding(kind, name, "HighWebhookTimeout/"+webhookName, "medium", "policy", "Admission webhook has a high timeout and can slow or block API writes during incidents.", []Evidence{{Label: "Webhook", Value: webhookName}, {Label: "timeoutSeconds", Value: fmt.Sprint(seconds)}}))
@@ -834,14 +850,38 @@ func httpRouteBackendRefs(route map[string]any) []backendRef {
 	return out
 }
 
-func (a Analyzer) objectNameExists(ctx *ScanContext, namespace, resource, name string) bool {
+type objectState struct {
+	Exists    bool
+	Forbidden bool
+	Message   string
+}
+
+func (a Analyzer) objectNameState(ctx *ScanContext, namespace, resource, name string) objectState {
+	if name == "" {
+		return objectState{Message: "empty name"}
+	}
 	args := []string{"get", resource, name}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
 	args = append(args, "-o", "name")
 	_, err := ctx.Reader.Run(ctx.Context, args...)
-	return err == nil
+	if err == nil {
+		return objectState{Exists: true, Message: "readable"}
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "forbidden"), strings.Contains(msg, "unauthorized"):
+		return objectState{Forbidden: true, Message: "resource exists or may exist but is not readable: " + err.Error()}
+	case strings.Contains(msg, "notfound"), strings.Contains(msg, "not found"):
+		return objectState{Message: "not found"}
+	case strings.Contains(msg, "the server doesn't have a resource type"), strings.Contains(msg, "no matches for kind"):
+		return objectState{Message: "unknown resource type: " + err.Error()}
+	case strings.Contains(msg, "deadline exceeded"), strings.Contains(msg, "context deadline"):
+		return objectState{Message: "timeout: " + err.Error()}
+	default:
+		return objectState{Message: "unknown API error: " + err.Error()}
+	}
 }
 
 func intValue(value any) int {

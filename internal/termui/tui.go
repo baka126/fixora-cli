@@ -33,6 +33,7 @@ type TUIOptions struct {
 	AllNS         bool
 	IncludeLogs   bool
 	Redact        bool
+	UnsafeAI      bool
 	Filters       []string
 	Refresh       time.Duration
 	ScanTimeout   time.Duration
@@ -1034,6 +1035,14 @@ func (m tuiModel) aiAnalyzeCmd() (tea.Model, tea.Cmd) {
 	}
 	m.aiRunning = true
 	finding := m.selected
+	if !m.opts.Redact && !m.opts.UnsafeAI {
+		m.aiRunning = false
+		m.message = "AI blocked: enable redaction or pass --unsafe-ai-no-redact"
+		return m, nil
+	}
+	if m.opts.Redact {
+		finding = analyzer.RedactFindingForAI(finding)
+	}
 	timeout := firstDuration(m.opts.ScanTimeout, 90*time.Second)
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, timeout)
@@ -1072,6 +1081,7 @@ func (m tuiModel) pushVerifiedCmd() (tea.Model, tea.Cmd) {
 		finding:  m.selected,
 		plan:     m.plan,
 		shadow:   m.shadow,
+		stdin:    os.Stdin,
 		stdout:   os.Stdout,
 		stderr:   os.Stderr,
 	}
@@ -1183,6 +1193,7 @@ type verifiedDeliveryCommand struct {
 	plan     fix.Plan
 	shadow   shadow.Result
 	message  string
+	stdin    io.Reader
 	stdout   io.Writer
 	stderr   io.Writer
 }
@@ -1191,6 +1202,16 @@ func (c *verifiedDeliveryCommand) Run() error {
 	stdout := firstWriter(c.stdout, os.Stdout)
 	if !c.shadow.Verified {
 		return fmt.Errorf("shadow verification has not passed")
+	}
+	preview, err := repo.PreviewSourcePatch(c.repoPath, "", c.finding, c.plan)
+	if err != nil {
+		return err
+	}
+	summary := repo.SummarizePreview(c.ctx, c.repoPath, c.branch, preview)
+	if !ConfirmVerifiedDelivery(summary, c.stdin, stdout) {
+		c.message = "verified PR/MR delivery cancelled"
+		fmt.Fprintln(stdout, c.message)
+		return nil
 	}
 	sourcePatch, err := repo.WriteSourcePatch(c.repoPath, "", c.finding, c.plan)
 	if err != nil {
@@ -1216,7 +1237,9 @@ func (c *verifiedDeliveryCommand) Run() error {
 	return nil
 }
 
-func (c *verifiedDeliveryCommand) SetStdin(io.Reader) {}
+func (c *verifiedDeliveryCommand) SetStdin(r io.Reader) {
+	c.stdin = r
+}
 
 func (c *verifiedDeliveryCommand) SetStdout(w io.Writer) {
 	c.stdout = w
@@ -1237,7 +1260,7 @@ func (c *shadowVerifyCommand) Run() error {
 		fmt.Fprintln(stdout, "shadow verification cancelled")
 		return nil
 	}
-	client, err := kube.NewTypedClient(c.context)
+	client, err := kube.NewRequiredTypedClient(c.context, "TUI shadow verification")
 	if err != nil {
 		return err
 	}

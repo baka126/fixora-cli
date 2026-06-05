@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3]
+
+### Added
+- Enterprise-grade documentation suite.
+- Top-level controller resolution for targeted pod patching.
+- OpenTelemetry span propagation in the concurrent analyzer.
+
+### Fixed
+- Fixed bug causing AWK syntax error in release CI workflow.
+- Fixed volume validation to explicitly block `secret` and `downwardAPI`.
+- Fixed missing trailing newline on repository patch writes.
+- Fixed inconsistent etcd pagination by pinning `ResourceVersion`.
+
 ## [Unreleased]
 
 ### Added

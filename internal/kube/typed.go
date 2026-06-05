@@ -42,30 +42,54 @@ type TypedClient struct {
 }
 
 func NewTypedClient(contextName string) (*TypedClient, error) {
+	client, _, err := newTypedClient(contextName)
+	if err != nil {
+		fallback := NewKubectl(contextName)
+		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+	}
+	return client, nil
+}
+
+func NewRequiredTypedClient(contextName, reason string) (*TypedClient, error) {
+	client, fallback, err := newTypedClient(contextName)
+	if err != nil {
+		if strings.TrimSpace(reason) == "" {
+			reason = "this operation"
+		}
+		return nil, fmt.Errorf("%s requires typed Kubernetes clients; initialize client-go/controller-runtime stack failed: %w", reason, err)
+	}
+	if client.Clientset == nil || client.Dynamic == nil || client.RuntimeClient == nil || client.Discovery == nil || client.Mapper == nil {
+		return nil, fmt.Errorf("%s requires typed Kubernetes clients; initialized client is incomplete", reason)
+	}
+	client.Fallback = fallback
+	return client, nil
+}
+
+func newTypedClient(contextName string) (*TypedClient, Kubectl, error) {
 	fallback := NewKubectl(contextName)
 	cfg, err := typedRESTConfig(contextName)
 	if err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	dynamicClient, err := dynamic.NewForConfig(cfg)
 	if err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	runtimeClient, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
-		return &TypedClient{Context: contextName, Fallback: fallback, LogTail: fallback.LogTail, LogLimitBytes: fallback.LogLimitBytes}, nil
+		return nil, fallback, err
 	}
 	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
 	return &TypedClient{
@@ -79,7 +103,7 @@ func NewTypedClient(contextName string) (*TypedClient, error) {
 		Discovery:     discoveryClient,
 		Mapper:        mapper,
 		Fallback:      fallback,
-	}, nil
+	}, fallback, nil
 }
 
 func typedRESTConfig(contextName string) (*rest.Config, error) {
@@ -117,13 +141,17 @@ func (c *TypedClient) GetPods(ctx context.Context, namespace string, allNS bool)
 	ns := namespaceForTyped(namespace, allNS)
 	var allItems []corev1.Pod
 	var continueToken string
+	var rv string
 	for {
-		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
-		pods, err := withRetry(func() (*corev1.PodList, error) {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken, ResourceVersion: rv}
+		pods, err := withRetry(ctx, func() (*corev1.PodList, error) {
 			return c.Clientset.CoreV1().Pods(ns).List(ctx, listOpts)
 		})
 		if err != nil {
 			return PodList{}, err
+		}
+		if rv == "" && pods.ResourceVersion != "" {
+			rv = pods.ResourceVersion
 		}
 		allItems = append(allItems, pods.Items...)
 		continueToken = pods.Continue
@@ -139,7 +167,7 @@ func (c *TypedClient) GetPod(ctx context.Context, namespace, name string) (Pod, 
 	if c.Clientset == nil {
 		return c.Fallback.GetPod(ctx, namespace, name)
 	}
-	pod, err := withRetry(func() (*corev1.Pod, error) {
+	pod, err := withRetry(ctx, func() (*corev1.Pod, error) {
 		return c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	})
 	if err != nil {
@@ -153,7 +181,7 @@ func (c *TypedClient) GetTypedPod(ctx context.Context, namespace, name string) (
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
 	}
-	return withRetry(func() (*corev1.Pod, error) {
+	return withRetry(ctx, func() (*corev1.Pod, error) {
 		return c.Clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 	})
 }
@@ -162,7 +190,7 @@ func (c *TypedClient) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.P
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
 	}
-	return withRetry(func() (*corev1.Pod, error) {
+	return withRetry(ctx, func() (*corev1.Pod, error) {
 		return c.Clientset.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	})
 }
@@ -187,7 +215,7 @@ func (c *TypedClient) CreateNetworkPolicy(ctx context.Context, policy *networkin
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
 	}
-	return withRetry(func() (*networkingv1.NetworkPolicy, error) {
+	return withRetry(ctx, func() (*networkingv1.NetworkPolicy, error) {
 		return c.Clientset.NetworkingV1().NetworkPolicies(policy.Namespace).Create(ctx, policy, metav1.CreateOptions{})
 	})
 }
@@ -199,19 +227,23 @@ func (c *TypedClient) DeleteNetworkPolicy(ctx context.Context, namespace, name s
 	return c.Clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
-func (c *TypedClient) GetEvents(ctx context.Context, namespace string) ([]Event, error) {
+func (c *TypedClient) GetEvents(ctx context.Context, namespace string, fieldSelector string) ([]Event, error) {
 	if c.Clientset == nil {
-		return c.Fallback.GetEvents(ctx, namespace)
+		return c.Fallback.GetEvents(ctx, namespace, fieldSelector)
 	}
 	var allItems []corev1.Event
 	var continueToken string
+	var rv string
 	for {
-		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
-		events, err := withRetry(func() (*corev1.EventList, error) {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken, ResourceVersion: rv, FieldSelector: fieldSelector}
+		events, err := withRetry(ctx, func() (*corev1.EventList, error) {
 			return c.Clientset.CoreV1().Events(namespace).List(ctx, listOpts)
 		})
 		if err != nil {
 			return nil, err
+		}
+		if rv == "" && events.ResourceVersion != "" {
+			rv = events.ResourceVersion
 		}
 		allItems = append(allItems, events.Items...)
 		continueToken = events.Continue
@@ -229,13 +261,17 @@ func (c *TypedClient) GetNodes(ctx context.Context) ([]Node, error) {
 	}
 	var allItems []corev1.Node
 	var continueToken string
+	var rv string
 	for {
-		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
-		nodes, err := withRetry(func() (*corev1.NodeList, error) {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken, ResourceVersion: rv}
+		nodes, err := withRetry(ctx, func() (*corev1.NodeList, error) {
 			return c.Clientset.CoreV1().Nodes().List(ctx, listOpts)
 		})
 		if err != nil {
 			return nil, err
+		}
+		if rv == "" && nodes.ResourceVersion != "" {
+			rv = nodes.ResourceVersion
 		}
 		allItems = append(allItems, nodes.Items...)
 		continueToken = nodes.Continue
@@ -255,7 +291,7 @@ func (c *TypedClient) GetResource(ctx context.Context, namespace, resource strin
 	if err != nil {
 		return nil, err
 	}
-	obj, err := withRetry(func() (*unstructured.Unstructured, error) {
+	obj, err := withRetry(ctx, func() (*unstructured.Unstructured, error) {
 		res := c.dynamicResource(gvr, namespace)
 		return res.Get(ctx, name, metav1.GetOptions{})
 	})
@@ -275,14 +311,18 @@ func (c *TypedClient) GetResourceItems(ctx context.Context, namespace string, al
 	}
 	var items []map[string]any
 	var continueToken string
+	var rv string
 	for {
-		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken}
-		list, err := withRetry(func() (*unstructured.UnstructuredList, error) {
+		listOpts := metav1.ListOptions{Limit: 500, Continue: continueToken, ResourceVersion: rv}
+		list, err := withRetry(ctx, func() (*unstructured.UnstructuredList, error) {
 			res := c.dynamicResource(gvr, namespaceForTyped(namespace, allNS))
 			return res.List(ctx, listOpts)
 		})
 		if err != nil {
 			return nil, err
+		}
+		if rv == "" && list.GetResourceVersion() != "" {
+			rv = list.GetResourceVersion()
 		}
 		for _, item := range list.Items {
 			items = append(items, item.Object)
@@ -380,16 +420,34 @@ func convertTyped(source, target any) error {
 	return stdjson.Unmarshal(data, target)
 }
 
-func withRetry[T any](f func() (T, error)) (T, error) {
+func withRetry[T any](ctx context.Context, f func() (T, error)) (T, error) {
 	var err error
 	var zero T
 	for i := 0; i < 3; i++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return zero, ctxErr
+		}
 		res, reqErr := f()
 		if reqErr == nil {
 			return res, nil
 		}
 		err = reqErr
-		time.Sleep(time.Duration(1<<i) * 100 * time.Millisecond)
+		if i < 2 {
+			if sleepErr := sleepContext(ctx, time.Duration(1<<i)*100*time.Millisecond); sleepErr != nil {
+				return zero, sleepErr
+			}
+		}
 	}
 	return zero, err
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

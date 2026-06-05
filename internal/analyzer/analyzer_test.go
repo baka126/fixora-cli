@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
 )
@@ -177,9 +179,171 @@ func TestTopOwnerKeepsJobIdentity(t *testing.T) {
 	}
 }
 
+func TestAnalyzeDeploymentInspectsOwnedFailingPod(t *testing.T) {
+	reader := fakeReader{
+		resource: map[string]any{
+			"metadata": map[string]any{"name": "api", "namespace": "prod"},
+			"spec": map[string]any{
+				"selector": map[string]any{"matchLabels": map[string]any{"app": "api"}},
+			},
+			"status": map[string]any{"availableReplicas": 0},
+		},
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "api-abc", Namespace: "prod", Labels: map[string]string{"app": "api"}},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "api",
+				State: map[string]kube.StatusState{"waiting": {Reason: "ImagePullBackOff"}},
+			}}},
+		}}},
+		events: []kube.Event{{Metadata: kube.ObjectMeta{Namespace: "prod"}, InvolvedObject: kube.ObjectReference{Name: "api-abc"}, Reason: "Failed", Message: "api-abc image pull failed"}},
+	}
+	finding, err := New(reader, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "deployment/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.PodName != "api-abc" || finding.Status != "ImagePullBackOff" {
+		t.Fatalf("expected owned failing pod RCA, got %#v", finding)
+	}
+}
+
+func TestAnalyzeDeploymentNoOwnedPods(t *testing.T) {
+	reader := fakeReader{
+		resource: map[string]any{
+			"metadata": map[string]any{"name": "api", "namespace": "prod"},
+			"spec":     map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"app": "api"}}},
+		},
+		pods: kube.PodList{},
+	}
+	finding, err := New(reader, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "deployment/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.Status != "NoOwnedPods" {
+		t.Fatalf("expected no owned pods state, got %#v", finding)
+	}
+}
+
+func TestObjectNameStatePreservesForbidden(t *testing.T) {
+	reader := fakeReader{runErr: fmt.Errorf("Error from server (Forbidden): secrets is forbidden")}
+	ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+	state := New(reader, Options{Namespace: "prod"}).objectNameState(ctx, "prod", "secret", "tls")
+	if !state.Forbidden || state.Exists {
+		t.Fatalf("expected forbidden unreadable state, got %#v", state)
+	}
+}
+
+func TestObjectNameStateClassifiesAPIErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantExists bool
+		wantText   string
+	}{
+		{name: "readable", err: nil, wantExists: true, wantText: "readable"},
+		{name: "missing", err: fmt.Errorf("Error from server (NotFound): secrets \"tls\" not found"), wantText: "not found"},
+		{name: "unknown resource", err: fmt.Errorf("the server doesn't have a resource type \"widgets\""), wantText: "unknown resource type"},
+		{name: "timeout", err: context.DeadlineExceeded, wantText: "timeout"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := fakeReader{runErr: tt.err}
+			ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+			state := New(reader, Options{Namespace: "prod"}).objectNameState(ctx, "prod", "secret", "tls")
+			if state.Exists != tt.wantExists || !strings.Contains(state.Message, tt.wantText) {
+				t.Fatalf("state=%#v, want exists=%t text=%q", state, tt.wantExists, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestScanReportBoundsPodLogConcurrency(t *testing.T) {
+	var pods []kube.Pod
+	for i := 0; i < 30; i++ {
+		pods = append(pods, kube.Pod{
+			Metadata: kube.ObjectMeta{Name: fmt.Sprintf("api-%d", i), Namespace: "prod"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "api",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		})
+	}
+	var active int32
+	var maxActive int32
+	reader := fakeReader{
+		pods: kube.PodList{Items: pods},
+		logFn: func() {
+			now := atomic.AddInt32(&active, 1)
+			for {
+				old := atomic.LoadInt32(&maxActive)
+				if now <= old || atomic.CompareAndSwapInt32(&maxActive, old, now) {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+		},
+	}
+	report := New(reader, Options{Namespace: "prod", IncludeLogs: true, MaxConcurrency: 3}).ScanReport(context.Background())
+	if len(report.Findings) != len(pods) {
+		t.Fatalf("findings=%d want %d", len(report.Findings), len(pods))
+	}
+	if got := atomic.LoadInt32(&maxActive); got > 3 {
+		t.Fatalf("max active logs=%d, want <=3", got)
+	}
+}
+
+func TestScanReportStopsWorkersOnContextCancellation(t *testing.T) {
+	var pods []kube.Pod
+	for i := 0; i < 100; i++ {
+		pods = append(pods, kube.Pod{
+			Metadata: kube.ObjectMeta{Name: fmt.Sprintf("api-%d", i), Namespace: "prod"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "api",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = New(fakeReader{pods: kube.PodList{Items: pods}}, Options{Namespace: "prod", IncludeLogs: true, MaxConcurrency: 2}).ScanReport(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scan did not stop after context cancellation")
+	}
+}
+
+func TestRedactFindingForAIRemovesClusterSecrets(t *testing.T) {
+	finding := Finding{
+		ID:      "prod/api",
+		Summary: "postgres://user:pass@db/prod",
+		Evidence: []Evidence{{Label: "Secret", Value: `apiVersion: v1
+kind: Secret
+data:
+  password: cGFzc3dvcmQ=
+`}},
+		Logs: []LogSnippet{{Source: "current", Text: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456"}},
+	}
+	redacted := RedactFindingForAI(finding)
+	text := redacted.Summary + redacted.Evidence[0].Value + redacted.Logs[0].Text
+	for _, forbidden := range []string{"user:pass", "cGFzc3dvcmQ=", "abcdefghijklmnopqrstuvwxyz123456"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("AI finding leaked %q: %#v", forbidden, redacted)
+		}
+	}
+}
+
 type fakeReader struct {
 	pods      kube.PodList
+	events    []kube.Event
+	resource  map[string]any
+	runErr    error
 	eventsErr error
+	logFn     func()
 }
 
 func (f fakeReader) GetPods(context.Context, string, bool) (kube.PodList, error) {
@@ -191,6 +355,9 @@ func (f fakeReader) GetPod(context.Context, string, string) (kube.Pod, error) {
 }
 
 func (f fakeReader) GetResource(context.Context, string, string) (map[string]any, error) {
+	if f.resource != nil {
+		return f.resource, nil
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 
@@ -198,7 +365,10 @@ func (f fakeReader) GetResourceItems(context.Context, string, bool, string) ([]m
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (f fakeReader) GetEvents(context.Context, string) ([]kube.Event, error) {
+func (f fakeReader) GetEvents(context.Context, string, string) ([]kube.Event, error) {
+	if f.events != nil {
+		return f.events, f.eventsErr
+	}
 	return nil, f.eventsErr
 }
 
@@ -207,9 +377,15 @@ func (f fakeReader) GetNodes(context.Context) ([]kube.Node, error) {
 }
 
 func (f fakeReader) Logs(context.Context, string, string, bool) (string, error) {
+	if f.logFn != nil {
+		f.logFn()
+	}
 	return "", nil
 }
 
 func (f fakeReader) Run(context.Context, ...string) ([]byte, error) {
-	return nil, fmt.Errorf("not implemented")
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
+	return []byte("secret/tls"), nil
 }

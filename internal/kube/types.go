@@ -7,7 +7,7 @@ type Reader interface {
 	GetPod(ctx context.Context, namespace, name string) (Pod, error)
 	GetResource(ctx context.Context, namespace, resource string) (map[string]any, error)
 	GetResourceItems(ctx context.Context, namespace string, allNS bool, resource string) ([]map[string]any, error)
-	GetEvents(ctx context.Context, namespace string) ([]Event, error)
+	GetEvents(ctx context.Context, namespace string, fieldSelector string) ([]Event, error)
 	GetNodes(ctx context.Context) ([]Node, error)
 	Logs(ctx context.Context, namespace, pod string, previous bool) (string, error)
 	Run(ctx context.Context, args ...string) ([]byte, error)

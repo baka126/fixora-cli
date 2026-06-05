@@ -43,10 +43,13 @@ type Change struct {
 }
 
 type Rollback struct {
-	Resource string   `json:"resource"`
-	Preview  bool     `json:"preview"`
-	Command  string   `json:"command,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
+	Resource  string   `json:"resource"`
+	Preview   bool     `json:"preview"`
+	Command   string   `json:"command,omitempty"`
+	Binary    string   `json:"binary,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	Namespace string   `json:"namespace,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
 }
 
 type Preflight struct {
@@ -185,7 +188,7 @@ func DetectChanges(ctx context.Context, k kube.Kubectl, namespace, resource stri
 			}
 		}
 	}
-	events, _ := k.GetEvents(ctx, namespace)
+	events, _ := k.GetEvents(ctx, namespace, "")
 	for _, event := range events {
 		if strings.Contains(event.Message, name) || strings.Contains(event.Metadata.Name, name) {
 			changes = append(changes, Change{Resource: resource, Namespace: ns, Signal: "event/" + event.Reason, Value: trim(event.Message, 220)})
@@ -199,13 +202,70 @@ func DetectChanges(ctx context.Context, k kube.Kubectl, namespace, resource stri
 
 func BuildRollback(f analyzer.Finding, plan fix.Plan, apply bool) Rollback {
 	r := Rollback{Resource: f.ResourceKind + "/" + f.ResourceName, Preview: !apply, Command: plan.RollbackCommand}
+	r.Binary, r.Args = StructuredRollbackCommand(plan.RollbackCommand)
+	r.Namespace = f.Namespace
 	if r.Command == "" {
 		r.Warnings = append(r.Warnings, "No deterministic rollback command found.")
+	} else if r.Binary == "" {
+		r.Warnings = append(r.Warnings, "Rollback command is advisory only and cannot be executed safely.")
 	}
 	if f.GitOps.TargetAdvice != "" {
 		r.Warnings = append(r.Warnings, "GitOps-managed workload may require reverting source and reconciling the controller.")
 	}
 	return r
+}
+
+func StructuredRollbackCommand(command string) (string, []string) {
+	var fields []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+	escape := false
+
+	for _, r := range strings.TrimSpace(command) {
+		if escape {
+			current.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		if r == '\'' && !inDouble {
+			inSingle = !inSingle
+			continue
+		}
+		if r == '"' && !inSingle {
+			inDouble = !inDouble
+			continue
+		}
+		if (r == ' ' || r == '\t') && !inSingle && !inDouble {
+			if current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	if len(fields) == 0 {
+		return "", nil
+	}
+	switch fields[0] {
+	case "kubectl", "helm":
+	default:
+		return "", nil
+	}
+	for _, field := range fields {
+		if strings.ContainsAny(field, ";&|`$><(){}[]") {
+			return "", nil
+		}
+	}
+	return fields[0], fields[1:]
 }
 
 func RunPreflight(ctx context.Context, k kube.Kubectl, file string) Preflight {

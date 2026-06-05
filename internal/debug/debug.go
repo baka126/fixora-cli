@@ -105,7 +105,7 @@ func DNS(ctx context.Context, k kube.Kubectl, namespace string) Result {
 
 func Security(ctx context.Context, k kube.Kubectl, namespace string) Result {
 	r := Result{Name: "security", Status: "ok"}
-	events, err := k.GetEvents(ctx, namespace)
+	events, err := k.GetEvents(ctx, namespace, "")
 	if err != nil {
 		r.Status = "error"
 		r.Findings = append(r.Findings, err.Error())

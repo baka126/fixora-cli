@@ -84,23 +84,27 @@ func BuildPlan(finding analyzer.Finding) Plan {
 	plan.Guardrails = append(plan.Guardrails, "identity-check-required", "source-patch-preferred", "secret-values-blocked")
 	switch {
 	case strings.Contains(finding.Status, "ImagePull"):
+		plan.Strategy = "image"
 		plan.PatchTemplate = imagePatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Pin a verified replacement image for the failing container.", Preview: plan.PatchTemplate})
 		plan.Confidence = 70
 		plan.Warnings = append(plan.Warnings, "Verify the replacement image exists, is pinned by tag or digest, and supports the node CPU architecture before applying.")
 		plan.Verification = append(plan.Verification, "crane digest <image> or docker manifest inspect <image>")
 	case strings.Contains(finding.Status, "OOMKilled"):
+		plan.Strategy = "resources"
 		plan.PatchTemplate = resourcesPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Set memory and CPU requests/limits from observed usage with headroom.", Preview: plan.PatchTemplate})
 		plan.Confidence = 62
 		plan.Warnings = append(plan.Warnings, "Right-size from observed usage. Do not only raise limits if the process is intentionally allocating too much memory.")
 		plan.Verification = append(plan.Verification, "query Prometheus p95/p99 memory before choosing request and limit")
 	case strings.Contains(finding.Status, "CrashLoopBackOff"):
+		plan.Strategy = "runtime"
 		plan.PatchTemplate = runtimePatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Patch command, args, probe, env, or securityContext only after confirming the actual root cause.", Preview: plan.PatchTemplate})
 		plan.Confidence = 55
 		plan.BlockedReasons = append(plan.BlockedReasons, "CrashLoopBackOff fixes require workload-specific root-cause proof before apply.")
 	case strings.Contains(finding.Status, "CreateContainerConfigError"):
+		plan.Strategy = "env"
 		plan.PatchTemplate = envPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Inject the missing ConfigMap or Secret reference.", Preview: plan.PatchTemplate})
 		plan.Confidence = 80
@@ -111,16 +115,19 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Strategy = "repair-selector"
 		plan.Confidence = 85
 	case strings.Contains(finding.Status, "HPA"):
+		plan.Strategy = "hpa"
 		plan.PatchTemplate = hpaRequestsPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Add resource requests to the scale target so the HPA can calculate metrics.", Preview: plan.PatchTemplate})
 		plan.Confidence = 90
 		plan.Warnings = append(plan.Warnings, "Without CPU/memory requests, the HPA cannot compute utilization percentage.")
 	case strings.Contains(finding.Status, "Evicted"):
+		plan.Strategy = "pdb"
 		plan.PatchTemplate = pdbPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Configure PodDisruptionBudget to protect critical workloads from node draining.", Preview: plan.PatchTemplate})
 		plan.Confidence = 60
 		plan.Warnings = append(plan.Warnings, "Do not set maxUnavailable: 0 as it blocks node upgrades.")
 	case strings.Contains(finding.Status, "Webhook"):
+		plan.Strategy = "webhook"
 		plan.PatchTemplate = webhookPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Bypass failing admission webhook temporarily.", Preview: plan.PatchTemplate})
 		plan.Confidence = 40
@@ -165,15 +172,50 @@ func Concretize(plan Plan, opts ConcreteOptions) Plan {
 	}
 	plan.PatchTemplate = patch
 	if !strings.Contains(patch, "TODO_") && strings.TrimSpace(patch) != "" && !strings.HasPrefix(strings.TrimSpace(patch), "#") {
-		plan.CanApply = true
-		plan.Safe = true
-		plan.Risk = "low"
-		plan.Confidence = max(plan.Confidence, 90)
-		plan.BlockedReasons = nil
-		plan.Guardrails = append(plan.Guardrails, "concrete-values-provided")
+		validationWarnings, validationBlocks := validateConcretePatch(plan)
+		plan.Warnings = append(plan.Warnings, validationWarnings...)
+		plan.BlockedReasons = appendUniqueMany(plan.BlockedReasons, validationBlocks...)
+		if len(validationBlocks) == 0 {
+			plan.CanApply = true
+			plan.Safe = true
+			plan.Risk = "low"
+			plan.Confidence = max(plan.Confidence, 90)
+			plan.BlockedReasons = nil
+			plan.Guardrails = append(plan.Guardrails, "concrete-values-provided")
+		} else {
+			plan.CanApply = false
+			plan.Safe = false
+			plan.Risk = "review-only"
+		}
 	}
 	plan.refreshApplyEligibility(opts.ForceRisky)
 	return plan
+}
+
+func validateConcretePatch(plan Plan) ([]string, []string) {
+	strategy := strings.ToLower(strings.TrimSpace(plan.Strategy))
+	patch := strings.ToLower(plan.PatchTemplate)
+	switch strategy {
+	case "image":
+		if !strings.Contains(patch, "image:") {
+			return nil, []string{"image strategy requires a concrete image field"}
+		}
+		return nil, nil
+	case "env":
+		if !strings.Contains(patch, "configmapkeyref") && !strings.Contains(patch, "secretkeyref") && !strings.Contains(patch, "env:") {
+			return nil, []string{"env strategy requires concrete env or valueFrom evidence"}
+		}
+		return nil, nil
+	case "resources":
+		if !strings.Contains(patch, "resources:") || (!strings.Contains(patch, "requests:") && !strings.Contains(patch, "limits:")) {
+			return nil, []string{"resources strategy requires concrete resource request or limit fields"}
+		}
+		return nil, nil
+	case "repair-selector", "service", "webhook", "runtime", "scheduling", "pdb", "ingress", "hpa":
+		return []string{"strategy " + strategy + " remains review-only and is not auto-applied"}, []string{"strategy " + strategy + " is not apply-eligible by default"}
+	default:
+		return nil, []string{"unknown strategy " + strategy + " is review-only"}
+	}
 }
 
 func (p *Plan) refreshApplyEligibility(forceRisky bool) {
@@ -380,6 +422,13 @@ func appendUnique(values []string, value string) []string {
 		}
 	}
 	return append(values, value)
+}
+
+func appendUniqueMany(values []string, next ...string) []string {
+	for _, value := range next {
+		values = appendUnique(values, value)
+	}
+	return values
 }
 
 func rollbackCommand(f analyzer.Finding) string {

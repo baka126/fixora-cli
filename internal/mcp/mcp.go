@@ -181,7 +181,7 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 		}
 		return map[string]string{"logs": mustString(s.Kubectl.Logs(ctx, firstNonEmpty(stringArg(args, "namespace"), s.AnalyzerOpt.Namespace), pod, boolArg(args, "previous")))}, nil
 	case "list-events":
-		return s.Kubectl.GetEvents(ctx, s.AnalyzerOpt.Namespace)
+		return s.Kubectl.GetEvents(ctx, s.AnalyzerOpt.Namespace, "")
 	case "list-filters":
 		return analyzer.ListAnalyzers(nil), nil
 	case "config":

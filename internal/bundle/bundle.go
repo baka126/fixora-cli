@@ -93,7 +93,7 @@ func resourceItems(ctx context.Context, k kube.Kubectl, namespace, resource stri
 }
 
 func events(ctx context.Context, k kube.Kubectl, namespace string) any {
-	items, err := k.GetEvents(ctx, namespace)
+	items, err := k.GetEvents(ctx, namespace, "")
 	if err != nil {
 		return map[string]string{"error": err.Error()}
 	}

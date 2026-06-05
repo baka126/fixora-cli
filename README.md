@@ -251,11 +251,11 @@ Remote cache configuration is opt-in because production evidence can be sensitiv
 - `patch --repo <path> --source-patch` writes the generated patch into the source repo for GitOps review.
 - `patch|fix <resource> --shadow` shows a git-style diff, asks permission, creates an isolated shadow Pod from the target Pod or high-level workload template, applies the patch to the clone, deploys a matching NetworkPolicy, waits for readiness, reports parity, then cleans up.
 - `--shadow` supports Pods and high-level Pod-template resources including Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, and CronJob. Helm charts and Kustomize overlays still deliver through `--repo`; Fixora verifies the rendered workload shape by cloning the live template.
-- `--delivery patch|cluster|pr` controls what happens after shadow verification. `patch` leaves a verified local patch, `cluster` performs the normal dry-run and final apply confirmation, and `pr` writes the source patch, commits a branch, pushes it, and opens a PR with `gh`.
+- `--delivery patch|cluster|pr` controls what happens after shadow verification. `patch` leaves a verified local patch, `cluster` performs the normal dry-run and final apply confirmation, and `pr` requires `--yes`, writes the source patch, checks for unrelated dirty files, commits only the generated patch path, pushes it, and opens a GitHub PR or GitLab MR when the matching CLI is installed.
 - `bundle --profile incident|network|storage|security` creates scoped redacted audit bundles for sharing.
 - `ui` gives a compact terminal incident dashboard without running a server.
 - `ui --tui` enables the optional interactive Bubble Tea dashboard on demand. It keeps the default output script-friendly while adding a full-screen SRE triage view with incident filtering, command palette, refresh, severity health score, AI root-cause analysis, fix-plan/runbook pane, shadow verification, GitHub/GitLab delivery, owner graph, events, logs, and focused workload/network/storage/security views.
-- In the TUI, select a failed Pod, Deployment, StatefulSet, Helm-managed workload, or related incident, press `i` for AI root cause, `f` for the fix plan, `s` to inspect the diff and deploy a shadow clone, then press `a` for direct cluster apply or `p` to push/open a GitHub PR or GitLab MR from `--repo`.
+- In the TUI, select a failed Pod, Deployment, StatefulSet, Helm-managed workload, or related incident, press `i` for AI root cause, `f` for the fix plan, `s` to inspect the diff and deploy a shadow clone, then press `a` for direct cluster apply or `p` to review branch/files/diff/remote details before pushing a GitHub PR or GitLab MR from `--repo`.
 - `watch incidents` polls incident state until interrupted.
 - `memory` stores local scenario history so repeated failures can reuse previous context.
 
@@ -294,21 +294,30 @@ The plugin is intentionally conservative:
 
 - `patch` writes a local patch template.
 - `--apply` is rejected unless the generated patch is concrete and safe.
-- GitOps-managed workloads are reported with source-target advice so users patch Helm values or Kustomize overlays instead of rendered YAML.
+- Production operators should start with read-only diagnostics (`incidents`, `analyze`, `why`, `health`, `runbook`, `preflight`) and enable mutating paths only for trusted users.
+- GitOps-managed workloads are reported with source-target advice so users patch Helm values or Kustomize overlays instead of rendered YAML. Helm source output is advisory unless Fixora can map a patch to chart-native values; review the chart schema and verify with `helm template`.
 - Logs are bounded and redacted by default.
+- External AI calls receive redacted evidence only when redaction is enabled. Shadow AI retry is disabled when redaction is off.
+- AI providers may process logs, events, metadata, and suggested patches; use local/noop providers or disable AI for restricted data environments.
 - Production scans can be bounded with `--timeout`, `--log-tail`, and `--max-logs-bytes`.
 - AI results are cached locally when cache is enabled.
 - `--paranoid` forces secret-safe redaction behavior.
 - `--ai-budget-tokens` prevents accidental expensive AI calls.
 - `--apply` runs a server-side dry-run first and refuses advisory/TODO patches.
-- `--shadow` requires an apply-eligible concrete patch before creating any sandbox resources.
+- `--shadow` requires an apply-eligible concrete patch before creating any sandbox resources. Revised AI retry patches are rejected unless they match a narrow safe strategy allowlist and do not change identity, metadata, selectors, scheduling, service accounts, privileged settings, host networking, or volumes.
 - Shadow clones strip `UID`, `ownerReferences`, finalizers, status, node pinning, and original labels so Services should not route traffic to the clone.
 - Shadow verification injects `fixora.io/sandbox=true`, `fixora.io/original-pod`, `fixora.io/session`, and `fixora.io/expires-at` labels/annotations for audit and cleanup.
 - Shadow NetworkPolicies block ingress. Egress is allowed by default for parity and can be blocked with `--shadow-egress deny`.
 - `--keep-shadow` is available for debugging, but production use should let Fixora tear down the shadow Pod and NetworkPolicy automatically.
+- TUI PR/MR delivery asks for final confirmation with branch, changed files, diff summary, remote, and provider action. The default answer is No.
+- Rollback execution is limited to structured `kubectl` and `helm` commands. Advisory rollback text is not executed.
+- Use separate RBAC grants for diagnostics, shadow validation, and apply/auto-fix. Diagnostics need read access; shadow validation needs create/delete for Pods and NetworkPolicies; apply/auto-fix needs workload write permissions and should be limited to an operator group.
+- Large-cluster scans use bounded worker concurrency and Kubernetes chunking. Scope scans by namespace and filters for incident response when possible.
 - `incidents`, `health`, and `ui` return partial results when optional resource checks are forbidden or unavailable, and include skipped checks instead of failing the whole scan.
 
 For production clusters, start from the minimal read-only RBAC example in `docs/rbac.yaml` and remove optional CRD permissions your cluster does not use.
+
+Known unsupported or review-only cases: chart-specific Helm values inference, arbitrary multi-document shadow patches, Service selector rewrites, admission webhook bypasses, scheduling constraint rewrites, service account changes, hostPath/privileged changes, and fixes that require business-specific application config.
 
 ## Release Verification
 

@@ -9,28 +9,326 @@ import (
 )
 
 type mockAI struct {
-	patch string
+	patch   string
+	finding analyzer.Finding
 }
 
-func (m mockAI) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
+func (m *mockAI) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
+	m.finding = finding
 	return &analyzer.AIResult{RecommendedFix: m.patch}, nil
 }
 
-func TestRevisePatchWithMockAI(t *testing.T) {
-	patch := `kind: Pod`
-	mock := mockAI{patch: "kind: Pod\n  some: modified_patch"}
-	revised, ok := revisePatch(context.Background(), mock, patch, Attempt{ExitReason: "OOMKilled"})
-	if !ok {
-		t.Fatal("expected patch revision")
+const originalImagePatch = `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v1
+`
+
+func TestRevisePatchAcceptsValidImageOnlyPatch(t *testing.T) {
+	mock := &mockAI{patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`}
+	revised, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{ExitReason: "ImagePullBackOff"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(revised, "modified_patch") {
-		t.Fatalf("expected mocked patch, got:\n%s", revised)
+	if !ok || !strings.Contains(revised, "repo/app:v2") {
+		t.Fatalf("expected accepted revision, got ok=%t patch=%s", ok, revised)
 	}
 }
 
-func TestRevisePatchNilProvider(t *testing.T) {
-	revised, ok := revisePatch(context.Background(), nil, "kind: Pod\n", Attempt{ExitReason: "CrashLoopBackOff"})
+func TestRevisePatchRequiresRedaction(t *testing.T) {
+	mock := &mockAI{patch: originalImagePatch}
+	_, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{Logs: []string{"password=hunter2"}}, false)
+	if ok || err == nil {
+		t.Fatalf("expected redaction-disabled retry rejection, ok=%t err=%v", ok, err)
+	}
+}
+
+func TestRevisePatchRedactsBeforeAI(t *testing.T) {
+	mock := &mockAI{patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`}
+	_, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{
+		Logs:   []string{"DATABASE_URL=postgres://user:secret@example.internal/db password=hunter2"},
+		Events: []string{"Bearer abcdefghijklmnopqrstuvwxyz123456"},
+	}, true)
+	if err != nil || !ok {
+		t.Fatalf("expected accepted revision, ok=%t err=%v", ok, err)
+	}
+	for _, log := range mock.finding.Logs {
+		if strings.Contains(log.Text, "hunter2") || strings.Contains(log.Text, "secret@example") {
+			t.Fatalf("sensitive log reached AI prompt: %s", log.Text)
+		}
+	}
+	for _, ev := range mock.finding.Evidence {
+		if strings.Contains(ev.Value, "abcdefghijklmnopqrstuvwxyz") {
+			t.Fatalf("bearer token reached AI prompt: %s", ev.Value)
+		}
+	}
+}
+
+func TestValidateRevisedPatchRejectsUnsafeChanges(t *testing.T) {
+	tests := map[string]string{
+		"metadata label": `metadata:
+  labels:
+    app: changed
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"annotation": `metadata:
+  annotations:
+    team: sre
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"template label": `spec:
+  template:
+    metadata:
+      labels:
+        app: changed
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"template annotation": `spec:
+  template:
+    metadata:
+      annotations:
+        checksum/config: changed
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"name namespace": `metadata:
+  name: other
+  namespace: prod
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"service selector": `apiVersion: v1
+kind: Service
+spec:
+  selector:
+    app: backend
+`,
+		"privileged": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+        securityContext:
+          privileged: true
+`,
+		"hostpath": `spec:
+  template:
+    spec:
+      volumes:
+      - name: host
+        hostPath:
+          path: /var/run
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"arbitrary volume": `spec:
+  template:
+    spec:
+      volumes:
+      - name: config
+        configMap:
+          name: app-config
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"service account": `spec:
+  template:
+    spec:
+      serviceAccountName: privileged
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"node selector": `spec:
+  template:
+    spec:
+      nodeSelector:
+        pool: prod
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"tolerations": `spec:
+  template:
+    spec:
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"affinity": `spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity: {}
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"host network": `spec:
+  template:
+    spec:
+      hostNetwork: true
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"host pid": `spec:
+  template:
+    spec:
+      hostPID: true
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"host ipc": `spec:
+  template:
+    spec:
+      hostIPC: true
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"sidecar injection": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+      - name: debug
+        image: busybox
+`,
+		"command override": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+        command: ["sh"]
+`,
+		"args override": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+        args: ["-c", "sleep 3600"]
+`,
+		"lifecycle hook": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sh"]
+`,
+		"capabilities": `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+        securityContext:
+          capabilities:
+            add: ["SYS_ADMIN"]
+`,
+		"owner refs": `metadata:
+  ownerReferences:
+  - kind: Deployment
+    name: owner
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"unknown kind": `apiVersion: example.com/v1
+kind: Widget
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+		"multi doc":    originalImagePatch + "\n---\nkind: Service\n",
+		"invalid yaml": "spec:\n  template:\n    spec:\n      containers:\n      - name",
+	}
+	for name, patch := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateRevisedPatch(originalImagePatch, patch, "image"); err == nil {
+				t.Fatal("expected validation rejection")
+			}
+		})
+	}
+}
+
+func TestValidateRevisedPatchRejectsUnknownStrategy(t *testing.T) {
+	err := ValidateRevisedPatch(originalImagePatch, strings.Replace(originalImagePatch, "v1", "v2", 1), "runtime")
+	if err == nil {
+		t.Fatal("expected unknown strategy rejection")
+	}
+}
+
+func TestRevisePatchRejectsMaliciousAIAndPreventsApply(t *testing.T) {
+	mock := &mockAI{patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+      - name: debug
+        image: busybox
+`}
+	revised, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{ExitReason: "retry"}, true)
+	if err == nil {
+		t.Fatal("expected malicious revised patch rejection")
+	}
 	if ok {
-		t.Fatalf("unexpected revision: %s", revised)
+		t.Fatalf("malicious patch must not be marked usable: %s", revised)
+	}
+	if revised != originalImagePatch {
+		t.Fatalf("expected original patch to remain in effect, got:\n%s", revised)
 	}
 }

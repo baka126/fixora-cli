@@ -155,7 +155,10 @@ func applyPatchToPod(pod *corev1.Pod, patchYAML string) error {
 	if patchYAML == "" {
 		return fmt.Errorf("empty patch")
 	}
-	patchJSON, err := yaml.ToJSON([]byte(firstYAMLDocument(patchYAML)))
+	if hasMultipleYAMLDocuments(patchYAML) {
+		return fmt.Errorf("multi-document YAML patches are not supported for shadow verification")
+	}
+	patchJSON, err := yaml.ToJSON([]byte(patchYAML))
 	if err != nil {
 		return fmt.Errorf("parse patch yaml: %w", err)
 	}
@@ -287,13 +290,17 @@ func copyStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func firstYAMLDocument(value string) string {
+func hasMultipleYAMLDocuments(value string) bool {
+	docs := 0
 	for _, doc := range strings.Split(value, "\n---") {
 		if strings.TrimSpace(doc) != "" {
-			return doc
+			docs++
+			if docs > 1 {
+				return true
+			}
 		}
 	}
-	return value
+	return false
 }
 
 func removeIdentity(obj map[string]any) map[string]any {
@@ -309,7 +316,7 @@ func removeIdentity(obj map[string]any) map[string]any {
 			}
 			next := map[string]any{}
 			for mk, mv := range meta {
-				if mk == "name" || mk == "namespace" || mk == "ownerReferences" || mk == "uid" || mk == "resourceVersion" || mk == "managedFields" {
+				if mk == "name" || mk == "namespace" || mk == "labels" || mk == "annotations" || mk == "ownerReferences" || mk == "uid" || mk == "resourceVersion" || mk == "managedFields" {
 					continue
 				}
 				next[mk] = mv

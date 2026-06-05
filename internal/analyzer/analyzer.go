@@ -14,6 +14,10 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/redact"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func New(k kube.Reader, opts Options) Analyzer {
@@ -67,31 +71,56 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 				unindexedEvents = append(unindexedEvents, e)
 			}
 
+			workerCount := a.opts.MaxConcurrency
+			if workerCount <= 0 {
+				workerCount = 10
+			}
+			if workerCount > len(pods.Items) && len(pods.Items) > 0 {
+				workerCount = len(pods.Items)
+			}
+			podCh := make(chan kube.Pod)
 			var logWg sync.WaitGroup
-			sem := make(chan struct{}, 10) // Bounded concurrency for log fetching
-			for _, p := range pods.Items {
-				p := p
+			tracer := otel.Tracer("fixora/analyzer")
+			for i := 0; i < workerCount; i++ {
 				logWg.Add(1)
 				go func() {
 					defer logWg.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-
-					key := p.Metadata.Namespace + "/" + p.Metadata.Name
-					relatedEvents := append([]kube.Event{}, eventIndex[key]...)
-					for _, event := range unindexedEvents {
-						if event.Metadata.Namespace == p.Metadata.Namespace && strings.Contains(event.Message, p.Metadata.Name) {
-							relatedEvents = append(relatedEvents, event)
+					for p := range podCh {
+						if ctx.Err() != nil {
+							return
 						}
-					}
-					finding, ok := a.findingForPod(sctx, p, relatedEvents)
-					if ok {
-						mu.Lock()
-						findings = append(findings, finding)
-						mu.Unlock()
+
+						workerCtx, span := tracer.Start(ctx, "AnalyzePod", trace.WithAttributes(
+							attribute.String("pod.namespace", p.Metadata.Namespace),
+							attribute.String("pod.name", p.Metadata.Name),
+						))
+
+						key := p.Metadata.Namespace + "/" + p.Metadata.Name
+						relatedEvents := append([]kube.Event{}, eventIndex[key]...)
+						for _, event := range unindexedEvents {
+							if event.Metadata.Namespace == p.Metadata.Namespace && strings.Contains(event.Message, p.Metadata.Name) {
+								relatedEvents = append(relatedEvents, event)
+							}
+						}
+						finding, ok := a.findingForPod(workerCtx, p, relatedEvents)
+						if ok {
+							mu.Lock()
+							findings = append(findings, finding)
+							mu.Unlock()
+						}
+						span.End()
 					}
 				}()
 			}
+		sendPods:
+			for _, p := range pods.Items {
+				select {
+				case <-ctx.Done():
+					break sendPods
+				case podCh <- p:
+				}
+			}
+			close(podCh)
 			logWg.Wait()
 		}
 	}()
@@ -161,7 +190,7 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		if err != nil {
 			return Finding{}, err
 		}
-		events, _ := a.k.GetEvents(ctx, ns)
+		events, _ := a.k.GetEvents(ctx, ns, "")
 		finding, ok := a.findingForPod(ctx, pod, events)
 		if !ok {
 			finding = a.healthyFinding(pod)
@@ -172,11 +201,163 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 	if err != nil {
 		return Finding{}, err
 	}
+	if isControllerKind(kind) {
+		return a.findingForController(ctx, obj, kind, name, ns)
+	}
 	finding := a.findingForObject(obj, kind, name, ns)
 	if a.opts.IncludeLogs {
 		finding.Logs = append(finding.Logs, LogSnippet{Source: "logs", Text: "logs are collected for Pods; analyze the owning pod for container logs"})
 	}
 	return finding, nil
+}
+
+func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, kind, name, namespace string) (Finding, error) {
+	finding := a.findingForObject(obj, kind, name, namespace)
+	finding.Summary = "Controller inspection completed with owned pod evidence."
+	finding.Evidence = append(finding.Evidence, Evidence{Label: "Controller status", Value: finding.Status})
+	pods, err := a.k.GetPods(ctx, namespace, false)
+	if err != nil {
+		finding.Status = "PodsUnreadable"
+		finding.Severity = "high"
+		finding.Category = "rbac"
+		finding.Summary = "Controller exists, but owned pods could not be listed."
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Pod list error", Value: err.Error()})
+		return finding, nil
+	}
+	events, _ := a.k.GetEvents(ctx, namespace, "")
+	selector := controllerSelector(obj, kind)
+	var related []kube.Pod
+	for _, pod := range pods.Items {
+		if pod.Metadata.Namespace != namespace {
+			continue
+		}
+		if podOwnedBy(pod, kind, name) || labelsMatch(selector, pod.Metadata.Labels) {
+			related = append(related, pod)
+		}
+	}
+	if len(related) == 0 {
+		finding.Status = "NoOwnedPods"
+		finding.Severity = "medium"
+		finding.Summary = "Controller has no readable owned pods in scope."
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Owned pods", Value: "0"})
+		return finding, nil
+	}
+	finding.Evidence = append(finding.Evidence, Evidence{Label: "Owned pods", Value: fmt.Sprint(len(related))})
+	var failures []Finding
+	for _, pod := range related {
+		podEvents := eventsForPod(events, pod)
+		if pf, ok := a.findingForPod(ctx, pod, podEvents); ok {
+			failures = append(failures, pf)
+		}
+	}
+	if len(failures) == 0 {
+		finding.Status = "OwnedPodsHealthy"
+		finding.Severity = "info"
+		finding.Summary = "Controller was inspected and no failing owned pod was detected."
+		return finding, nil
+	}
+	sort.Slice(failures, func(i, j int) bool {
+		return severityRank(failures[i].Severity) > severityRank(failures[j].Severity)
+	})
+	top := failures[0]
+	top.ResourceKind = normalizeControllerKind(kind)
+	top.ResourceName = name
+	top.ID = namespace + "/" + top.ResourceKind + "/" + name + "/" + top.PodName + "/" + top.Status
+	top.Summary = "Controller-owned pod is failing: " + top.Summary
+	top.Evidence = append([]Evidence{{Label: "Controller status", Value: finding.Status}}, top.Evidence...)
+	top.Evidence = append(top.Evidence, Evidence{Label: "Owned pod failures", Value: summarizeFailures(failures)})
+	return top, nil
+}
+
+func isControllerKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "deployment", "deploy", "deployments", "statefulset", "statefulsets", "sts", "daemonset", "daemonsets", "ds", "replicaset", "replicasets", "rs", "job", "jobs", "cronjob", "cronjobs", "cj":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeControllerKind(kind string) string {
+	switch strings.ToLower(kind) {
+	case "deploy", "deployment", "deployments":
+		return "Deployment"
+	case "sts", "statefulset", "statefulsets":
+		return "StatefulSet"
+	case "ds", "daemonset", "daemonsets":
+		return "DaemonSet"
+	case "rs", "replicaset", "replicasets":
+		return "ReplicaSet"
+	case "job", "jobs":
+		return "Job"
+	case "cj", "cronjob", "cronjobs":
+		return "CronJob"
+	default:
+		return toTitle(kind)
+	}
+}
+
+func controllerSelector(obj map[string]any, kind string) map[string]string {
+	spec := nestedMapAny(obj, "spec")
+	if strings.EqualFold(kind, "cronjob") || strings.EqualFold(kind, "cronjobs") || strings.EqualFold(kind, "cj") {
+		spec = nestedMapAny(obj, "spec", "jobTemplate", "spec")
+	}
+	selector := stringMap(nestedMapAny(spec, "selector", "matchLabels"))
+	if len(selector) > 0 {
+		return selector
+	}
+	return stringMap(nestedMapAny(spec, "template", "metadata", "labels"))
+}
+
+func podOwnedBy(pod kube.Pod, kind, name string) bool {
+	wantKind := normalizeControllerKind(kind)
+	for _, ref := range pod.Metadata.OwnerRefs {
+		if strings.EqualFold(ref.Kind, wantKind) && ref.Name == name {
+			return true
+		}
+		if wantKind == "Deployment" && strings.EqualFold(ref.Kind, "ReplicaSet") && strings.HasPrefix(ref.Name, name+"-") {
+			return true
+		}
+		if wantKind == "CronJob" && strings.EqualFold(ref.Kind, "Job") && strings.HasPrefix(ref.Name, name+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+func labelsMatch(selector, labels map[string]string) bool {
+	if len(selector) == 0 {
+		return false
+	}
+	for key, value := range selector {
+		if labels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func eventsForPod(events []kube.Event, pod kube.Pod) []kube.Event {
+	var out []kube.Event
+	for _, event := range events {
+		if event.InvolvedObject.Name == pod.Metadata.Name || (event.Metadata.Namespace == pod.Metadata.Namespace && strings.Contains(event.Message, pod.Metadata.Name)) {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func summarizeFailures(findings []Finding) string {
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[f.Status]++
+	}
+	var parts []string
+	for status, count := range counts {
+		parts = append(parts, fmt.Sprintf("%s=%d", status, count))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 func (a Analyzer) Predict(ctx context.Context) ([]Prediction, error) {
@@ -260,11 +441,12 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 	if status == "" {
 		return Finding{}, false
 	}
+	kind, name := a.resolveTopOwner(ctx, pod.Metadata.Namespace, topOwnerKind(pod), topOwnerName(pod))
 	f := Finding{
 		ID:           pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + status,
 		Namespace:    pod.Metadata.Namespace,
-		ResourceKind: topOwnerKind(pod),
-		ResourceName: topOwnerName(pod),
+		ResourceKind: kind,
+		ResourceName: name,
 		PodName:      pod.Metadata.Name,
 		Status:       status,
 		Severity:     severity,
@@ -360,7 +542,7 @@ func (a Analyzer) redact(value string) string {
 	if !a.opts.Redact {
 		return value
 	}
-	return redact.Text(value)
+	return redact.KubernetesText(value)
 }
 
 func podProblem(pod kube.Pod) (status, category, severity string) {
@@ -466,6 +648,25 @@ func ownerChain(pod kube.Pod) []string {
 	return chain
 }
 
+func (a Analyzer) resolveTopOwner(ctx context.Context, ns, kind, name string) (string, string) {
+	if kind == "ReplicaSet" || kind == "Job" {
+		obj, err := a.k.GetResource(ctx, ns, kind+"/"+name)
+		if err == nil {
+			meta, _ := obj["metadata"].(map[string]any)
+			if owners, ok := meta["ownerReferences"].([]any); ok && len(owners) > 0 {
+				if last, ok := owners[len(owners)-1].(map[string]any); ok {
+					if parentKind, ok := last["kind"].(string); ok {
+						if parentName, ok := last["name"].(string); ok {
+							return a.resolveTopOwner(ctx, ns, parentKind, parentName)
+						}
+					}
+				}
+			}
+		}
+	}
+	return kind, name
+}
+
 func topOwnerKind(pod kube.Pod) string {
 	if len(pod.Metadata.OwnerRefs) == 0 {
 		return "Pod"
@@ -503,6 +704,22 @@ func stringMap(value any) map[string]string {
 		out[key] = fmt.Sprint(val)
 	}
 	return out
+}
+
+func nestedMapAny(obj map[string]any, keys ...string) map[string]any {
+	var cur any = obj
+	for _, key := range keys {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return map[string]any{}
+		}
+		cur = m[key]
+	}
+	m, ok := cur.(map[string]any)
+	if !ok || m == nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 func compactMap(m map[string]any) string {

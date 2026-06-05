@@ -1,7 +1,9 @@
 package repo
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +39,78 @@ func TestWriteSourcePatchUpdatesKustomization(t *testing.T) {
 	}
 }
 
+func TestEnsureNoUnrelatedChangesBlocksDirtyTree(t *testing.T) {
+	dir := t.TempDir()
+	gitTest(t, dir, "init")
+	gitTest(t, dir, "config", "user.email", "fixora@example.com")
+	gitTest(t, dir, "config", "user.name", "Fixora Test")
+	if err := os.WriteFile(filepath.Join(dir, "allowed.yaml"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(dir, "allowed.yaml"), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.yaml"), []byte("dirty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureNoUnrelatedChanges(context.Background(), dir, []string{filepath.Join(dir, "allowed.yaml")})
+	if err == nil || !strings.Contains(err.Error(), "unrelated.yaml") {
+		t.Fatalf("expected unrelated dirty file rejection, got %v", err)
+	}
+}
+
+func TestEnsureNoUnrelatedChangesBlocksRenames(t *testing.T) {
+	dir := t.TempDir()
+	gitTest(t, dir, "init")
+	gitTest(t, dir, "config", "user.email", "fixora@example.com")
+	gitTest(t, dir, "config", "user.name", "Fixora Test")
+	if err := os.WriteFile(filepath.Join(dir, "allowed.yaml"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "old.yaml"), []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-m", "initial")
+	gitTest(t, dir, "mv", "old.yaml", "new.yaml")
+	err := ensureNoUnrelatedChanges(context.Background(), dir, []string{filepath.Join(dir, "allowed.yaml")})
+	if err == nil || !strings.Contains(err.Error(), "old.yaml") {
+		t.Fatalf("expected unrelated rename rejection, got %v", err)
+	}
+}
+
+func TestEnsureNoUnrelatedChangesAllowsIntendedModifiedPath(t *testing.T) {
+	dir := t.TempDir()
+	gitTest(t, dir, "init")
+	gitTest(t, dir, "config", "user.email", "fixora@example.com")
+	gitTest(t, dir, "config", "user.name", "Fixora Test")
+	allowed := filepath.Join(dir, "allowed.yaml")
+	if err := os.WriteFile(allowed, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-m", "initial")
+	if err := os.WriteFile(allowed, []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNoUnrelatedChanges(context.Background(), dir, []string{allowed}); err != nil {
+		t.Fatalf("intended modified path should be allowed: %v", err)
+	}
+}
+
+func gitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return string(out)
+}
+
 func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: api\nversion: 0.1.0\n"), 0o600); err != nil {
@@ -62,5 +136,8 @@ func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "fixoraSuggestedPatch") {
 		t.Fatalf("expected Helm review block, got %s", string(data))
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, " "), "advisory only") {
+		t.Fatalf("expected advisory warning, got %#v", result.Warnings)
 	}
 }
