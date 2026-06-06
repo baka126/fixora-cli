@@ -108,8 +108,7 @@ func (l *listFlag) Set(value string) error {
 
 func Execute(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printHelp(stdout)
-		return 0
+		args = []string{"dashboard"}
 	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		if hasArg(args[1:], "--advanced") || hasArg(args[1:], "-a") {
