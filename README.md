@@ -49,60 +49,45 @@ GitHub Actions builds Linux, macOS, and Windows release archives for every `v*` 
 
 ## Commands
 
+Start with the incident workflow:
+
 ```sh
-kubectl fixora status
+kubectl fixora scan -A
 kubectl fixora doctor -A
-kubectl fixora filters
-kubectl fixora integrations
-kubectl fixora incidents -A --include-logs
-kubectl fixora incidents -A --filter Pod,Deployment,Service
-kubectl fixora why deployment/api -n prod --proof
-kubectl fixora graph deployment/api -n prod -o mermaid
-kubectl fixora trace service/api -n prod
-kubectl fixora storage -A
-kubectl fixora rbac default get secrets -n prod
-kubectl fixora dns -n prod
-kubectl fixora security -n prod
-kubectl fixora node-pressure
-kubectl fixora analyze deployment/api -n prod
-kubectl fixora explain pod/api-abc123 -n prod --include-logs --ai
-kubectl fixora health -n prod
-kubectl fixora runbook deployment/api -n prod
-kubectl fixora readiness deployment/api -n prod
-kubectl fixora changes deployment/api -n prod
-kubectl fixora plan deployment/api -n prod
-kubectl fixora plan deployment/api -n prod --repo ./charts/api
-kubectl fixora diff deployment/api -n prod --proof
-kubectl fixora patch deployment/api -n prod --out fixora-patch.yaml
-kubectl fixora patch deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3 --out fixora-patch.yaml
-kubectl fixora patch deployment/api -n prod --repo ./charts/api --source-patch
-kubectl fixora patch deployment/api -n prod --container api --memory-request 512Mi --cpu-request 250m --memory-limit 1Gi --shadow --delivery patch
-kubectl fixora fix statefulset/db -n prod --container db --memory-request 2Gi --cpu-request 500m --memory-limit 4Gi --shadow --delivery pr --repo ./charts/db --branch fixora/db-shadow --pr-base main
-kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3 --shadow --delivery cluster
-kubectl fixora patch deployment/api -n prod --preview
-kubectl fixora rollback deployment/api -n prod --preview
-kubectl fixora report deployment/api -n prod --include-logs --ai --out report.md
-kubectl fixora bundle deployment/api -n prod --profile incident --out fixora-bundle.tgz
-kubectl fixora bundle deployment/api -n prod --profile network --out fixora-network.tgz
-kubectl fixora cost nodes
-kubectl fixora predict -A
-kubectl fixora lint -f manifests/deployment.yaml
-kubectl fixora policy-check -f manifests/deployment.yaml
-kubectl fixora preflight -f manifests/deployment.yaml
-kubectl fixora watch incidents -A
-kubectl fixora repo ./charts/api
-kubectl fixora validate ./charts/api
+kubectl fixora why deployment/api -n prod
+kubectl fixora fix deployment/api -n prod
+kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3
+kubectl fixora fix deployment/api -n prod --repo ./charts/api --gitops
 kubectl fixora ui -A
-kubectl fixora ui --tui -A --include-logs
-kubectl fixora ui --tui -n prod --include-logs --repo ./charts/api --shadow-retries 1 --pr-base main
+kubectl fixora cluster
+```
+
+The TUI starts in a fast incident mode: pod failures only, no log fetches, and typed Kubernetes reads. Press `D` for deep analyzers, `L` to collect logs, `C` to toggle cluster-wide scope, or use `--include-logs` only when you need log snippets at startup.
+
+Fixora chooses built-in analyzers automatically for the common path. For example, `why service/api` runs the Service/networking checks, `why pvc/data` runs storage checks, and `fix deployment/api` combines workload, pod, Service, HPA, and PDB signals. Use `--filter` only when you want to force a specific analyzer set.
+
+Use specialist commands when the RCA points to a subsystem:
+
+```sh
+kubectl fixora debug trace service/api -n prod
+kubectl fixora debug graph deployment/api -n prod -o mermaid
+kubectl fixora debug storage -A
+kubectl fixora debug rbac default get secrets -n prod
+kubectl fixora debug dns -n prod
+kubectl fixora debug security -n prod
+kubectl fixora debug node-pressure
+kubectl fixora source validate ./charts/api
+kubectl fixora source lint -f manifests/deployment.yaml
+kubectl fixora source preflight -f manifests/deployment.yaml
+```
+
+Setup and advanced references:
+
+```sh
 kubectl fixora auth set openai "$OPENAI_API_KEY"
 kubectl fixora config view
-kubectl fixora cache stats
-kubectl fixora custom-analyzers add ./my-analyzer
 kubectl fixora ai doctor
-kubectl fixora ai profiles
-kubectl fixora memory list
-kubectl fixora serve 127.0.0.1:8089
+kubectl fixora help --advanced
 ```
 
 ## Config Management
@@ -241,18 +226,19 @@ Remote cache configuration is opt-in because production evidence can be sensitiv
 
 ## High-Impact Workflows
 
-- `why <resource>` gives a concise incident explanation, confidence score, rollback hint, and optional proof.
+- `scan` lists active incidents with bounded logs, typed client reads, and redaction enabled by default.
+- `why <resource>` gives a concise incident explanation, confidence score, rollback hint, and proof.
+- `fix <resource>` is the production incident path: RCA, remediation plan, suggested diff, and either a concrete next command or a gated shadow verification flow.
+- `fix <resource> --container <name> --image <pinned-image>` fills an image remediation and defaults to shadow verification before delivery.
+- `fix <resource> --repo <path> --gitops` prefers source-controlled output for Helm, Kustomize, or raw manifests.
 - `runbook <resource>` turns incident evidence into an operator runbook with verify, safe fix, rollback, and warning sections.
 - `readiness <resource>` scores whether Fixora has enough evidence for a safe fix.
 - `health` summarizes namespace or cluster incident count, skipped checks, severity, and services without endpoints.
 - `changes <resource>` surfaces rollout metadata, revisions, checksum/image annotations, and generation signals.
 - `rollback <resource> --preview` shows the safest rollback command. `--apply` executes only when a deterministic command exists.
 - `graph <resource>` outputs a dependency graph as text, JSON, YAML, or Mermaid.
-- `trace`, `storage`, `rbac`, `dns`, `security`, and `node-pressure` provide focused production debuggers.
-- `repo` detects raw, Helm, or Kustomize source mode.
-- `validate` renders or dry-runs local source where the required tool is available.
-- `preflight -f <path>` runs static policy checks and server dry-run before a manifest apply.
-- `policy-check -f <path>` runs production policy lint without touching the cluster.
+- `debug trace|storage|rbac|dns|security|node-pressure` provide focused production debuggers.
+- `source repo|validate|lint|preflight|policy-check` groups source and manifest validation commands.
 - `patch --preview` shows the fix plan, risk, confidence, blocked reasons, and rollback command without writing files.
 - `fix <resource>` uses a structured production remediation plan with confidence gates, rollback, verification commands, and `applyEligible` checks before any live apply.
 - `fix <resource> --strategy right-size|repair-selector|add-requests|rollback --repo <path> --source-patch` prefers GitOps source patches for production clusters.

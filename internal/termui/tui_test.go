@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/repo"
@@ -60,6 +61,40 @@ func TestHelpTextIncludesShadowVerify(t *testing.T) {
 	}
 	if !containsAny(helpText(), "github pr", "gitlab mr") {
 		t.Fatal("expected TUI help to mention PR/MR delivery")
+	}
+	if !containsAny(helpText(), "fast/deep", "toggle logs") {
+		t.Fatal("expected TUI help to mention fast/deep and log toggles")
+	}
+}
+
+func TestTUIDefaultsToFastPodOnlyScan(t *testing.T) {
+	filters := fastTUIFilters()
+	if !isFastTUIFilters(filters) {
+		t.Fatalf("expected fast pod-only filters, got %#v", filters)
+	}
+	if got := scanModeLabel(TUIOptions{Filters: filters}, false); !strings.Contains(got, "fast") || !strings.Contains(got, "logs=off") {
+		t.Fatalf("unexpected scan mode label: %s", got)
+	}
+}
+
+func TestTUITogglesDeepScanAndLogs(t *testing.T) {
+	m := tuiModel{opts: TUIOptions{Filters: fastTUIFilters()}, deepScan: false}
+	next, cmd := m.Update(teaKey("D"))
+	if cmd == nil {
+		t.Fatal("expected scan command after deep toggle")
+	}
+	got := next.(tuiModel)
+	if !got.deepScan || len(got.opts.Filters) != 0 || !strings.Contains(got.message, "deep scan") {
+		t.Fatalf("expected deep scan mode, got %#v message=%q", got.opts.Filters, got.message)
+	}
+
+	next, cmd = got.Update(teaKey("L"))
+	if cmd == nil {
+		t.Fatal("expected scan command after logs toggle")
+	}
+	got = next.(tuiModel)
+	if !got.opts.IncludeLogs || !strings.Contains(got.message, "log collection enabled") {
+		t.Fatalf("expected logs enabled, got includeLogs=%t message=%q", got.opts.IncludeLogs, got.message)
 	}
 }
 
@@ -211,4 +246,15 @@ func runGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
 	return string(out)
+}
+
+func teaKey(value string) tea.KeyMsg {
+	switch value {
+	case "D":
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}}
+	case "L":
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+	}
 }
