@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -562,6 +563,7 @@ func Auth(args []string) error {
 
 		known := []providerDef{
 			{"openai", "OpenAI", "https://api.openai.com/v1", []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"}},
+			{"gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"}},
 			{"anthropic", "Anthropic", "", []string{"claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"}},
 			{"ollama", "Ollama (Local)", "http://localhost:11434/v1", []string{"llama3", "mistral", "gemma", "phi3"}},
 			{"bedrock", "AWS Bedrock", "", []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "meta.llama3-70b-instruct-v1:0"}},
@@ -619,6 +621,11 @@ func Auth(args []string) error {
 
 		var model string
 		if len(models) > 0 {
+			if dynModels := fetchModelsDynamically(provider, baseURL, key); len(dynModels) > 0 {
+				models = dynModels
+				fmt.Printf("\nFetched %d models from %s.\n", len(models), provider)
+			}
+
 			fmt.Println("\nSelect Model:")
 			for i, m := range models {
 				fmt.Printf("  %d. %s\n", i+1, m)
@@ -664,6 +671,76 @@ func Auth(args []string) error {
 	}
 
 	return Save(cfg)
+}
+
+func fetchModelsDynamically(provider, baseURL, apiKey string) []string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	var reqURL string
+
+	switch provider {
+	case "openai":
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models"
+	case "gemini":
+		if baseURL == "" {
+			baseURL = "https://generativelanguage.googleapis.com/v1beta"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models?key=" + apiKey
+	case "ollama":
+		if baseURL == "" {
+			baseURL = "http://localhost:11434/v1"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models"
+	default:
+		return nil
+	}
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil
+	}
+
+	if provider == "openai" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+
+	var fetched []string
+	if provider == "gemini" && len(result.Models) > 0 {
+		for _, m := range result.Models {
+			name := strings.TrimPrefix(m.Name, "models/")
+			fetched = append(fetched, name)
+		}
+	} else if len(result.Data) > 0 {
+		for _, d := range result.Data {
+			fetched = append(fetched, d.ID)
+		}
+	}
+	return fetched
 }
 
 func loadStored() (Config, error) {
