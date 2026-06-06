@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -544,21 +545,55 @@ func AddCustomAnalyzer(path string) error {
 }
 
 func Auth(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("auth set requires provider and api key")
-	}
 	cfg, err := Load()
 	if err != nil {
 		return err
 	}
-	cfg.AIProvider = args[0]
-	cfg.AIAPIKey = args[1]
-	if len(args) > 2 {
-		cfg.AIBaseURL = args[2]
+
+	if len(args) < 2 {
+		reader := bufio.NewReader(os.Stdin)
+		
+		fmt.Print("AI Provider (e.g., openai, anthropic, bedrock) [openai]: ")
+		provider, _ := reader.ReadString('\n')
+		provider = strings.TrimSpace(provider)
+		if provider == "" {
+			provider = "openai"
+		}
+		
+		fmt.Print("API Key: ")
+		key, _ := reader.ReadString('\n')
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return fmt.Errorf("api key is required")
+		}
+		
+		fmt.Print("Base URL (optional, press Enter to skip): ")
+		baseURL, _ := reader.ReadString('\n')
+		baseURL = strings.TrimSpace(baseURL)
+		
+		fmt.Print("Model (optional, press Enter to skip): ")
+		model, _ := reader.ReadString('\n')
+		model = strings.TrimSpace(model)
+		
+		cfg.AIProvider = provider
+		cfg.AIAPIKey = key
+		if baseURL != "" {
+			cfg.AIBaseURL = baseURL
+		}
+		if model != "" {
+			cfg.AIModel = model
+		}
+	} else {
+		cfg.AIProvider = args[0]
+		cfg.AIAPIKey = args[1]
+		if len(args) > 2 {
+			cfg.AIBaseURL = args[2]
+		}
+		if len(args) > 3 {
+			cfg.AIModel = args[3]
+		}
 	}
-	if len(args) > 3 {
-		cfg.AIModel = args[3]
-	}
+
 	return Save(cfg)
 }
 

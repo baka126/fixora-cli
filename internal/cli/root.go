@@ -1110,15 +1110,22 @@ func runMemory(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAuth(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] == "help" {
+	if len(args) > 0 && args[0] == "help" {
 		fmt.Fprintln(stdout, "usage: kubectl fixora auth set <provider> <api-key> [base-url] [model]")
 		return 0
 	}
-	if args[0] != "set" {
-		fmt.Fprintf(stderr, "error: unknown auth command %q\n", args[0])
-		return 2
+
+	var authArgs []string
+	if len(args) > 0 {
+		if args[0] == "set" {
+			authArgs = args[1:]
+		} else {
+			fmt.Fprintf(stderr, "error: unknown auth command %q\n", args[0])
+			return 2
+		}
 	}
-	if err := config.Auth(args[1:]); err != nil {
+
+	if err := config.Auth(authArgs); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -1128,18 +1135,22 @@ func runAuth(args []string, stdout, stderr io.Writer) int {
 
 func runConfig(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "view" {
+		viewArgs := []string{}
+		if len(args) > 1 {
+			viewArgs = args[1:]
+		}
 		cfg, err := config.Load()
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		if hasArg(args[1:], "--resolved") || hasArg(args[1:], "--show-sources") {
+		if hasArg(viewArgs, "--resolved") || hasArg(viewArgs, "--show-sources") {
 			resolved, err := config.Resolved()
 			if err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
-			if !hasArg(args[1:], "--show-sources") {
+			if !hasArg(viewArgs, "--show-sources") {
 				flat := map[string]any{}
 				for key, value := range resolved {
 					flat[key] = value.Value
@@ -1524,7 +1535,7 @@ func analyzerFiltersForCommand(cmd string, rest []string, opts options) []string
 			return analyzer.SmartFiltersFor(rest[0], "")
 		}
 	case "health":
-		return analyzer.DefaultIncidentFilters(false)
+		return analyzer.ComprehensiveDiagnosticFilters()
 	}
 	return nil
 }
