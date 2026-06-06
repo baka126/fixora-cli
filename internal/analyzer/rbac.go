@@ -13,6 +13,9 @@ func (a Analyzer) analyzeRBAC(ctx *ScanContext) ([]Finding, error) {
 		}
 		for _, item := range items {
 			namespace, name := objectNamespaceName(item)
+			if strings.HasPrefix(name, "system:") {
+				continue
+			}
 			kind := firstNonEmpty(strValue(item["kind"]), "Role")
 			for _, rule := range nestedSlice(item, "rules") {
 				ruleMap, _ := rule.(map[string]any)
@@ -46,6 +49,9 @@ func (a Analyzer) analyzeRBAC(ctx *ScanContext) ([]Finding, error) {
 		}
 		for _, item := range items {
 			namespace, name := objectNamespaceName(item)
+			if strings.HasPrefix(name, "system:") {
+				continue
+			}
 			roleRef := nestedMap(item, "roleRef")
 			if strings.EqualFold(strValue(roleRef["name"]), "cluster-admin") {
 				out = append(out, Finding{

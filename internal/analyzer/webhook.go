@@ -18,6 +18,9 @@ func (a Analyzer) analyzeWebhooks(ctx *ScanContext) ([]Finding, error) {
 		}
 		for _, cfg := range items {
 			_, name := objectNamespaceName(cfg)
+			if strings.HasPrefix(name, "system:") || strings.HasPrefix(name, "kube-") || strings.HasPrefix(name, "eks-") {
+				continue
+			}
 			for _, webhook := range nestedSlice(cfg, "webhooks") {
 				webhookMap, _ := webhook.(map[string]any)
 				webhookName := strValue(webhookMap["name"])
