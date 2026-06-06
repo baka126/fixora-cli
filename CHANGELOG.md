@@ -45,7 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Added
+- Promoted `doctor` and `profiles` to top-level commands.
+- Interactive terminal UI (dashboard) is now the default when no arguments are provided.
+- `fix` command is now fully interactive when run without arguments.
 - Typed Kubernetes client stack
 - Production auto-fix workflow hardening
 - Local MCP stdio server for AI assistants
@@ -55,8 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Progress indicators
 
 ### Changed
+- Drastically simplified the CLI by removing redundant subcommands (`plan`, `diff`, `patch`, `report`, etc.) in favor of the unified `fix` and TUI workflows.
 - Improved watch mode output
 - Fixed timeout zero-value flag logic
 - Update install-local.sh build flags
 - Graceful shutdown with signal contexts
 - Makefile lint and code coverage targets
+
+### Fixed
+- Fixed bug where short flags interspersed with positional arguments (e.g., `kubectl-fixora fix deployment/api -n prod`) were incorrectly parsed, by migrating to `pflag`.
+- Filtered system resources from RBAC and webhook analyzers to significantly reduce noise.
