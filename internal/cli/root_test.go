@@ -66,6 +66,142 @@ func TestParseProductionBounds(t *testing.T) {
 	}
 }
 
+func TestHelpIsIncidentFocusedByDefault(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("help failed: code=%d stderr=%s", code, stderr.String())
+	}
+	help := stdout.String()
+	for _, want := range []string{"scan", "why <kind/name>", "fix <kind/name>", "debug <tool>", "source <tool>"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("focused help missing %q:\n%s", want, help)
+		}
+	}
+	for _, hidden := range []string{"custom-analyzers", "serve --mcp", "cache add|get|remove"} {
+		if strings.Contains(help, hidden) {
+			t.Fatalf("focused help should hide advanced command %q:\n%s", hidden, help)
+		}
+	}
+}
+
+func TestAdvancedHelpShowsFullReference(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"help", "--advanced"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("advanced help failed: code=%d stderr=%s", code, stderr.String())
+	}
+	for _, want := range []string{"custom-analyzers", "serve --mcp", "patch <kind/name>", "--shadow-timeout"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("advanced help missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestSimplifiedCommandAliases(t *testing.T) {
+	tests := []struct {
+		cmd     string
+		rest    []string
+		wantCmd string
+		wantArg string
+	}{
+		{cmd: "scan", wantCmd: "incidents"},
+		{cmd: "rca", rest: []string{"deployment/api"}, wantCmd: "why", wantArg: "deployment/api"},
+		{cmd: "repair", rest: []string{"deployment/api"}, wantCmd: "fix", wantArg: "deployment/api"},
+		{cmd: "debug", rest: []string{"trace", "service/api"}, wantCmd: "trace", wantArg: "service/api"},
+		{cmd: "source", rest: []string{"validate", "./charts/api"}, wantCmd: "validate", wantArg: "./charts/api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			gotCmd, gotRest, err := normalizeCommand(tt.cmd, tt.rest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if gotCmd != tt.wantCmd {
+				t.Fatalf("cmd=%q want %q", gotCmd, tt.wantCmd)
+			}
+			if tt.wantArg != "" && (len(gotRest) == 0 || gotRest[0] != tt.wantArg) {
+				t.Fatalf("rest=%#v want first arg %q", gotRest, tt.wantArg)
+			}
+		})
+	}
+}
+
+func TestInterspersedFlagsAfterResource(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	opts, rest, err := parseFlags(reorderFlagArgs([]string{"deployment/api", "-n", "prod", "--proof", "--container", "api", "--selector", "app=api"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.namespace != "prod" || !opts.proof || opts.container != "api" || opts.labelSelector != "app=api" {
+		t.Fatalf("flags after resource were not parsed: %#v", opts)
+	}
+	if len(rest) != 1 || rest[0] != "deployment/api" {
+		t.Fatalf("resource positional not preserved: %#v", rest)
+	}
+}
+
+func TestAnalyzerFilterSelectionForCommands(t *testing.T) {
+	if got := splitCSV("Pod, Deployment,Service"); len(got) != 3 || got[0] != "Pod" || got[1] != "Deployment" || got[2] != "Service" {
+		t.Fatalf("splitCSV did not split comma filters: %#v", got)
+	}
+
+	explicit := analyzerFiltersForCommand("incidents", nil, options{filters: "service,ingress"})
+	if strings.Join(explicit, ",") != "service,ingress" {
+		t.Fatalf("explicit filters should win, got %#v", explicit)
+	}
+
+	targeted := analyzerFiltersForCommand("why", []string{"service/api"}, options{})
+	for _, want := range []string{"pod", "service", "networking"} {
+		if !hasString(targeted, want) {
+			t.Fatalf("smart service filters missing %q: %#v", want, targeted)
+		}
+	}
+
+	quick := analyzerFiltersForCommand("incidents", nil, options{quick: true})
+	if strings.Join(quick, ",") != "pod" {
+		t.Fatalf("quick incident scan should use pod only, got %#v", quick)
+	}
+}
+
+func TestIncidentDefaultsSimplifyProductionWorkflow(t *testing.T) {
+	opts := options{visited: map[string]bool{}}
+	applyWorkflowDefaults("fix", &opts)
+	if !opts.includeLogs || !opts.typedClient || !opts.redact || !opts.paranoid || !opts.shadowVerify {
+		t.Fatalf("fix defaults should enable logs, typed client, redaction, paranoid, and shadow: %#v", opts)
+	}
+
+	opts = options{quick: true, visited: map[string]bool{}}
+	applyWorkflowDefaults("fix", &opts)
+	if opts.shadowVerify {
+		t.Fatalf("quick fix should skip default shadow verification: %#v", opts)
+	}
+
+	opts = options{gitops: true, repoPath: "./charts/api", visited: map[string]bool{}}
+	applyWorkflowDefaults("fix", &opts)
+	if !opts.sourcePatch || opts.shadowVerify {
+		t.Fatalf("gitops fix should prefer source patch output without implicit shadow: %#v", opts)
+	}
+
+	opts = options{visited: map[string]bool{}}
+	applyWorkflowDefaults("ui", &opts)
+	if opts.includeLogs {
+		t.Fatalf("ui should not enable log collection by default: %#v", opts)
+	}
+	if !opts.typedClient || !opts.redact {
+		t.Fatalf("ui should still enable typed reads and redaction: %#v", opts)
+	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAICallRequiresRedactionUnlessUnsafe(t *testing.T) {
 	var stderr bytes.Buffer
 	finding := analyzer.Finding{Summary: "pod failed", Logs: []analyzer.LogSnippet{{Text: "password=hunter2"}}}

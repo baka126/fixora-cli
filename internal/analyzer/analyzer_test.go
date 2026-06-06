@@ -341,6 +341,7 @@ type fakeReader struct {
 	pods      kube.PodList
 	events    []kube.Event
 	resource  map[string]any
+	items     map[string][]map[string]any
 	runErr    error
 	eventsErr error
 	logFn     func()
@@ -361,7 +362,10 @@ func (f fakeReader) GetResource(context.Context, string, string) (map[string]any
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (f fakeReader) GetResourceItems(context.Context, string, bool, string) ([]map[string]any, error) {
+func (f fakeReader) GetResourceItems(_ context.Context, _ string, _ bool, resource string) ([]map[string]any, error) {
+	if f.items != nil {
+		return f.items[resource], nil
+	}
 	return nil, fmt.Errorf("not implemented")
 }
 

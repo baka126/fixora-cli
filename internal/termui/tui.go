@@ -35,6 +35,7 @@ type TUIOptions struct {
 	Redact        bool
 	UnsafeAI      bool
 	Filters       []string
+	LabelSelector string
 	Refresh       time.Duration
 	ScanTimeout   time.Duration
 	ApplyDryRun   bool
@@ -81,6 +82,7 @@ type tuiModel struct {
 	shadow      shadow.Result
 	shadowing   bool
 	aiRunning   bool
+	deepScan    bool
 }
 
 type tickMsg time.Time
@@ -121,18 +123,15 @@ var tuiTabs = []string{"Incidents", "Workloads", "Network", "Storage", "Security
 
 func RunTUI(ctx context.Context, k kube.Reader, opts TUIOptions) error {
 	if opts.Refresh <= 0 {
-		opts.Refresh = 10 * time.Second
+		opts.Refresh = 30 * time.Second
 	}
 	if opts.ScanTimeout <= 0 {
-		opts.ScanTimeout = 90 * time.Second
+		opts.ScanTimeout = 20 * time.Second
 	}
-	a := analyzer.New(k, analyzer.Options{
-		Namespace:   opts.Namespace,
-		AllNS:       opts.AllNS,
-		IncludeLogs: opts.IncludeLogs,
-		Redact:      opts.Redact,
-		Filters:     opts.Filters,
-	})
+	if len(opts.Filters) == 0 {
+		opts.Filters = fastTUIFilters()
+	}
+	a := newTUIAnalyzer(k, opts)
 	columns := []table.Column{
 		{Title: "SEV", Width: 8},
 		{Title: "NS", Width: 12},
@@ -157,7 +156,7 @@ func RunTUI(ctx context.Context, k kube.Reader, opts TUIOptions) error {
 	gl.SetShowStatusBar(false)
 	gl.SetFilteringEnabled(false)
 
-	m := tuiModel{ctx: ctx, k: k, a: a, opts: opts, table: t, renderer: renderer, spinner: s, scanning: true, nsList: nl, graphList: gl}
+	m := tuiModel{ctx: ctx, k: k, a: a, opts: opts, table: t, renderer: renderer, spinner: s, scanning: true, nsList: nl, graphList: gl, deepScan: !isFastTUIFilters(opts.Filters)}
 	options := []tea.ProgramOption{}
 	if !opts.NoAltScreen {
 		options = append(options, tea.WithAltScreen())
@@ -171,6 +170,37 @@ func RunTUI(ctx context.Context, k kube.Reader, opts TUIOptions) error {
 
 func (m tuiModel) Init() tea.Cmd {
 	return tea.Batch(m.scanCmd(), tick(m.opts.Refresh), m.spinner.Tick)
+}
+
+func newTUIAnalyzer(k kube.Reader, opts TUIOptions) analyzer.Analyzer {
+	return analyzer.New(k, analyzer.Options{
+		Namespace:     opts.Namespace,
+		AllNS:         opts.AllNS,
+		IncludeLogs:   opts.IncludeLogs,
+		Redact:        opts.Redact,
+		Filters:       opts.Filters,
+		LabelSelector: opts.LabelSelector,
+	})
+}
+
+func fastTUIFilters() []string {
+	return analyzer.DefaultIncidentFilters(true)
+}
+
+func isFastTUIFilters(filters []string) bool {
+	return len(filters) == 1 && strings.EqualFold(filters[0], "pod")
+}
+
+func scanModeLabel(opts TUIOptions, deep bool) string {
+	mode := "fast"
+	if deep {
+		mode = "deep"
+	}
+	logs := "logs=off"
+	if opts.IncludeLogs {
+		logs = "logs=on"
+	}
+	return mode + " " + logs
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -198,13 +228,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.opts.AllNS = false
 					}
 					m.switchingNS = false
-					m.a = analyzer.New(m.k, analyzer.Options{
-						Namespace:   m.opts.Namespace,
-						AllNS:       m.opts.AllNS,
-						IncludeLogs: m.opts.IncludeLogs,
-						Redact:      m.opts.Redact,
-						Filters:     m.opts.Filters,
-					})
+					m.a = newTUIAnalyzer(m.k, m.opts)
+					m.scanning = true
 					return m, m.scanCmd()
 				}
 			}
@@ -237,13 +262,30 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.opts.AllNS {
 				m.opts.Namespace = ""
 			}
-			m.a = analyzer.New(m.k, analyzer.Options{
-				Namespace:   m.opts.Namespace,
-				AllNS:       m.opts.AllNS,
-				IncludeLogs: m.opts.IncludeLogs,
-				Redact:      m.opts.Redact,
-				Filters:     m.opts.Filters,
-			})
+			m.a = newTUIAnalyzer(m.k, m.opts)
+			m.scanning = true
+			return m, m.scanCmd()
+		case "D":
+			m.deepScan = !m.deepScan
+			if m.deepScan {
+				m.opts.Filters = nil
+				m.message = "deep scan enabled: all analyzers"
+			} else {
+				m.opts.Filters = fastTUIFilters()
+				m.message = "fast scan enabled: failing pods only"
+			}
+			m.a = newTUIAnalyzer(m.k, m.opts)
+			m.scanning = true
+			return m, m.scanCmd()
+		case "L":
+			m.opts.IncludeLogs = !m.opts.IncludeLogs
+			if m.opts.IncludeLogs {
+				m.message = "log collection enabled for next scans"
+			} else {
+				m.message = "log collection disabled"
+			}
+			m.a = newTUIAnalyzer(m.k, m.opts)
+			m.scanning = true
 			return m, m.scanCmd()
 		case "enter":
 			return m, nil
@@ -417,7 +459,7 @@ func (m tuiModel) View() string {
 		footer = panelStyle.Width(m.width - 4).Render("/ " + m.filter + "\n" + mutedStyle.Render("type to filter incidents, enter accept, esc close"))
 	}
 	if m.command {
-		footer = panelStyle.Width(m.width - 4).Render(": " + m.commandIn + "\n" + mutedStyle.Render("commands: incidents workloads network storage security fixes events logs graph refresh quit"))
+		footer = panelStyle.Width(m.width - 4).Render(": " + m.commandIn + "\n" + mutedStyle.Render("commands: incidents workloads network storage security fixes events logview graph refresh deep fast logs quit"))
 	}
 	if m.help {
 		footer = panelStyle.Width(m.width - 4).Render(helpText())
@@ -443,8 +485,8 @@ func (m tuiModel) header() string {
 	if m.scanning {
 		spinView = " " + m.spinner.View()
 	}
-	line := fmt.Sprintf("%s Fixora TUI  context=%s  namespace=%s  scan_age=%s  health=%d  provider=%s ",
-		spinView, firstNonEmpty(m.opts.Context, "current"), ns, age, score, provider)
+	line := fmt.Sprintf("%s Fixora TUI  context=%s  namespace=%s  mode=%s  scan_age=%s  health=%d  provider=%s ",
+		spinView, firstNonEmpty(m.opts.Context, "current"), ns, scanModeLabel(m.opts, m.deepScan), age, score, provider)
 	return titleStyle.Background(lipgloss.Color("236")).Width(m.width).Render(line)
 }
 
@@ -457,6 +499,7 @@ func (m tuiModel) sidebar() string {
 	if m.filter != "" {
 		fmt.Fprintf(&b, "%s\n", mutedStyle.Render("filter: "+m.filter))
 	}
+	fmt.Fprintf(&b, "%s\n", mutedStyle.Render("mode: "+scanModeLabel(m.opts, m.deepScan)+"  D deep/fast  L logs"))
 	if m.message != "" {
 		fmt.Fprintf(&b, "%s\n", mutedStyle.Render(m.message))
 	}
@@ -677,7 +720,7 @@ func (m tuiModel) fixView(width int) string {
 }
 
 func (m tuiModel) footer() string {
-	hints := " j/k move  1-9 views  tab next  r refresh  i ai  f fix-plan  s shadow  p push  g graph  ? help  q quit "
+	hints := " j/k move  tab views  r refresh  D deep  L logs  C cluster  i ai  f fix  s shadow  p push  ? help  q quit "
 	return mutedStyle.Background(lipgloss.Color("236")).Width(m.width).Render(hints)
 }
 
@@ -762,6 +805,30 @@ func (m tuiModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "r", "refresh", "rescan":
 				return m, m.scanCmd()
+			case "deep":
+				m.deepScan = true
+				m.opts.Filters = nil
+				m.a = newTUIAnalyzer(m.k, m.opts)
+				m.scanning = true
+				m.message = "deep scan enabled: all analyzers"
+				return m, m.scanCmd()
+			case "fast":
+				m.deepScan = false
+				m.opts.Filters = fastTUIFilters()
+				m.a = newTUIAnalyzer(m.k, m.opts)
+				m.scanning = true
+				m.message = "fast scan enabled: failing pods only"
+				return m, m.scanCmd()
+			case "logs":
+				m.opts.IncludeLogs = !m.opts.IncludeLogs
+				m.a = newTUIAnalyzer(m.k, m.opts)
+				m.scanning = true
+				if m.opts.IncludeLogs {
+					m.message = "log collection enabled for next scans"
+				} else {
+					m.message = "log collection disabled"
+				}
+				return m, m.scanCmd()
 			case "incident", "incidents":
 				m.tab = 0
 			case "workload", "workloads":
@@ -776,7 +843,7 @@ func (m tuiModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.tab = 5
 			case "event", "events":
 				m.tab = 6
-			case "log", "logs":
+			case "log", "logview":
 				m.tab = 7
 			case "graph":
 				m.tab = 8
@@ -940,7 +1007,8 @@ func helpText() string {
 		"Fixora TUI keys",
 		"j/k or arrows: move selected incident",
 		"1-9: switch production views, tab/shift+tab: cycle views",
-		"r: rescan, n: namespace picker, C: toggle cluster-wide, /: filter incidents, colon: command palette",
+		"r: rescan, D: toggle fast/deep analyzers, L: toggle logs, n: namespace picker, C: toggle cluster-wide",
+		"/: filter incidents, colon: command palette",
 		"i: AI root cause, f: fix plan, s: shadow verify, a: apply, e: edit/apply",
 		"p: push/open verified GitHub PR or GitLab MR, g: dependency graph",
 		"?: close help, q: quit",

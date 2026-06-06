@@ -8,14 +8,15 @@ import (
 
 var registry = []Definition{
 	{Name: "Pod", Kind: "Pod", Resource: "pods", Scope: "namespaced", Description: "Pod phase, container states, restarts, events, and optional logs", Enabled: true},
-	{Name: "ReplicaSet", Kind: "ReplicaSet", Resource: "replicasets", Scope: "namespaced", Description: "ReplicaSet desired/ready/available state", Enabled: true},
-	{Name: "Deployment", Kind: "Deployment", Resource: "deployments", Scope: "namespaced", Description: "Deployment availability and rollout conditions", Enabled: true},
-	{Name: "StatefulSet", Kind: "StatefulSet", Resource: "statefulsets", Scope: "namespaced", Description: "StatefulSet replica readiness and storage-related conditions", Enabled: true},
-	{Name: "DaemonSet", Kind: "DaemonSet", Resource: "daemonsets", Scope: "namespaced", Description: "DaemonSet scheduled/ready/misscheduled state", Enabled: true},
-	{Name: "Job", Kind: "Job", Resource: "jobs", Scope: "namespaced", Description: "Job failed/succeeded/active status", Enabled: true},
-	{Name: "CronJob", Kind: "CronJob", Resource: "cronjobs", Scope: "namespaced", Description: "CronJob suspension and last schedule state", Enabled: true},
+	{Name: "ReplicaSet", Kind: "ReplicaSet", Resource: "replicasets", Scope: "namespaced", Description: "ReplicaSet desired/ready/available state", Enabled: false},
+	{Name: "Deployment", Kind: "Deployment", Resource: "deployments", Scope: "namespaced", Description: "Deployment availability and rollout conditions", Enabled: false},
+	{Name: "StatefulSet", Kind: "StatefulSet", Resource: "statefulsets", Scope: "namespaced", Description: "StatefulSet replica readiness and storage-related conditions", Enabled: false},
+	{Name: "DaemonSet", Kind: "DaemonSet", Resource: "daemonsets", Scope: "namespaced", Description: "DaemonSet scheduled/ready/misscheduled state", Enabled: false},
+	{Name: "Job", Kind: "Job", Resource: "jobs", Scope: "namespaced", Description: "Job failed/succeeded/active status", Enabled: false},
+	{Name: "CronJob", Kind: "CronJob", Resource: "cronjobs", Scope: "namespaced", Description: "CronJob suspension and last schedule state", Enabled: false},
 	{Name: "Service", Kind: "Service", Resource: "services", Scope: "namespaced", Description: "Service selector and endpoint availability hints", Enabled: true},
 	{Name: "Ingress", Kind: "Ingress", Resource: "ingresses", Scope: "namespaced", Description: "Ingress load balancer and routing status", Enabled: true},
+	{Name: "GatewayClass", Kind: "GatewayClass", Resource: "gatewayclasses.gateway.networking.k8s.io", Scope: "cluster", Description: "Gateway API class acceptance and controller health", Enabled: true},
 	{Name: "Gateway", Kind: "Gateway", Resource: "gateways.gateway.networking.k8s.io", Scope: "namespaced", Description: "Gateway API listener and condition health", Enabled: true},
 	{Name: "HTTPRoute", Kind: "HTTPRoute", Resource: "httproutes.gateway.networking.k8s.io", Scope: "namespaced", Description: "Gateway API route acceptance and backend refs", Enabled: true},
 	{Name: "HPA", Kind: "HorizontalPodAutoscaler", Resource: "hpa", Scope: "namespaced", Description: "Autoscaler conditions and target health", Enabled: true},
@@ -35,6 +36,9 @@ var registry = []Definition{
 	{Name: "OLMSubscription", Kind: "Subscription", Resource: "subscriptions.operators.coreos.com", Scope: "namespaced", Description: "OLM subscription health and catalog resolution", Enabled: true},
 	{Name: "OLMInstallPlan", Kind: "InstallPlan", Resource: "installplans.operators.coreos.com", Scope: "namespaced", Description: "OLM install plan phase and approval status", Enabled: true},
 	{Name: "OLMCatalogSource", Kind: "CatalogSource", Resource: "catalogsources.operators.coreos.com", Scope: "namespaced", Description: "OLM catalog source health", Enabled: true},
+	{Name: "OLMOperatorGroup", Kind: "OperatorGroup", Resource: "operatorgroups.operators.coreos.com", Scope: "namespaced", Description: "OLM OperatorGroup count and CSV resolution health", Enabled: true},
+	{Name: "OLMClusterCatalog", Kind: "ClusterCatalog", Resource: "clustercatalogs.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster catalog source and serving health", Enabled: true},
+	{Name: "OLMClusterExtension", Kind: "ClusterExtension", Resource: "clusterextensions.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster extension install and progression health", Enabled: true},
 }
 
 func ListAnalyzers(filters []string) []Definition {
@@ -178,7 +182,7 @@ func categoryForRegistered(def Definition) string {
 	switch def.Name {
 	case "PVC", "StorageClass":
 		return "storage"
-	case "Service", "Ingress", "Gateway", "HTTPRoute", "NetworkPolicy":
+	case "Service", "Ingress", "GatewayClass", "Gateway", "HTTPRoute", "NetworkPolicy":
 		return "networking"
 	case "HPA", "PDB":
 		return "policy"
@@ -190,7 +194,7 @@ func categoryForRegistered(def Definition) string {
 		return "autoscaling"
 	case "TrivyVulnerabilityReport", "TrivyConfigAuditReport":
 		return "security"
-	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource":
+	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource", "OLMOperatorGroup", "OLMClusterCatalog", "OLMClusterExtension":
 		return "operator"
 	default:
 		return "workload"
@@ -205,7 +209,7 @@ func recommendationForRegistered(def Definition) string {
 	switch def.Name {
 	case "Service":
 		return "Check selectors, endpoints, readiness probes, targetPort, and backend pod health before changing routing."
-	case "Ingress", "Gateway", "HTTPRoute":
+	case "Ingress", "GatewayClass", "Gateway", "HTTPRoute":
 		return "Check route attachment, backend refs, service endpoints, TLS secrets, and controller events."
 	case "PVC":
 		return "Check StorageClass, access mode, zone constraints, provisioner events, and volume quota."
@@ -219,7 +223,7 @@ func recommendationForRegistered(def Definition) string {
 		return "Check trigger authentication, scaler target, metrics source, and KEDA operator events."
 	case "TrivyVulnerabilityReport", "TrivyConfigAuditReport":
 		return "Review affected image, package, severity, and available fixed versions before promoting or rolling back workloads."
-	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource":
+	case "OLMClusterServiceVersion", "OLMSubscription", "OLMInstallPlan", "OLMCatalogSource", "OLMOperatorGroup", "OLMClusterCatalog", "OLMClusterExtension":
 		return "Check OLM conditions, catalog availability, install plan approval, and operator pod events."
 	default:
 		return "Inspect related events, owner chain, logs, and GitOps source before patching."

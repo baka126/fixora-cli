@@ -6,3 +6,4 @@ coverage.txt
 .DS_Store
 kubectl-fixora
 .antigravitycli
+k8sgpt/

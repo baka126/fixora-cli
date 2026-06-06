@@ -49,6 +49,7 @@ type options struct {
 	redact        bool
 	unsafeAI      bool
 	filters       string
+	labelSelector string
 	wide          bool
 	noColor       bool
 	proof         bool
@@ -88,6 +89,10 @@ type options struct {
 	watchInterval time.Duration
 	lintFiles     listFlag
 	maxFindings   int
+	quick         bool
+	safe          bool
+	gitops        bool
+	visited       map[string]bool
 }
 
 type listFlag []string
@@ -107,6 +112,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		if hasArg(args[1:], "--advanced") || hasArg(args[1:], "-a") {
+			printAdvancedHelp(stdout)
+			return 0
+		}
 		printHelp(stdout)
 		return 0
 	}
@@ -131,11 +140,18 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cmd := args[0]
-	opts, rest, err := parseFlags(args[1:])
+	opts, rest, err := parseFlags(reorderFlagArgs(args[1:]))
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
 	}
+	cmd, rest, err = normalizeCommand(cmd, rest)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n\n", err)
+		printHelp(stderr)
+		return 2
+	}
+	applyWorkflowDefaults(cmd, &opts)
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -166,12 +182,14 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		typed.LogLimitBytes = opts.maxLogBytes
 		reader = typed
 	}
+	filters := analyzerFiltersForCommand(cmd, rest, opts)
 	a := analyzer.New(reader, analyzer.Options{
-		Namespace:   opts.namespace,
-		AllNS:       opts.allNS,
-		IncludeLogs: opts.includeLogs,
-		Redact:      opts.redact || opts.paranoid,
-		Filters:     splitCSV(opts.filters),
+		Namespace:     opts.namespace,
+		AllNS:         opts.allNS,
+		IncludeLogs:   opts.includeLogs,
+		Redact:        opts.redact || opts.paranoid,
+		Filters:       filters,
+		LabelSelector: opts.labelSelector,
 	})
 
 	switch cmd {
@@ -193,7 +211,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters)}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -207,7 +225,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		err := server.Serve(ctx, server.Options{
 			Addr:        addr,
 			Kubectl:     k,
-			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters)},
+			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector},
 			Token:       os.Getenv("FIXORA_SERVE_TOKEN"),
 		})
 		if err != nil {
@@ -239,6 +257,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
+		finding = preferSmartFinding(ctx, a, finding)
 		if cmd == "explain" || opts.useAI {
 			augmentWithAI(ctx, &finding, opts, stderr)
 		}
@@ -262,6 +281,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
+		finding = preferSmartFinding(ctx, a, finding)
 		if opts.useAI {
 			augmentWithAI(ctx, &finding, opts, stderr)
 		}
@@ -306,7 +326,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if cmd == "diff" {
 			return output.Write(stdout, opts.output, plan.DiffView())
 		}
-		if cmd == "patch" || cmd == "fix" {
+		if cmd == "fix" {
+			return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
+		}
+		if cmd == "patch" {
 			if opts.preview {
 				termui.Plan(stdout, plan, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
 				return 0
@@ -501,6 +524,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				Redact:        opts.redact,
 				UnsafeAI:      opts.unsafeAI,
 				Filters:       splitCSV(opts.filters),
+				LabelSelector: opts.labelSelector,
 				Refresh:       opts.watchInterval,
 				ScanTimeout:   opts.timeout,
 				ApplyDryRun:   opts.applyDryRun,
@@ -597,6 +621,9 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.unsafeAI, "unsafe-ai-no-redact", false, "allow AI calls with unredacted cluster data")
 	fs.StringVar(&opts.filters, "filter", "", "comma-separated analyzer filters")
 	fs.StringVar(&opts.filters, "filters", "", "comma-separated analyzer filters")
+	fs.StringVar(&opts.labelSelector, "selector", "", "label selector for analyzer resource lists")
+	fs.StringVar(&opts.labelSelector, "l", "", "label selector for analyzer resource lists")
+	fs.StringVar(&opts.labelSelector, "L", "", "label selector for analyzer resource lists")
 	fs.BoolVar(&opts.wide, "wide", false, "wide terminal output")
 	fs.BoolVar(&opts.noColor, "no-color", false, "disable terminal color")
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
@@ -605,6 +632,9 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
 	fs.BoolVar(&opts.tui, "tui", false, "enable interactive terminal dashboard for the ui command")
+	fs.BoolVar(&opts.quick, "quick", false, "use fast incident defaults")
+	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
+	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -641,6 +671,7 @@ func parseFlags(args []string) (options, []string, error) {
 		return opts, nil, err
 	}
 	visited := visitedFlags(fs)
+	opts.visited = visited
 	if settings := cfg.ContextSettings(opts.context); opts.context != "" {
 		if settings.Namespace != "" && !visited["namespace"] && !visited["n"] {
 			opts.namespace = settings.Namespace
@@ -673,6 +704,144 @@ func parseFlags(args []string) (options, []string, error) {
 		opts.namespace = ""
 	}
 	return opts, fs.Args(), nil
+}
+
+func normalizeCommand(cmd string, rest []string) (string, []string, error) {
+	switch cmd {
+	case "scan":
+		return "incidents", rest, nil
+	case "rca":
+		return "why", rest, nil
+	case "repair":
+		return "fix", rest, nil
+	case "dashboard":
+		return "cluster", rest, nil
+	case "debug":
+		if len(rest) == 0 {
+			return "", rest, fmt.Errorf("debug requires one of: trace, graph, storage, rbac, dns, security, node-pressure, changes, readiness, rollback")
+		}
+		sub := rest[0]
+		switch sub {
+		case "trace", "graph", "storage", "rbac", "dns", "security", "node-pressure", "changes", "readiness", "rollback":
+			return sub, rest[1:], nil
+		default:
+			return "", rest, fmt.Errorf("unknown debug command %q", sub)
+		}
+	case "source":
+		if len(rest) == 0 {
+			return "", rest, fmt.Errorf("source requires one of: repo, validate, lint, preflight, policy-check")
+		}
+		sub := rest[0]
+		switch sub {
+		case "repo", "validate", "lint", "preflight", "policy-check":
+			return sub, rest[1:], nil
+		default:
+			return "", rest, fmt.Errorf("unknown source command %q", sub)
+		}
+	default:
+		return cmd, rest, nil
+	}
+}
+
+func applyWorkflowDefaults(cmd string, opts *options) {
+	if opts.visited == nil {
+		opts.visited = map[string]bool{}
+	}
+	incidentCmd := cmd == "incidents" || cmd == "why" || cmd == "fix" || cmd == "watch"
+	if incidentCmd || opts.quick || opts.safe || opts.gitops {
+		if !opts.visited["include-logs"] {
+			opts.includeLogs = true
+		}
+		if !opts.visited["typed-client"] {
+			opts.typedClient = true
+		}
+		if !opts.visited["redact"] {
+			opts.redact = true
+		}
+	}
+	if cmd == "fix" || opts.safe {
+		if !opts.visited["paranoid"] {
+			opts.paranoid = true
+		}
+	}
+	if cmd == "fix" {
+		if !opts.visited["shadow"] && !opts.quick {
+			opts.shadowVerify = true
+		}
+		if opts.repoPath != "" || opts.gitops {
+			opts.sourcePatch = true
+		}
+	}
+	if opts.gitops {
+		opts.sourcePatch = true
+		if !opts.visited["shadow"] {
+			opts.shadowVerify = false
+		}
+	}
+	if cmd == "ui" || cmd == "cluster" {
+		if !opts.visited["typed-client"] {
+			opts.typedClient = true
+		}
+		if !opts.visited["redact"] {
+			opts.redact = true
+		}
+	}
+	if cmd == "cluster" {
+		opts.tui = true
+		opts.allNS = true
+		opts.namespace = ""
+	}
+}
+
+func reorderFlagArgs(args []string) []string {
+	valueFlags := map[string]bool{
+		"--namespace": true, "-n": true, "--context": true, "--output": true, "-o": true,
+		"--out": true, "--filter": true, "--filters": true, "--selector": true, "-l": true, "-L": true, "--repo": true, "--strategy": true,
+		"--branch": true, "--profile": true, "--ai-budget-tokens": true, "--container": true,
+		"--image": true, "--memory-request": true, "--memory-limit": true, "--cpu-request": true,
+		"--env-name": true, "--configmap": true, "--config-key": true, "--timeout": true,
+		"--log-tail": true, "--max-logs-bytes": true, "--shadow-timeout": true,
+		"--shadow-retries": true, "--shadow-egress": true, "--delivery": true, "--pr-base": true,
+		"--pr-title": true, "--watch-interval": true, "--max-findings": true, "-f": true,
+		"--filename": true,
+	}
+	boolFlags := map[string]bool{
+		"--all-namespaces": true, "-A": true, "--include-logs": true, "--ai": true,
+		"--auto-fix": true, "--apply": true, "--yes": true, "--verbose": true,
+		"--redact": true, "--unsafe-ai-no-redact": true, "--wide": true, "--no-color": true,
+		"--proof": true, "--paranoid": true, "--preview": true, "--force-risky": true,
+		"--typed-client": true, "--tui": true, "--quick": true, "--safe": true,
+		"--gitops": true, "--commit": true, "--mcp": true, "--apply-dry-run": true,
+		"--source-patch": true, "--shadow": true, "--keep-shadow": true,
+	}
+	var flags []string
+	var positionals []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name := arg
+		if strings.HasPrefix(arg, "--") {
+			if idx := strings.Index(arg, "="); idx > 0 {
+				name = arg[:idx]
+			}
+		}
+		switch {
+		case strings.Contains(arg, "=") && valueFlags[name]:
+			flags = append(flags, arg)
+		case valueFlags[arg]:
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		case boolFlags[name] || boolFlags[arg]:
+			flags = append(flags, arg)
+		case strings.HasPrefix(arg, "-"):
+			flags = append(flags, arg)
+		default:
+			positionals = append(positionals, arg)
+		}
+	}
+	return append(flags, positionals...)
 }
 
 func visitedFlags(fs *flag.FlagSet) map[string]bool {
@@ -828,6 +997,151 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return output.Write(stdout, opts.output, result)
 	}
 	return output.Write(stdout, opts.output, result)
+}
+
+func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, resourceArg string) int {
+	if opts.output != "text" {
+		return output.Write(stdout, opts.output, plan)
+	}
+
+	fmt.Fprintln(stdout, "Fixora incident fix")
+	fmt.Fprintln(stdout, strings.Repeat("=", 20))
+	termui.Why(stdout, finding, plan, true, termui.Options{Wide: true, NoColor: opts.noColor})
+	termui.Plan(stdout, plan, termui.Options{Wide: true, NoColor: opts.noColor})
+	if strings.TrimSpace(plan.PatchYAML()) != "" {
+		fmt.Fprintln(stdout, "\nSuggested diff")
+		fmt.Fprint(stdout, shadow.PatchDiff(plan.Resource, plan.PatchYAML()))
+	}
+
+	if opts.preview {
+		return 0
+	}
+
+	if !plan.ApplyEligible {
+		fmt.Fprintln(stdout, "\nNo production mutation was attempted.")
+		fmt.Fprintln(stdout, "Fixora needs a concrete, safe patch before shadow verification or apply.")
+		if hint := nextConcreteFixHint(resourceArg, plan); hint != "" {
+			fmt.Fprintf(stdout, "\nNext command:\n  %s\n", hint)
+		}
+		return 0
+	}
+
+	if opts.outFile == "" {
+		opts.outFile = "fixora-patch.yaml"
+	}
+	if err := os.WriteFile(opts.outFile, []byte(plan.PatchYAML()), 0o600); err != nil {
+		fmt.Fprintf(stderr, "error: write patch: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "\nwrote %s\n", opts.outFile)
+
+	if opts.shadowVerify {
+		return runShadowWorkflow(ctx, stdout, stderr, opts, k, finding, plan)
+	}
+	if opts.sourcePatch {
+		if opts.repoPath == "" {
+			fmt.Fprintln(stderr, "error: --gitops or --source-patch requires --repo")
+			return 2
+		}
+		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: source patch: %v\n", err)
+			return 1
+		}
+		return output.Write(stdout, opts.output, sourcePatch)
+	}
+	if opts.apply {
+		if opts.applyDryRun {
+			if err := k.DryRunApply(ctx, opts.outFile); err != nil {
+				fmt.Fprintf(stderr, "error: server dry-run rejected patch: %v\n", err)
+				return 1
+			}
+		}
+		if termui.ConfirmApply(ctx, k, plan.PatchTemplate, os.Stdin, stdout) {
+			if err := k.Apply(ctx, opts.outFile); err != nil {
+				fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
+				return 1
+			}
+			fmt.Fprintln(stdout, "applied patch")
+		}
+	}
+	_ = memory.Add(finding, plan, "guided-fix")
+	return 0
+}
+
+func nextConcreteFixHint(resourceArg string, plan fix.Plan) string {
+	if strings.TrimSpace(resourceArg) == "" {
+		resourceArg = strings.ToLower(plan.Resource)
+	}
+	base := "kubectl fixora fix " + resourceArg
+	if plan.Namespace != "" {
+		base += " -n " + plan.Namespace
+	}
+	switch strings.ToLower(plan.Strategy) {
+	case "image":
+		return base + " --container <container> --image <pinned-image>"
+	case "resources":
+		return base + " --container <container> --memory-request <request> --cpu-request <request> --memory-limit <limit>"
+	case "env":
+		return base + " --container <container> --env-name <name> --configmap <configmap> --config-key <key>"
+	default:
+		return "kubectl fixora why " + resourceArg + " --proof"
+	}
+}
+
+func preferSmartFinding(ctx context.Context, a analyzer.Analyzer, base analyzer.Finding) analyzer.Finding {
+	if base.ResourceKind == "" || base.ResourceName == "" {
+		return base
+	}
+	report := a.ScanReport(ctx)
+	best := base
+	bestRank := findingActionRank(base)
+	for _, candidate := range report.Findings {
+		if !sameFindingTarget(base, candidate) {
+			continue
+		}
+		if rank := findingActionRank(candidate); rank > bestRank {
+			best = candidate
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func sameFindingTarget(a, b analyzer.Finding) bool {
+	if a.Namespace != "" && b.Namespace != "" && a.Namespace != b.Namespace {
+		return false
+	}
+	if a.PodName != "" && b.PodName == a.PodName {
+		return true
+	}
+	return strings.EqualFold(a.ResourceKind, b.ResourceKind) && a.ResourceName == b.ResourceName
+}
+
+func findingActionRank(f analyzer.Finding) int {
+	rank := 0
+	switch strings.ToLower(f.Severity) {
+	case "critical":
+		rank += 50
+	case "high":
+		rank += 40
+	case "medium":
+		rank += 30
+	case "low":
+		rank += 20
+	case "info":
+		rank += 10
+	}
+	if f.Status != "" && !strings.EqualFold(f.Status, "unknown") {
+		rank += 5
+	}
+	if len(f.Evidence) > 1 {
+		rank += 3
+	}
+	if len(f.Recommendations) > 0 {
+		rank += 2
+	}
+	return rank
 }
 
 func writeFindings(stdout, stderr io.Writer, opts options, findings []analyzer.Finding, err error) int {
@@ -1191,12 +1505,71 @@ func runCustomAnalyzers(ctx context.Context, stdout, stderr io.Writer, opts opti
 func printHelp(w io.Writer) {
 	fmt.Fprintf(w, `%s %s
 
-Standalone free kubectl plugin for local Kubernetes diagnostics.
+Production Kubernetes incident fixer.
+
+Usage:
+  kubectl fixora <command> [resource] [flags]
+
+Fast incident workflow:
+  scan                         List failing workloads, with logs and typed reads by default
+  why <kind/name>              Explain root cause, proof, rollback hint, and next step
+  fix <kind/name>              Guided RCA -> diff -> shadow verify -> patch/apply/PR flow
+  ui                           Compact incident dashboard
+  cluster                      Full-screen cluster dashboard
+  doctor                       Validate access, RBAC, logs, events, metrics, Helm/GitOps CRDs
+
+Specialist workflows:
+  debug <tool>                 trace, graph, storage, rbac, dns, security, node-pressure, changes, readiness, rollback
+  source <tool>                repo, validate, lint, preflight, policy-check
+
+Setup:
+  auth set provider key        Store AI provider credentials locally
+  config                       Manage local CLI configuration
+  version                      Print version
+
+Examples:
+  kubectl fixora scan -A
+  kubectl fixora why deployment/api -n prod
+  kubectl fixora fix deployment/api -n prod
+  kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3
+  kubectl fixora fix deployment/api -n prod --repo ./charts/api --gitops
+  kubectl fixora debug trace service/api -n prod
+  kubectl fixora source validate ./charts/api
+
+Common flags:
+  -n, --namespace string       Namespace (default "default")
+  -A, --all-namespaces         Scan all namespaces
+      --context string         Kube context
+  -l, --selector string        Label selector, for example app=api,tier!=cache
+  -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
+      --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
+      --repo string            Local manifest, Helm chart, or Kustomize overlay path
+      --gitops                 Prefer source-controlled patch output
+      --quick                  Faster diagnostics; skip default shadow verification
+      --safe                   Force paranoid redaction and production-safe defaults
+      --apply                  Apply only after concrete diff, dry-run, and confirmation
+      --proof                  Show evidence proof
+      --container string       Target container for concrete patches
+      --image string           Pinned replacement image
+      --memory-request string  Concrete memory request
+      --memory-limit string    Concrete memory limit
+
+Run kubectl fixora help --advanced for every low-level command and flag.
+`, version.Name, version.Version)
+}
+
+func printAdvancedHelp(w io.Writer) {
+	fmt.Fprintf(w, `%s %s
+
+Advanced command and flag reference.
 
 Usage:
   kubectl fixora <command> [flags] [resource]
 
-Commands:
+Primary commands:
+  scan                         Alias for incidents
+  rca <kind/name>              Alias for why
+  repair <kind/name>           Alias for fix
   status                       Show cluster access and capability summary
   doctor                       Validate RBAC, metrics, logs, events, Helm/GitOps CRDs
   filters                      List available analyzers and active filter selection
@@ -1229,20 +1602,17 @@ Commands:
   analyze <kind/name>          Analyze one resource locally
   explain <kind/name> --ai     Analyze and ask an OpenAI-compatible AI for explanation
   plan <kind/name>             Build a safe local remediation plan
-  fix <kind/name>              Build or write a gated production remediation patch
+  fix <kind/name>              Guided production remediation flow
   diff <kind/name>             Show suggested local patch diff
   patch <kind/name> --out file Write a suggested local patch file
   report <kind/name> --out md  Export a local markdown report
   cost nodes|workloads         Estimate node/workload costs
   predict                      Show future-risk signals from local evidence
-  lint -f path                 Lint manifests, Helm chart, or Kustomize overlay (Note: uses string-matching, may flag comments)
+  lint -f path                 Lint manifests, Helm chart, or Kustomize overlay
   version                      Print version
   auth set provider key        Store AI provider credentials locally
   config view|set|unset|validate|export|reset|path
-                               Manage local CLI configuration
-  config profile|context       Manage named config profiles and kube-context overrides
   cache path|stats|list|purge|clear
-                               Inspect, purge, or clear local AI cache
   cache add|get|remove         Configure K8sGPT-style remote cache metadata
   ai doctor|profiles           Validate AI setup and list prompt profiles
   memory list|clear            Inspect or clear local scenario memory
@@ -1251,17 +1621,22 @@ Global flags:
   -n, --namespace string       Namespace (default "default")
   -A, --all-namespaces         Scan all namespaces
       --context string         Kube context
-  -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus (default "text")
+  -l, -L, --selector string    Label selector, for example app=api,tier!=cache
+  -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
       --include-logs           Include bounded logs in evidence
-      --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
+      --ai                     Use OpenAI-compatible AI analysis
       --auto-fix               Generate explicit local fix plan
-      --apply                  Apply generated local patch (never default)
+      --apply                  Apply generated local patch
       --yes                    Confirm non-interactive verified PR/MR delivery
-      --redact                 Redact sensitive values (default true)
+      --redact                 Redact sensitive values
       --unsafe-ai-no-redact    Allow AI calls with unredacted cluster data
       --filter string          Comma-separated analyzers, for example Pod,Deployment,Service
+      --selector string        Scope analyzer resource lists by labels; supports =, ==, !=, key, !key
       --proof                  Show evidence proof
       --tui                    Enable interactive dashboard for the ui command
+      --quick                  Use fast incident defaults
+      --safe                   Use production-safe defaults
+      --gitops                 Prefer GitOps source patch delivery
       --profile string         AI prompt profile or bundle profile
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
@@ -1269,21 +1644,21 @@ Global flags:
       --preview                Preview patch plan only
       --force-risky            Allow risky concrete fixes after review
       --typed-client           Use client-go/controller-runtime typed client for analyzer reads
-      --timeout duration       Overall command timeout (default 90s)
-      --log-tail int           Pod log lines to collect with --include-logs (default 120)
-      --max-logs-bytes int     Maximum bytes per pod log stream (default 24000)
-      --apply-dry-run          Run server-side dry-run before --apply (default true)
+      --timeout duration       Overall command timeout
+      --log-tail int           Pod log lines to collect with --include-logs
+      --max-logs-bytes int     Maximum bytes per pod log stream
+      --apply-dry-run          Run server-side dry-run before --apply
       --source-patch           Write patch into --repo for GitOps source review
       --shadow                 Verify patch in an isolated shadow clone before delivery
-      --shadow-timeout duration Shadow clone verification timeout (default 5m)
+      --shadow-timeout duration Shadow clone verification timeout
       --shadow-retries int     Shadow re-clone attempts after failure
       --keep-shadow            Keep shadow Pod and NetworkPolicy after verification
-      --shadow-egress string   Shadow egress policy: allow or deny (default "allow")
+      --shadow-egress string   Shadow egress policy: allow or deny
       --delivery string        Verified shadow delivery: patch, cluster, or pr
       --pr-base string         Base branch for --delivery=pr
       --pr-title string        Pull request title for --delivery=pr
-      --watch-interval duration Watch polling interval (default 5s)
-      --max-findings int       Maximum findings to display in watch mode (default 8)
+      --watch-interval duration Watch polling interval
+      --max-findings int       Maximum findings to display in watch mode
   -f, --filename string        Manifest, chart, or Kustomize path for lint
       --container string       Target container for concrete patches
       --image string           Pinned replacement image
@@ -1293,10 +1668,35 @@ Global flags:
 }
 
 func splitCSV(value string) []string {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
-	return []string{value}
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func analyzerFiltersForCommand(cmd string, rest []string, opts options) []string {
+	if explicit := splitCSV(opts.filters); len(explicit) > 0 {
+		return explicit
+	}
+	switch cmd {
+	case "incidents", "watch":
+		return analyzer.DefaultIncidentFilters(opts.quick)
+	case "why", "fix", "plan", "diff", "patch", "runbook", "readiness", "rollback", "analyze", "explain", "graph", "changes", "report", "bundle":
+		if len(rest) > 0 {
+			return analyzer.SmartFiltersFor(rest[0], "")
+		}
+	case "health":
+		return analyzer.DefaultIncidentFilters(false)
+	}
+	return nil
 }
 
 func firstArg(values []string, fallbacks ...string) string {
