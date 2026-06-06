@@ -246,34 +246,14 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		return output.Write(stdout, opts.output, scan.Envelope())
-	case "analyze", "explain", "why":
+	case "fix":
 		if len(rest) == 0 {
-			fmt.Fprintln(stderr, "error: analyze requires a resource, for example deployment/api")
-			return 2
-		}
-		if opts.output == "text" {
-			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
-		}
-		finding, err := a.AnalyzeResource(ctx, rest[0])
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
-		}
-		finding = preferSmartFinding(ctx, a, finding)
-		if cmd == "explain" || opts.useAI {
-			augmentWithAI(ctx, &finding, opts, stderr)
-		}
-		if cmd == "why" {
-			plan := fix.BuildPlan(finding)
-			termui.Why(stdout, finding, plan, opts.proof, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
-			_ = memory.Add(finding, plan, "inspected")
-			return 0
-		}
-		return writeFindings(stdout, stderr, opts, []analyzer.Finding{finding}, nil)
-	case "plan", "diff", "patch", "fix", "runbook", "readiness", "rollback":
-		if len(rest) == 0 {
-			fmt.Fprintf(stderr, "error: %s requires a resource, for example deployment/api\n", cmd)
-			return 2
+			selectedResource, err := promptIncidentSelection(ctx, a, stdout, stderr, opts.wide, opts.noColor)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return 2
+			}
+			rest = []string{selectedResource}
 		}
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
@@ -303,87 +283,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				opts.sourcePatch = true
 			}
 		}
-		switch cmd {
-		case "runbook":
-			fmt.Fprint(stdout, ops.BuildRunbook(finding, plan))
-			return 0
-		case "readiness":
-			return output.Write(stdout, opts.output, ops.FixReadiness(finding, plan))
-		case "rollback":
-			rollback := ops.BuildRollback(finding, plan, opts.apply)
-			if opts.apply {
-				if rollback.Command == "" {
-					fmt.Fprintln(stderr, "error: no rollback command available")
-					return 1
-				}
-				if _, err := executeRollback(ctx, k, rollback); err != nil {
-					fmt.Fprintf(stderr, "error: rollback failed: %v\n", err)
-					return 1
-				}
-				fmt.Fprintln(stdout, "rollback command executed")
-				return 0
-			}
-			return output.Write(stdout, opts.output, rollback)
-		}
-		if cmd == "diff" {
-			return output.Write(stdout, opts.output, plan.DiffView())
-		}
-		if cmd == "fix" {
-			return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
-		}
-		if cmd == "patch" {
-			if opts.preview {
-				termui.Plan(stdout, plan, termui.Options{Wide: opts.wide, NoColor: opts.noColor})
-				return 0
-			}
-			if opts.outFile == "" {
-				opts.outFile = "fixora-patch.yaml"
-			}
-			if opts.sourcePatch && !opts.shadowVerify {
-				sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
-				if err != nil {
-					fmt.Fprintf(stderr, "error: source patch: %v\n", err)
-					return 1
-				}
-				return output.Write(stdout, opts.output, sourcePatch)
-			}
-			if err := os.WriteFile(opts.outFile, []byte(plan.PatchYAML()), 0o600); err != nil {
-				fmt.Fprintf(stderr, "error: write patch: %v\n", err)
-				return 1
-			}
-			fmt.Fprintf(stdout, "wrote %s\n", opts.outFile)
-			if opts.shadowVerify {
-				return runShadowWorkflow(ctx, stdout, stderr, opts, k, finding, plan)
-			}
-			if opts.apply {
-				if !plan.ApplyEligible {
-					fmt.Fprintln(stderr, "error: generated patch is not eligible for production apply; review blockedReasons, provide concrete values, or use --force-risky only after approval")
-					return 1
-				}
-				if opts.applyDryRun {
-					if err := k.DryRunApply(ctx, opts.outFile); err != nil {
-						fmt.Fprintf(stderr, "error: server dry-run rejected patch: %v\n", err)
-						return 1
-					}
-				}
-				if termui.ConfirmApply(ctx, k, plan.PatchTemplate, os.Stdin, stdout) {
-					if err := k.Apply(ctx, opts.outFile); err != nil {
-						fmt.Fprintf(stderr, "error: apply patch: %v\n", err)
-						return 1
-					}
-					fmt.Fprintln(stdout, "applied patch")
-				}
-			}
-			if opts.repoPath != "" && (opts.branch != "" || opts.commit) {
-				if err := repo.PrepareBranch(ctx, opts.repoPath, opts.branch, opts.commit, "fixora: add remediation patch for "+finding.ResourceKind+"/"+finding.ResourceName); err != nil {
-					fmt.Fprintf(stderr, "error: repo workflow: %v\n", err)
-					return 1
-				}
-			}
-			_ = memory.Add(finding, plan, "patch-generated")
-			return 0
-		}
-		return output.Write(stdout, opts.output, plan)
+		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
 	case "graph":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: graph requires a resource")
@@ -712,8 +612,6 @@ func normalizeCommand(cmd string, rest []string) (string, []string, error) {
 	switch cmd {
 	case "scan":
 		return "incidents", rest, nil
-	case "rca":
-		return "why", rest, nil
 	case "repair":
 		return "fix", rest, nil
 	case "dashboard":
@@ -1567,8 +1465,6 @@ Usage:
 
 Primary commands:
   scan                         Alias for incidents
-  rca <kind/name>              Alias for why
-  repair <kind/name>           Alias for fix
   status                       Show cluster access and capability summary
   doctor                       Validate RBAC, metrics, logs, events, Helm/GitOps CRDs
   filters                      List available analyzers and active filter selection
@@ -1576,8 +1472,6 @@ Primary commands:
   custom-analyzers list|add|run Manage explicit local custom analyzer executables
   serve [addr]                 Serve a local-only HTTP API for incidents/analyze
   serve --mcp                  Serve a local MCP stdio server for AI assistants
-  why <kind/name>              Explain what is broken, why, proof, and next step
-  graph <kind/name>            Show dependency graph as text, JSON, YAML, or Mermaid
   trace <resource>             Debug Ingress/HTTPRoute/Service connectivity path
   storage                      Debug PVC/PV/StorageClass issues
   rbac [sa] [verb] [resource]  Debug service account authorization
@@ -1587,24 +1481,13 @@ Primary commands:
   repo [path]                  Detect raw, Helm, or Kustomize source mode
   validate [path]              Render/validate local raw, Helm, or Kustomize source
   health                       Summarize namespace or cluster health
-  changes <kind/name>          Correlate rollout metadata, revisions, and recent change signals
-  runbook <kind/name>          Generate an operator runbook for an incident
-  readiness <kind/name>        Score whether evidence is sufficient for a safe fix
-  rollback <kind/name>         Preview or execute a conservative rollback command
   preflight -f path            Lint and server dry-run a manifest before apply
   policy-check -f path         Run production policy checks against manifests
   watch incidents              Poll incident state until interrupted
   ui                           Show a compact terminal incident dashboard
   cluster                      Show an interactive full-screen cluster-wide dashboard
-  bundle <kind/name>           Write a redacted audit bundle
   incidents                    List current failing workloads
-  analyze <kind/name>          Analyze one resource locally
-  explain <kind/name> --ai     Analyze and ask an OpenAI-compatible AI for explanation
-  plan <kind/name>             Build a safe local remediation plan
-  fix <kind/name>              Guided production remediation flow
-  diff <kind/name>             Show suggested local patch diff
-  patch <kind/name> --out file Write a suggested local patch file
-  report <kind/name> --out md  Export a local markdown report
+  fix [kind/name]              Guided production remediation flow (interactive if no resource provided)
   cost nodes|workloads         Estimate node/workload costs
   predict                      Show future-risk signals from local evidence
   lint -f path                 Lint manifests, Helm chart, or Kustomize overlay
@@ -1689,7 +1572,7 @@ func analyzerFiltersForCommand(cmd string, rest []string, opts options) []string
 	switch cmd {
 	case "incidents", "watch":
 		return analyzer.DefaultIncidentFilters(opts.quick)
-	case "why", "fix", "plan", "diff", "patch", "runbook", "readiness", "rollback", "analyze", "explain", "graph", "changes", "report", "bundle":
+	case "fix":
 		if len(rest) > 0 {
 			return analyzer.SmartFiltersFor(rest[0], "")
 		}
