@@ -91,7 +91,7 @@ func TestAdvancedHelpShowsFullReference(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("advanced help failed: code=%d stderr=%s", code, stderr.String())
 	}
-	for _, want := range []string{"custom-analyzers", "serve --mcp", "patch <kind/name>", "--shadow-timeout"} {
+	for _, want := range []string{"custom-analyzers", "serve --mcp", "fix [kind/name]", "--shadow-timeout"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("advanced help missing %q:\n%s", want, stdout.String())
 		}
@@ -106,7 +106,7 @@ func TestSimplifiedCommandAliases(t *testing.T) {
 		wantArg string
 	}{
 		{cmd: "scan", wantCmd: "incidents"},
-		{cmd: "rca", rest: []string{"deployment/api"}, wantCmd: "why", wantArg: "deployment/api"},
+
 		{cmd: "repair", rest: []string{"deployment/api"}, wantCmd: "fix", wantArg: "deployment/api"},
 		{cmd: "debug", rest: []string{"trace", "service/api"}, wantCmd: "trace", wantArg: "service/api"},
 		{cmd: "source", rest: []string{"validate", "./charts/api"}, wantCmd: "validate", wantArg: "./charts/api"},
@@ -129,7 +129,7 @@ func TestSimplifiedCommandAliases(t *testing.T) {
 
 func TestInterspersedFlagsAfterResource(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-	opts, rest, err := parseFlags(reorderFlagArgs([]string{"deployment/api", "-n", "prod", "--proof", "--container", "api", "--selector", "app=api"}))
+	opts, rest, err := parseFlags([]string{"deployment/api", "-n", "prod", "--proof", "--container", "api", "--selector", "app=api"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestAnalyzerFilterSelectionForCommands(t *testing.T) {
 		t.Fatalf("explicit filters should win, got %#v", explicit)
 	}
 
-	targeted := analyzerFiltersForCommand("why", []string{"service/api"}, options{})
+	targeted := analyzerFiltersForCommand("fix", []string{"service/api"}, options{})
 	for _, want := range []string{"pod", "service", "networking"} {
 		if !hasString(targeted, want) {
 			t.Fatalf("smart service filters missing %q: %#v", want, targeted)
