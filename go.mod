@@ -1,6 +1,6 @@
 module github.com/fixora/kubectl-fixora
 
-go 1.25.0
+go 1.26.4
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0
