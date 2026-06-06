@@ -23,6 +23,14 @@ curl -fsSL https://raw.githubusercontent.com/baka126/fixora-cli/main/scripts/ins
 kubectl fixora version
 ```
 
+The installer places the kubectl plugin binary at `kubectl-fixora` in a directory on your `PATH`. If the selected install directory is not writable, the script will request `sudo`. You can also choose a directory explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/baka126/fixora-cli/main/scripts/install.sh | INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+Make sure the chosen directory is on `PATH`; kubectl discovers plugins by finding `kubectl-fixora`.
+
 Install a specific release:
 
 ```sh
