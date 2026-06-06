@@ -2,8 +2,8 @@ package cli
 
 import (
 	"context"
-	flag "github.com/spf13/pflag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"io"
 	"os"
 	"os/signal"
@@ -690,8 +690,6 @@ func applyWorkflowDefaults(cmd string, opts *options) {
 		opts.namespace = ""
 	}
 }
-
-
 
 func visitedFlags(fs *flag.FlagSet) map[string]bool {
 	visited := map[string]bool{}
