@@ -9,7 +9,7 @@ func (a Analyzer) analyzeReplicaSets(ctx *ScanContext) ([]Finding, error) {
 	for _, rs := range replicasets {
 		namespace, name := objectNamespaceName(rs)
 		status := nestedMap(rs, "status")
-		
+
 		replicas := intValue(status["replicas"])
 
 		if replicas == 0 {

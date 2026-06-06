@@ -14,7 +14,7 @@ func (a Analyzer) analyzeJobs(ctx *ScanContext) ([]Finding, error) {
 		namespace, name := objectNamespaceName(job)
 		spec := nestedMap(job, "spec")
 		status := nestedMap(job, "status")
-		
+
 		if val, ok := spec["suspend"]; ok && boolValue(val) {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Job/"+name+"/Suspended"),

@@ -13,13 +13,13 @@ func (a Analyzer) analyzeDaemonSets(ctx *ScanContext) ([]Finding, error) {
 	for _, ds := range daemonsets {
 		namespace, name := objectNamespaceName(ds)
 		status := nestedMap(ds, "status")
-		
+
 		numberReady := intValue(status["numberReady"])
 		desiredNumberScheduled := intValue(status["desiredNumberScheduled"])
 
 		if numberReady < desiredNumberScheduled {
 			summary := fmt.Sprintf("DaemonSet %s/%s has %d ready replicas out of %d scheduled", namespace, name, numberReady, desiredNumberScheduled)
-			
+
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "DaemonSet/"+name+"/NotReady"),
 				Namespace:    namespace,

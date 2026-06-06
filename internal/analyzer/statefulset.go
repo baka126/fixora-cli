@@ -14,17 +14,17 @@ func (a Analyzer) analyzeStatefulSets(ctx *ScanContext) ([]Finding, error) {
 		namespace, name := objectNamespaceName(sts)
 		spec := nestedMap(sts, "spec")
 		status := nestedMap(sts, "status")
-		
+
 		specReplicas := 1
 		if val, ok := spec["replicas"]; ok {
 			specReplicas = intValue(val)
 		}
-		
+
 		availableReplicas := intValue(status["availableReplicas"])
 
 		if specReplicas != availableReplicas {
 			summary := fmt.Sprintf("StatefulSet %s/%s has %d replicas in spec but %d are available", namespace, name, specReplicas, availableReplicas)
-			
+
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "StatefulSet/"+name+"/ReplicasMismatch"),
 				Namespace:    namespace,

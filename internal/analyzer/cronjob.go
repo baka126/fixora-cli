@@ -13,7 +13,7 @@ func (a Analyzer) analyzeCronJobs(ctx *ScanContext) ([]Finding, error) {
 	for _, cronjob := range cronjobs {
 		namespace, name := objectNamespaceName(cronjob)
 		spec := nestedMap(cronjob, "spec")
-		
+
 		if val, ok := spec["suspend"]; ok && boolValue(val) {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "CronJob/"+name+"/Suspended"),
