@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5]
+
+### Added
+- Native precision analyzer framework replacing basic string-matching for core resources.
+- Fully integrated precise logic for `DaemonSet`, `StatefulSet`, `ReplicaSet`, `Job`, and `CronJob` natively.
+- Eliminated N+1 API fetching issues by retaining `fixora-cli`'s bulk event indexing while getting deep contextual precision.
+
 ## [0.7.4]
 
 ### Added

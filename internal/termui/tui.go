@@ -35,6 +35,7 @@ type TUIOptions struct {
 	Redact        bool
 	UnsafeAI      bool
 	Filters       []string
+	LabelSelector string
 	Refresh       time.Duration
 	ScanTimeout   time.Duration
 	ApplyDryRun   bool
@@ -173,11 +174,12 @@ func (m tuiModel) Init() tea.Cmd {
 
 func newTUIAnalyzer(k kube.Reader, opts TUIOptions) analyzer.Analyzer {
 	return analyzer.New(k, analyzer.Options{
-		Namespace:   opts.Namespace,
-		AllNS:       opts.AllNS,
-		IncludeLogs: opts.IncludeLogs,
-		Redact:      opts.Redact,
-		Filters:     opts.Filters,
+		Namespace:     opts.Namespace,
+		AllNS:         opts.AllNS,
+		IncludeLogs:   opts.IncludeLogs,
+		Redact:        opts.Redact,
+		Filters:       opts.Filters,
+		LabelSelector: opts.LabelSelector,
 	})
 }
 

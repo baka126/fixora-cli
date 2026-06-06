@@ -129,11 +129,11 @@ func TestSimplifiedCommandAliases(t *testing.T) {
 
 func TestInterspersedFlagsAfterResource(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-	opts, rest, err := parseFlags(reorderFlagArgs([]string{"deployment/api", "-n", "prod", "--proof", "--container", "api"}))
+	opts, rest, err := parseFlags(reorderFlagArgs([]string{"deployment/api", "-n", "prod", "--proof", "--container", "api", "--selector", "app=api"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.namespace != "prod" || !opts.proof || opts.container != "api" {
+	if opts.namespace != "prod" || !opts.proof || opts.container != "api" || opts.labelSelector != "app=api" {
 		t.Fatalf("flags after resource were not parsed: %#v", opts)
 	}
 	if len(rest) != 1 || rest[0] != "deployment/api" {

@@ -49,6 +49,7 @@ type options struct {
 	redact        bool
 	unsafeAI      bool
 	filters       string
+	labelSelector string
 	wide          bool
 	noColor       bool
 	proof         bool
@@ -183,11 +184,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	filters := analyzerFiltersForCommand(cmd, rest, opts)
 	a := analyzer.New(reader, analyzer.Options{
-		Namespace:   opts.namespace,
-		AllNS:       opts.allNS,
-		IncludeLogs: opts.includeLogs,
-		Redact:      opts.redact || opts.paranoid,
-		Filters:     filters,
+		Namespace:     opts.namespace,
+		AllNS:         opts.allNS,
+		IncludeLogs:   opts.includeLogs,
+		Redact:        opts.redact || opts.paranoid,
+		Filters:       filters,
+		LabelSelector: opts.labelSelector,
 	})
 
 	switch cmd {
@@ -209,7 +211,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters)}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -223,7 +225,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		err := server.Serve(ctx, server.Options{
 			Addr:        addr,
 			Kubectl:     k,
-			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters)},
+			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector},
 			Token:       os.Getenv("FIXORA_SERVE_TOKEN"),
 		})
 		if err != nil {
@@ -522,6 +524,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				Redact:        opts.redact,
 				UnsafeAI:      opts.unsafeAI,
 				Filters:       splitCSV(opts.filters),
+				LabelSelector: opts.labelSelector,
 				Refresh:       opts.watchInterval,
 				ScanTimeout:   opts.timeout,
 				ApplyDryRun:   opts.applyDryRun,
@@ -618,6 +621,9 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.unsafeAI, "unsafe-ai-no-redact", false, "allow AI calls with unredacted cluster data")
 	fs.StringVar(&opts.filters, "filter", "", "comma-separated analyzer filters")
 	fs.StringVar(&opts.filters, "filters", "", "comma-separated analyzer filters")
+	fs.StringVar(&opts.labelSelector, "selector", "", "label selector for analyzer resource lists")
+	fs.StringVar(&opts.labelSelector, "l", "", "label selector for analyzer resource lists")
+	fs.StringVar(&opts.labelSelector, "L", "", "label selector for analyzer resource lists")
 	fs.BoolVar(&opts.wide, "wide", false, "wide terminal output")
 	fs.BoolVar(&opts.noColor, "no-color", false, "disable terminal color")
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
@@ -790,7 +796,7 @@ func applyWorkflowDefaults(cmd string, opts *options) {
 func reorderFlagArgs(args []string) []string {
 	valueFlags := map[string]bool{
 		"--namespace": true, "-n": true, "--context": true, "--output": true, "-o": true,
-		"--out": true, "--filter": true, "--filters": true, "--repo": true, "--strategy": true,
+		"--out": true, "--filter": true, "--filters": true, "--selector": true, "-l": true, "-L": true, "--repo": true, "--strategy": true,
 		"--branch": true, "--profile": true, "--ai-budget-tokens": true, "--container": true,
 		"--image": true, "--memory-request": true, "--memory-limit": true, "--cpu-request": true,
 		"--env-name": true, "--configmap": true, "--config-key": true, "--timeout": true,
@@ -1534,6 +1540,7 @@ Common flags:
   -n, --namespace string       Namespace (default "default")
   -A, --all-namespaces         Scan all namespaces
       --context string         Kube context
+  -l, --selector string        Label selector, for example app=api,tier!=cache
   -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
       --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
       --repo string            Local manifest, Helm chart, or Kustomize overlay path
@@ -1614,6 +1621,7 @@ Global flags:
   -n, --namespace string       Namespace (default "default")
   -A, --all-namespaces         Scan all namespaces
       --context string         Kube context
+  -l, -L, --selector string    Label selector, for example app=api,tier!=cache
   -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
       --include-logs           Include bounded logs in evidence
       --ai                     Use OpenAI-compatible AI analysis
@@ -1623,6 +1631,7 @@ Global flags:
       --redact                 Redact sensitive values
       --unsafe-ai-no-redact    Allow AI calls with unredacted cluster data
       --filter string          Comma-separated analyzers, for example Pod,Deployment,Service
+      --selector string        Scope analyzer resource lists by labels; supports =, ==, !=, key, !key
       --proof                  Show evidence proof
       --tui                    Enable interactive dashboard for the ui command
       --quick                  Use fast incident defaults

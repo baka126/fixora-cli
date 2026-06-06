@@ -38,6 +38,9 @@ func (s *ScanContext) GetPods() (kube.PodList, error) {
 	}
 	pods, err := s.Reader.GetPods(s, s.Opts.Namespace, s.Opts.AllNS)
 	if err == nil {
+		pods, err = filterPodsByLabelSelector(pods, s.Opts.LabelSelector)
+	}
+	if err == nil {
 		s.pods = &pods
 	}
 	return pods, err
@@ -69,6 +72,9 @@ func (s *ScanContext) GetResourceItems(namespace string, allNS bool, resource st
 	}
 	items, err := s.Reader.GetResourceItems(s, namespace, allNS, resource)
 	if err == nil {
+		items, err = filterObjectsByLabelSelector(items, s.Opts.LabelSelector)
+	}
+	if err == nil {
 		s.items[key] = items
 	}
 	return items, err
@@ -99,6 +105,7 @@ type Options struct {
 	IncludeLogs    bool
 	Redact         bool
 	Filters        []string
+	LabelSelector  string
 	MaxConcurrency int
 }
 
