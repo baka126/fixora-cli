@@ -6,7 +6,7 @@ func DefaultIncidentFilters(quick bool) []string {
 	if quick {
 		return []string{"pod"}
 	}
-	return []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob", "service", "ingress", "hpa", "pdb", "pvc", "node"}
+	return []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob", "service", "ingress", "hpa", "pdb", "pvc", "node", "networkpolicy", "configmap"}
 }
 
 func SmartFiltersFor(resource, status string) []string {
@@ -28,6 +28,10 @@ func SmartFiltersFor(resource, status string) []string {
 	switch {
 	case containsAnyText(text, "service", "endpoint", "endpoints", "noendpoints", "connectionrefused", "dns"):
 		return add("service", "networking")
+	case containsAnyText(text, "networkpolicy", "network policy", "netpol", "egress", "ingress blocked"):
+		return add("networkpolicy", "service", "networking")
+	case containsAnyText(text, "configmap", "configuration", "missing config", "stale config"):
+		return add("configmap", "deployment", "statefulset", "daemonset")
 	case containsAnyText(text, "ingress", "httproute", "gateway", "route"):
 		return add("service", "ingress", "gateway", "networking")
 	case containsAnyText(text, "hpa", "horizontalpodautoscaler", "autoscal"):
@@ -42,6 +46,8 @@ func SmartFiltersFor(resource, status string) []string {
 		return add("rbac", "security")
 	case containsAnyText(text, "security", "policy", "kyverno", "trivy", "vulnerability"):
 		return add("security", "policy", "policyreport", "vulnerabilityreport", "configauditreport")
+	case containsAnyText(text, "olm", "operator", "catalogsource", "subscription", "installplan", "clusterserviceversion", "csv", "operatorgroup", "clustercatalog", "clusterextension"):
+		return add("olm", "operator", "deployment", "service")
 	case containsAnyText(text, "node", "pressure", "taint", "unschedulable", "pending", "scheduling"):
 		return add("node", "pdb")
 	case containsAnyText(text, "job", "cronjob"):
