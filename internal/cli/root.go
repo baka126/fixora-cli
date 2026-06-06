@@ -132,8 +132,11 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "cache" {
 		return runCache(args[1:], stdout, stderr)
 	}
-	if args[0] == "ai" {
-		return runAI(args[1:], stdout, stderr)
+	if args[0] == "doctor" {
+		return runAIDoctor(args[1:], stdout, stderr)
+	}
+	if args[0] == "profiles" {
+		return runProfiles(args[1:], stdout, stderr)
 	}
 	if args[0] == "memory" {
 		return runMemory(args[1:], stdout, stderr)
@@ -1239,17 +1242,14 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	}
 }
 
-func runAI(args []string, stdout, stderr io.Writer) int {
+func runAIDoctor(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if len(args) == 0 || args[0] == "doctor" {
-		return output.Write(stdout, "json", ai.Doctor(ctx))
-	}
-	if args[0] == "profiles" {
-		return output.Write(stdout, "json", config.Profiles())
-	}
-	fmt.Fprintf(stderr, "error: unknown ai command %q\n", args[0])
-	return 2
+	return output.Write(stdout, "json", ai.Doctor(ctx))
+}
+
+func runProfiles(args []string, stdout, stderr io.Writer) int {
+	return output.Write(stdout, "json", config.Profiles())
 }
 
 func runMemory(args []string, stdout, stderr io.Writer) int {
@@ -1614,7 +1614,8 @@ Primary commands:
   config view|set|unset|validate|export|reset|path
   cache path|stats|list|purge|clear
   cache add|get|remove         Configure K8sGPT-style remote cache metadata
-  ai doctor|profiles           Validate AI setup and list prompt profiles
+  doctor                       Validate AI setup and configuration
+  profiles                     List available prompt profiles
   memory list|clear            Inspect or clear local scenario memory
 
 Global flags:
