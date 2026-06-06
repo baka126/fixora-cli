@@ -552,37 +552,106 @@ func Auth(args []string) error {
 
 	if len(args) < 2 {
 		reader := bufio.NewReader(os.Stdin)
-		
-		fmt.Print("AI Provider (e.g., openai, anthropic, bedrock) [openai]: ")
-		provider, _ := reader.ReadString('\n')
-		provider = strings.TrimSpace(provider)
-		if provider == "" {
-			provider = "openai"
+
+		type providerDef struct {
+			id      string
+			name    string
+			baseURL string
+			models  []string
 		}
-		
-		fmt.Print("API Key: ")
+
+		known := []providerDef{
+			{"openai", "OpenAI", "https://api.openai.com/v1", []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"}},
+			{"anthropic", "Anthropic", "", []string{"claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"}},
+			{"ollama", "Ollama (Local)", "http://localhost:11434/v1", []string{"llama3", "mistral", "gemma", "phi3"}},
+			{"bedrock", "AWS Bedrock", "", []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "meta.llama3-70b-instruct-v1:0"}},
+			{"azure", "Azure OpenAI", "https://<your-resource>.openai.azure.com/", []string{"gpt-4o", "gpt-4", "gpt-35-turbo"}},
+		}
+
+		fmt.Println("Select AI Provider:")
+		for i, p := range known {
+			fmt.Printf("  %d. %s\n", i+1, p.name)
+		}
+		fmt.Printf("  %d. Custom\n", len(known)+1)
+		fmt.Print("Enter choice [1]: ")
+
+		choiceStr, _ := reader.ReadString('\n')
+		choiceStr = strings.TrimSpace(choiceStr)
+		choice := 1
+		if choiceStr != "" {
+			if c, err := strconv.Atoi(choiceStr); err == nil {
+				choice = c
+			}
+		}
+
+		var provider string
+		var baseURL string
+		var models []string
+
+		if choice > 0 && choice <= len(known) {
+			p := known[choice-1]
+			provider = p.id
+			baseURL = p.baseURL
+			models = p.models
+		} else {
+			fmt.Print("Enter Custom Provider Name (e.g., groq, vertex): ")
+			p, _ := reader.ReadString('\n')
+			provider = strings.TrimSpace(p)
+		}
+
+		fmt.Print("\nAPI Key: ")
 		key, _ := reader.ReadString('\n')
 		key = strings.TrimSpace(key)
-		if key == "" {
-			return fmt.Errorf("api key is required")
+		if key == "" && provider != "ollama" {
+			return fmt.Errorf("api key is required for %s", provider)
 		}
-		
-		fmt.Print("Base URL (optional, press Enter to skip): ")
-		baseURL, _ := reader.ReadString('\n')
-		baseURL = strings.TrimSpace(baseURL)
-		
-		fmt.Print("Model (optional, press Enter to skip): ")
-		model, _ := reader.ReadString('\n')
-		model = strings.TrimSpace(model)
-		
+
+		if baseURL != "" {
+			fmt.Printf("\nBase URL [%s]: ", baseURL)
+		} else {
+			fmt.Print("\nBase URL (optional, press Enter to skip): ")
+		}
+		urlInput, _ := reader.ReadString('\n')
+		urlInput = strings.TrimSpace(urlInput)
+		if urlInput != "" {
+			baseURL = urlInput
+		}
+
+		var model string
+		if len(models) > 0 {
+			fmt.Println("\nSelect Model:")
+			for i, m := range models {
+				fmt.Printf("  %d. %s\n", i+1, m)
+			}
+			fmt.Printf("  %d. Custom\n", len(models)+1)
+			fmt.Print("Enter choice [1]: ")
+
+			mChoiceStr, _ := reader.ReadString('\n')
+			mChoiceStr = strings.TrimSpace(mChoiceStr)
+			mChoice := 1
+			if mChoiceStr != "" {
+				if c, err := strconv.Atoi(mChoiceStr); err == nil {
+					mChoice = c
+				}
+			}
+
+			if mChoice > 0 && mChoice <= len(models) {
+				model = models[mChoice-1]
+			} else {
+				fmt.Print("Enter Custom Model Name: ")
+				m, _ := reader.ReadString('\n')
+				model = strings.TrimSpace(m)
+			}
+		} else {
+			fmt.Print("\nModel (optional, press Enter to skip): ")
+			m, _ := reader.ReadString('\n')
+			model = strings.TrimSpace(m)
+		}
+
 		cfg.AIProvider = provider
 		cfg.AIAPIKey = key
-		if baseURL != "" {
-			cfg.AIBaseURL = baseURL
-		}
-		if model != "" {
-			cfg.AIModel = model
-		}
+		cfg.AIBaseURL = baseURL
+		cfg.AIModel = model
 	} else {
 		cfg.AIProvider = args[0]
 		cfg.AIAPIKey = args[1]
