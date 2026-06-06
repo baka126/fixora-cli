@@ -2,7 +2,7 @@ package cli
 
 import (
 	"context"
-	"flag"
+	flag "github.com/spf13/pflag"
 	"fmt"
 	"io"
 	"os"
@@ -106,6 +106,10 @@ func (l *listFlag) Set(value string) error {
 	return nil
 }
 
+func (l *listFlag) Type() string {
+	return "stringSlice"
+}
+
 func Execute(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		args = []string{"dashboard"}
@@ -142,7 +146,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cmd := args[0]
-	opts, rest, err := parseFlags(reorderFlagArgs(args[1:]))
+	opts, rest, err := parseFlags(args[1:])
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
@@ -505,13 +509,10 @@ func parseFlags(args []string) (options, []string, error) {
 	}
 	fs := flag.NewFlagSet("kubectl-fixora", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&opts.namespace, "namespace", "default", "namespace")
-	fs.StringVar(&opts.namespace, "n", "default", "namespace")
-	fs.BoolVar(&opts.allNS, "all-namespaces", false, "scan all namespaces")
-	fs.BoolVar(&opts.allNS, "A", false, "scan all namespaces")
+	fs.StringVarP(&opts.namespace, "namespace", "n", "default", "namespace")
+	fs.BoolVarP(&opts.allNS, "all-namespaces", "A", false, "scan all namespaces")
 	fs.StringVar(&opts.context, "context", "", "kube context")
-	fs.StringVar(&opts.output, "output", opts.output, "output format: text, json, yaml, markdown")
-	fs.StringVar(&opts.output, "o", opts.output, "output format")
+	fs.StringVarP(&opts.output, "output", "o", opts.output, "output format: text, json, yaml, markdown")
 	fs.BoolVar(&opts.includeLogs, "include-logs", false, "include bounded pod logs")
 	fs.BoolVar(&opts.useAI, "ai", false, "use OpenAI-compatible AI analysis")
 	fs.BoolVar(&opts.autoFix, "auto-fix", false, "generate an explicit local fix plan")
@@ -523,9 +524,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.unsafeAI, "unsafe-ai-no-redact", false, "allow AI calls with unredacted cluster data")
 	fs.StringVar(&opts.filters, "filter", "", "comma-separated analyzer filters")
 	fs.StringVar(&opts.filters, "filters", "", "comma-separated analyzer filters")
-	fs.StringVar(&opts.labelSelector, "selector", "", "label selector for analyzer resource lists")
-	fs.StringVar(&opts.labelSelector, "l", "", "label selector for analyzer resource lists")
-	fs.StringVar(&opts.labelSelector, "L", "", "label selector for analyzer resource lists")
+	fs.StringVarP(&opts.labelSelector, "selector", "l", "", "label selector for analyzer resource lists")
 	fs.BoolVar(&opts.wide, "wide", false, "wide terminal output")
 	fs.BoolVar(&opts.noColor, "no-color", false, "disable terminal color")
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
@@ -567,8 +566,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.prTitle, "pr-title", "", "pull request title for --delivery=pr")
 	fs.DurationVar(&opts.watchInterval, "watch-interval", 5*time.Second, "watch polling interval")
 	fs.IntVar(&opts.maxFindings, "max-findings", 8, "maximum findings to display in watch mode")
-	fs.Var(&opts.lintFiles, "f", "manifest, chart, or kustomize path to lint")
-	fs.Var(&opts.lintFiles, "filename", "manifest, chart, or kustomize path to lint")
+	fs.VarP(&opts.lintFiles, "filename", "f", "manifest, chart, or kustomize path to lint")
 	if err := fs.Parse(args); err != nil {
 		return opts, nil, err
 	}
@@ -693,56 +691,7 @@ func applyWorkflowDefaults(cmd string, opts *options) {
 	}
 }
 
-func reorderFlagArgs(args []string) []string {
-	valueFlags := map[string]bool{
-		"--namespace": true, "-n": true, "--context": true, "--output": true, "-o": true,
-		"--out": true, "--filter": true, "--filters": true, "--selector": true, "-l": true, "-L": true, "--repo": true, "--strategy": true,
-		"--branch": true, "--profile": true, "--ai-budget-tokens": true, "--container": true,
-		"--image": true, "--memory-request": true, "--memory-limit": true, "--cpu-request": true,
-		"--env-name": true, "--configmap": true, "--config-key": true, "--timeout": true,
-		"--log-tail": true, "--max-logs-bytes": true, "--shadow-timeout": true,
-		"--shadow-retries": true, "--shadow-egress": true, "--delivery": true, "--pr-base": true,
-		"--pr-title": true, "--watch-interval": true, "--max-findings": true, "-f": true,
-		"--filename": true,
-	}
-	boolFlags := map[string]bool{
-		"--all-namespaces": true, "-A": true, "--include-logs": true, "--ai": true,
-		"--auto-fix": true, "--apply": true, "--yes": true, "--verbose": true,
-		"--redact": true, "--unsafe-ai-no-redact": true, "--wide": true, "--no-color": true,
-		"--proof": true, "--paranoid": true, "--preview": true, "--force-risky": true,
-		"--typed-client": true, "--tui": true, "--quick": true, "--safe": true,
-		"--gitops": true, "--commit": true, "--mcp": true, "--apply-dry-run": true,
-		"--source-patch": true, "--shadow": true, "--keep-shadow": true,
-	}
-	var flags []string
-	var positionals []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		name := arg
-		if strings.HasPrefix(arg, "--") {
-			if idx := strings.Index(arg, "="); idx > 0 {
-				name = arg[:idx]
-			}
-		}
-		switch {
-		case strings.Contains(arg, "=") && valueFlags[name]:
-			flags = append(flags, arg)
-		case valueFlags[arg]:
-			flags = append(flags, arg)
-			if i+1 < len(args) {
-				i++
-				flags = append(flags, args[i])
-			}
-		case boolFlags[name] || boolFlags[arg]:
-			flags = append(flags, arg)
-		case strings.HasPrefix(arg, "-"):
-			flags = append(flags, arg)
-		default:
-			positionals = append(positionals, arg)
-		}
-	}
-	return append(flags, positionals...)
-}
+
 
 func visitedFlags(fs *flag.FlagSet) map[string]bool {
 	visited := map[string]bool{}
