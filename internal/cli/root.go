@@ -1005,6 +1005,10 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 		return output.Write(stdout, opts.output, plan)
 	}
 
+	if interactiveFix(opts) {
+		return runFixWalkthrough(ctx, stdout, stderr, opts, k, finding, plan, resourceArg)
+	}
+
 	fmt.Fprintln(stdout, "Fixora incident fix")
 	fmt.Fprintln(stdout, strings.Repeat("=", 20))
 	termui.Why(stdout, finding, plan, true, termui.Options{Wide: true, NoColor: opts.noColor})
