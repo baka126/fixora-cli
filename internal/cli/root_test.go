@@ -709,3 +709,14 @@ func TestReconcileDeliveryFlags(t *testing.T) {
 		}
 	})
 }
+
+func TestPrintHelpDocumentsDelivery(t *testing.T) {
+	var buf bytes.Buffer
+	printHelp(&buf)
+	out := buf.String()
+	for _, want := range []string{"--delivery", "walkthrough", "patch, cluster, or pr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help missing %q; got:\n%s", want, out)
+		}
+	}
+}

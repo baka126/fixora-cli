@@ -2452,7 +2452,11 @@ Usage:
 Fast incident workflow:
   scan                         List failing workloads, with logs and typed reads by default
   why <kind/name>              Explain root cause, proof, rollback hint, and next step
-  fix <kind/name>              AI RCA -> safe patch -> diff/edit -> shadow verify -> patch/apply/PR flow
+  fix <kind/name>              Guided walkthrough: root cause -> fix -> shadow -> deliver.
+                               Interactive on a TTY; pass -o json or --yes for scripted runs.
+    --delivery                 How to ship a verified fix: patch, cluster, or pr (default: patch).
+    --yes                      Confirm non-interactive cluster/PR delivery.
+                               (--apply, --source-patch, --gitops are deprecated aliases.)
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
   doctor                       Validate access, RBAC, logs, events, metrics, Helm/GitOps CRDs
