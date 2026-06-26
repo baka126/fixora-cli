@@ -785,21 +785,9 @@ func runCost(ctx context.Context, stdout, stderr io.Writer, opts options, a anal
 	return output.WriteOrError(stdout, stderr, opts.output, costs, err)
 }
 
-func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan) int {
-	if !plan.ApplyEligible {
-		failNext(stderr, "shadow verification requires an apply-eligible concrete patch", "supply concrete values (e.g. --image/--memory-request) or use --delivery=pr for a review-only source patch")
-		return 1
-	}
-	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
-	if mode == "" {
-		mode = shadow.DeliveryPatch
-	}
-	if mode != shadow.DeliveryPatch && mode != shadow.DeliveryCluster && mode != shadow.DeliveryPR {
-		fmt.Fprintf(stderr, "error: unsupported --delivery %q; use patch, cluster, or pr\n", opts.delivery)
-		return 2
-	}
+func guardDelivery(stderr io.Writer, opts options, finding analyzer.Finding, mode shadow.DeliveryMode) int {
 	if mode == shadow.DeliveryCluster && sourceManaged(finding) {
-		fmt.Fprintln(stderr, "error: direct cluster delivery is blocked for Helm/GitOps-managed resources; deliver a validated source change instead")
+		failNext(stderr, "direct cluster delivery is blocked for Helm/GitOps-managed resources", "use --delivery=pr to deliver a validated source change")
 		return 2
 	}
 	if mode == shadow.DeliveryPR {
@@ -817,24 +805,38 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 			return 2
 		}
 		if repoMode.Type == "helm" {
-			fmt.Fprintln(stderr, "error: automatic Helm PR delivery is blocked because Fixora cannot safely map a rendered patch to chart-native values; use the review-only source patch and helm template validation")
+			failNext(stderr, "automatic Helm PR delivery is blocked; Fixora cannot safely map a rendered patch to chart-native values", "use the review-only source patch and validate with helm template")
 			return 2
 		}
 	}
-	diff := termui.DisplayDiff(finalPatchDiff(ctx, opts, k, plan), opts.noColor)
-	if !termui.ConfirmShadowDeploy(diff, inputFor(opts), stdout) {
-		fmt.Fprintln(stdout, "shadow verification cancelled")
-		return 0
+	return 0
+}
+
+func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, confirm bool) (shadow.Result, bool, int) {
+	if !plan.ApplyEligible {
+		failNext(stderr, "shadow verification requires an apply-eligible concrete patch", "supply concrete values (e.g. --image/--memory-request) or use --delivery=pr for a review-only source patch")
+		return shadow.Result{}, false, 1
+	}
+	if confirm {
+		diff := termui.DisplayDiff(finalPatchDiff(ctx, opts, k, plan), opts.noColor)
+		if !termui.ConfirmShadowDeploy(diff, inputFor(opts), stdout) {
+			fmt.Fprintln(stdout, "shadow verification cancelled")
+			return shadow.Result{}, false, 0
+		}
 	}
 	fmt.Fprintln(stdout, "Starting shadow verification...")
 	typed, err := kube.NewRequiredTypedClient(opts.context, "shadow verification")
 	if err != nil {
 		fmt.Fprintf(stderr, "error: typed Kubernetes client: %v\n", err)
-		return 1
+		return shadow.Result{}, false, 1
 	}
 	typed.LogTail = opts.logTail
 	typed.LogLimitBytes = opts.maxLogBytes
 	retryProvider, retries := shadowRetryProvider(opts, stderr)
+	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
+	if mode == "" {
+		mode = shadow.DeliveryPatch
+	}
 	req := shadow.Request{
 		Namespace:   finding.Namespace,
 		Resource:    plan.Resource,
@@ -859,7 +861,7 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 	result, err := shadow.Run(ctx, typed, req)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: shadow verification: %v\n", err)
-		return 1
+		return shadow.Result{}, false, 1
 	}
 	if !result.Verified {
 		if opts.output == "text" {
@@ -867,8 +869,12 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		} else {
 			_ = output.Write(stdout, opts.output, result)
 		}
-		return 1
+		return result, false, 1
 	}
+	return result, true, 0
+}
+
+func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, mode shadow.DeliveryMode) int {
 	switch mode {
 	case shadow.DeliveryPatch:
 		if opts.output == "text" {
@@ -931,6 +937,29 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return output.Write(stdout, opts.output, result)
 	}
 	return output.Write(stdout, opts.output, result)
+}
+
+func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan) int {
+	if !plan.ApplyEligible {
+		failNext(stderr, "shadow verification requires an apply-eligible concrete patch", "supply concrete values (e.g. --image/--memory-request) or use --delivery=pr for a review-only source patch")
+		return 1
+	}
+	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
+	if mode == "" {
+		mode = shadow.DeliveryPatch
+	}
+	if mode != shadow.DeliveryPatch && mode != shadow.DeliveryCluster && mode != shadow.DeliveryPR {
+		failNext(stderr, fmt.Sprintf("unsupported --delivery %q", opts.delivery), "use --delivery patch, cluster, or pr")
+		return 2
+	}
+	if code := guardDelivery(stderr, opts, finding, mode); code != 0 {
+		return code
+	}
+	result, verified, code := verifyInShadow(ctx, stdout, stderr, opts, k, finding, plan, true)
+	if !verified {
+		return code
+	}
+	return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode)
 }
 
 func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
