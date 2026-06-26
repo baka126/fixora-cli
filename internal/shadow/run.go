@@ -55,7 +55,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			_ = c.DeleteNetworkPolicy(context.Background(), plan.Policy.Namespace, plan.Policy.Name)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
-		verification := verifyClone(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt)
+		verification := verifyClone(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource))
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready
@@ -87,6 +87,16 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
 	return result, nil
+}
+
+func resourceAllowsCompletion(resource string) bool {
+	kind, _ := splitResource(resource)
+	switch strings.ToLower(kind) {
+	case "job", "jobs", "cronjob", "cronjobs", "cj":
+		return true
+	default:
+		return false
+	}
 }
 
 func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *Result) {

@@ -317,6 +317,26 @@ func TestScanReportStopsWorkersOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestPodOnlyIncidentScanSkipsPodSecurityHygiene(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{},
+		items: map[string][]map[string]any{
+			"pods": {
+				{
+					"metadata": map[string]any{"name": "api", "namespace": "prod"},
+					"spec": map[string]any{
+						"containers": []any{map[string]any{"name": "api"}},
+					},
+				},
+			},
+		},
+	}
+	report := New(reader, Options{Namespace: "prod", Filters: []string{"pod"}}).ScanReport(context.Background())
+	if len(report.Findings) != 0 {
+		t.Fatalf("pod-only incident scan should skip pod security hygiene, got %#v", report.Findings)
+	}
+}
+
 func TestRedactFindingForAIRemovesClusterSecrets(t *testing.T) {
 	finding := Finding{
 		ID:      "prod/api",
@@ -334,6 +354,20 @@ data:
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("AI finding leaked %q: %#v", forbidden, redacted)
 		}
+	}
+}
+
+func TestRedactFindingForAIDoesNotMutateOriginalEvidence(t *testing.T) {
+	original := Finding{
+		Evidence: []Evidence{{Label: "Image", Value: "repo/app@sha256:0123456789abcdef"}},
+		Logs:     []LogSnippet{{Source: "current", Text: "password=hunter2"}},
+	}
+	redacted := RedactFindingForAI(original)
+	if original.Evidence[0].Value != "repo/app@sha256:0123456789abcdef" || original.Logs[0].Text != "password=hunter2" {
+		t.Fatalf("AI redaction mutated original finding: %#v", original)
+	}
+	if redacted.Logs[0].Text == original.Logs[0].Text {
+		t.Fatalf("expected independent redacted copy: %#v", redacted)
 	}
 }
 

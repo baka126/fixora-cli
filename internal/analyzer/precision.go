@@ -21,7 +21,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "gateway-api", aliases: []string{"gateway", "gatewayclass", "httproute", "networking"}, run: a.analyzeGatewayAPI},
 		{name: "network-policy", aliases: []string{"networkpolicy", "networkpolicies", "netpol", "networking"}, run: a.analyzeNetworkPolicies},
 		{name: "rbac-risk", aliases: []string{"rbac", "role", "clusterrole", "rolebinding", "clusterrolebinding", "security"}, run: a.analyzeRBAC},
-		{name: "pod-security", aliases: []string{"pod", "pods", "security"}, run: a.analyzePodSecurity},
+		{name: "pod-security", aliases: []string{"pod-security", "podsecurity", "security"}, run: a.analyzePodSecurity},
 		{name: "node-conditions", aliases: []string{"node", "nodes", "scheduling"}, run: a.analyzeNodes},
 		{name: "pvc", aliases: []string{"pvc", "persistentvolumeclaim", "persistentvolumeclaims", "storage"}, run: a.analyzePVCs},
 		{name: "storage", aliases: []string{"storage", "pv", "persistentvolume", "storageclass"}, run: a.analyzeStorage},

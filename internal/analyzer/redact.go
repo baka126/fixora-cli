@@ -3,6 +3,13 @@ package analyzer
 import "github.com/fixora/kubectl-fixora/internal/redact"
 
 func RedactFindingForAI(f Finding) Finding {
+	// Finding contains slices. Copy them before redacting so the AI-safe view never
+	// overwrites the local evidence later used for patch validation and delivery.
+	f.Evidence = append([]Evidence(nil), f.Evidence...)
+	f.OwnerChain = append([]string(nil), f.OwnerChain...)
+	f.RecentChanges = append([]string(nil), f.RecentChanges...)
+	f.Recommendations = append([]Recommendation(nil), f.Recommendations...)
+	f.Logs = append([]LogSnippet(nil), f.Logs...)
 	f.ID = redact.KubernetesText(f.ID)
 	f.Namespace = redact.KubernetesText(f.Namespace)
 	f.ResourceKind = redact.KubernetesText(f.ResourceKind)

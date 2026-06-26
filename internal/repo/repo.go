@@ -157,10 +157,15 @@ func prepareBranch(ctx context.Context, repoPath, branch string, commit bool, me
 		return nil
 	}
 	if branch != "" {
-		cmd := exec.CommandContext(ctx, "git", "checkout", "-B", branch)
+		exists := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		exists.Dir = repoPath
+		if err := exists.Run(); err == nil {
+			return fmt.Errorf("branch %q already exists; choose a new remediation branch to avoid overwriting local work", branch)
+		}
+		cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branch)
 		cmd.Dir = repoPath
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git checkout failed: %s", strings.TrimSpace(string(out)))
+			return fmt.Errorf("git branch creation failed: %s", strings.TrimSpace(string(out)))
 		}
 	}
 	if commit {

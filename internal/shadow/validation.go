@@ -31,6 +31,63 @@ func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
 	return nil
 }
 
+// ValidateReviewedPatch validates an operator-edited concrete patch before it
+// can be used for shadow verification or delivery. Unlike an AI revision, a
+// reviewed patch may retain its resource identity, but that identity must not
+// drift from Fixora's generated patch.
+func ValidateReviewedPatch(originalPatch, reviewedPatch, planType string) error {
+	planType = strings.ToLower(strings.TrimSpace(planType))
+	if !allowedRevisionStrategy(planType) {
+		return PatchValidationError{Reasons: []string{fmt.Sprintf("unknown or unsafe strategy %q", planType)}}
+	}
+	original, err := parseSinglePatch(originalPatch)
+	if err != nil {
+		return PatchValidationError{Reasons: []string{"original patch is not valid YAML: " + err.Error()}}
+	}
+	reviewed, err := parseSinglePatch(reviewedPatch)
+	if err != nil {
+		return PatchValidationError{Reasons: []string{err.Error()}}
+	}
+	reasons := validateReviewIdentity(original, reviewed)
+	original = withoutIdentity(original)
+	reviewed = withoutIdentity(reviewed)
+	reasons = append(reasons, validatePatchObject(reviewed)...)
+	reasons = append(reasons, validateProjectedDiff(original, reviewed, planType)...)
+	if len(reasons) > 0 {
+		sort.Strings(reasons)
+		return PatchValidationError{Reasons: reasons}
+	}
+	return nil
+}
+
+func validateReviewIdentity(original, reviewed map[string]any) []string {
+	var reasons []string
+	for _, key := range []string{"apiVersion", "kind"} {
+		if value, ok := original[key]; ok && fmt.Sprint(reviewed[key]) != fmt.Sprint(value) {
+			reasons = append(reasons, key+" must match the generated patch")
+		}
+	}
+	originalMeta, _ := nestedMap(original, "metadata")
+	reviewedMeta, _ := nestedMap(reviewed, "metadata")
+	for _, key := range []string{"name", "namespace"} {
+		if value, ok := originalMeta[key]; ok && fmt.Sprint(reviewedMeta[key]) != fmt.Sprint(value) {
+			reasons = append(reasons, "metadata."+key+" must match the generated patch")
+		}
+	}
+	return reasons
+}
+
+func withoutIdentity(obj map[string]any) map[string]any {
+	copy := make(map[string]any, len(obj))
+	for key, value := range obj {
+		if key == "apiVersion" || key == "kind" || key == "metadata" {
+			continue
+		}
+		copy[key] = value
+	}
+	return copy
+}
+
 func parseSinglePatch(patch string) (map[string]any, error) {
 	patch = strings.TrimSpace(patch)
 	if patch == "" {
@@ -55,7 +112,7 @@ func parseSinglePatch(patch string) (map[string]any, error) {
 
 func allowedRevisionStrategy(strategy string) bool {
 	switch strategy {
-	case "image", "resources", "env":
+	case "image", "fix-architecture", "resources", "env":
 		return true
 	default:
 		return false
@@ -146,7 +203,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		return reasons
 	}
 	switch strategy {
-	case "image":
+	case "image", "fix-architecture":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "image": true}, strategy)...)
 	case "resources":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "resources": true}, strategy)...)
@@ -162,7 +219,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 
 func allowedSpecKeys(strategy string) map[string]bool {
 	switch strategy {
-	case "image", "resources", "env":
+	case "image", "fix-architecture", "resources", "env":
 		return map[string]bool{"containers": true, "initContainers": true}
 	default:
 		return map[string]bool{}
@@ -206,6 +263,9 @@ func containerNames(value any) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range sliceMaps(value) {
 		if name := stringValue(c["name"]); name != "" {
+			if strings.HasPrefix(name, "TODO_") {
+				continue
+			}
 			out[name] = true
 		}
 	}

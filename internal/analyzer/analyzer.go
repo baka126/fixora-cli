@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/fixora/kubectl-fixora/internal/config"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/redact"
 
@@ -166,11 +167,19 @@ func (r ScanReport) Envelope() ScanEnvelope {
 	for _, skipped := range r.Skipped {
 		warnings = append(warnings, skipped.Name+": "+skipped.Reason)
 	}
+	provider := os.Getenv("FIXORA_AI_PROVIDER")
+	if provider == "" {
+		if cfg, err := config.Load(); err == nil && cfg.AIProvider != "" {
+			provider = cfg.AIProvider
+		} else {
+			provider = "local"
+		}
+	}
 	return ScanEnvelope{
 		APIVersion: "fixora.dev/v1alpha1",
 		Kind:       "AnalysisReport",
 		Status:     status,
-		Provider:   firstNonEmpty(os.Getenv("FIXORA_AI_PROVIDER"), "local"),
+		Provider:   provider,
 		Problems:   len(r.Findings),
 		Results:    r.Findings,
 		Skipped:    r.Skipped,
@@ -460,6 +469,11 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 		},
 		Recommendations: recommendationsForStatus(status, pod),
 	}
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		if container.Name != "" && container.Image != "" {
+			f.Evidence = append(f.Evidence, Evidence{Label: "Container image " + container.Name, Value: container.Image})
+		}
+	}
 
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
@@ -478,7 +492,59 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 			f.Logs = append(f.Logs, LogSnippet{Source: "previous", Text: AggregateLogs(a.redact(logs))})
 		}
 	}
+
+	// Refine diagnostics based on logs
+	var logText string
+	for _, l := range f.Logs {
+		logText += l.Text + "\n"
+	}
+	if strings.Contains(logText, "exec format error") {
+		f.Status = "ExecFormatError"
+		f.Summary = "Container failed to execute due to an architecture mismatch (exec format error)."
+		f.Category = "runtime"
+		f.Recommendations = []Recommendation{{
+			Title:         "Deploy matching image architecture",
+			Description:   "The container image architecture does not match the CPU architecture of the node. Rebuild the image for this platform (e.g., using docker buildx for linux/arm64 or linux/amd64) or schedule the pod on a node with a matching CPU architecture.",
+			PatchType:     "fix-architecture",
+			SafeByDefault: true,
+		}}
+		a.appendNodePlatformEvidence(ctx, &f, pod.Spec.NodeName)
+	} else if strings.Contains(logText, "Permission denied") || strings.Contains(logText, "permission denied") {
+		f.Status = "PermissionDenied"
+		f.Summary = "Container execution failed due to insufficient file or system permissions."
+		f.Category = "security"
+		f.Recommendations = []Recommendation{{
+			Title:         "Adjust securityContext or file permissions",
+			Description:   "Check runAsUser, fsGroup, readOnlyRootFilesystem, and volume/mount directory permissions.",
+			PatchType:     "security",
+			SafeByDefault: false,
+		}}
+	}
+
 	return f, true
+}
+
+func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, finding *Finding, nodeName string) {
+	if finding == nil || strings.TrimSpace(nodeName) == "" {
+		return
+	}
+	nodes, err := a.k.GetNodes(ctx)
+	if err != nil {
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform lookup", Value: err.Error()})
+		return
+	}
+	for _, node := range nodes {
+		if node.Metadata.Name != nodeName {
+			continue
+		}
+		architecture := firstNonEmpty(node.Metadata.Labels["kubernetes.io/arch"], node.Metadata.Labels["beta.kubernetes.io/arch"])
+		osName := firstNonEmpty(node.Metadata.Labels["kubernetes.io/os"], node.Metadata.Labels["beta.kubernetes.io/os"], "linux")
+		if architecture != "" {
+			finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform", Value: osName + "/" + architecture})
+		}
+		return
+	}
+	finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform lookup", Value: "node not returned by API"})
 }
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {

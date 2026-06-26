@@ -186,6 +186,10 @@ type AIResult struct {
 	Summary        string   `json:"summary"`
 	RootCause      string   `json:"rootCause"`
 	RecommendedFix string   `json:"recommendedFix"`
+	PatchYAML      string   `json:"patchYAML,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
+	Confidence     int      `json:"confidence,omitempty"`
+	Analyzers      []string `json:"analyzers,omitempty"`
 	Commands       []string `json:"commands,omitempty"`
 	Warnings       []string `json:"warnings,omitempty"`
 }

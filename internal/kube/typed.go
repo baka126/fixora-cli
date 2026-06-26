@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -87,6 +89,9 @@ func newTypedClient(contextName string) (*TypedClient, Kubectl, error) {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return nil, fallback, err
 	}
+	// Fixora uses controller-runtime only as a typed client. Set a logger so it
+	// does not emit controller-runtime's default diagnostic stack trace.
+	ctrl.SetLogger(logr.Discard())
 	runtimeClient, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fallback, err

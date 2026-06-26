@@ -34,6 +34,7 @@ type Config struct {
 	ActiveProfile   string              `json:"activeProfile,omitempty"`
 	Profiles        map[string]Settings `json:"profiles,omitempty"`
 	Contexts        map[string]Settings `json:"contexts,omitempty"`
+	CustomProfiles  map[string]string   `json:"customProfiles,omitempty"`
 }
 
 type Settings struct {
@@ -41,6 +42,7 @@ type Settings struct {
 	AIProvider    string `json:"aiProvider,omitempty"`
 	AIBaseURL     string `json:"aiBaseURL,omitempty"`
 	AIModel       string `json:"aiModel,omitempty"`
+	AIAPIKey      string `json:"aiApiKey,omitempty"`
 	Profile       string `json:"profile,omitempty"`
 	CacheEnabled  *bool  `json:"cacheEnabled,omitempty"`
 	Timeout       string `json:"timeout,omitempty"`
@@ -274,6 +276,15 @@ func Set(args []string) error {
 	default:
 		return fmt.Errorf("unknown config key %q", args[0])
 	}
+	if cfg.ActiveProfile != "" {
+		if cfg.Profiles == nil {
+			cfg.Profiles = make(map[string]Settings)
+		}
+		profileSettings := cfg.Profiles[cfg.ActiveProfile]
+		if err := setSetting(&profileSettings, args[0], args[1]); err == nil {
+			cfg.Profiles[cfg.ActiveProfile] = profileSettings
+		}
+	}
 	return Save(cfg)
 }
 
@@ -297,7 +308,7 @@ func ProfileCommand(args []string) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("config profile create requires a name")
 		}
-		cfg.Profiles[args[1]] = settingsFromConfig(LoadOrDefault(cfg))
+		cfg.Profiles[args[1]] = BlankProfileSettings()
 	case "use":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("config profile use requires a name")
@@ -375,6 +386,9 @@ func (cfg *Config) ApplySettings(s Settings) {
 	if s.AIModel != "" {
 		cfg.AIModel = s.AIModel
 	}
+	if s.AIAPIKey != "" {
+		cfg.AIAPIKey = s.AIAPIKey
+	}
 	if s.Profile != "" {
 		cfg.Profile = s.Profile
 	}
@@ -451,6 +465,38 @@ func Unset(args []string) error {
 	default:
 		return fmt.Errorf("unknown config key %q", args[0])
 	}
+	if cfg.ActiveProfile != "" {
+		profileSettings := cfg.Profiles[cfg.ActiveProfile]
+		switch key {
+		case "ai.provider", "provider":
+			profileSettings.AIProvider = ""
+		case "ai.api_key", "api_key", "apikey":
+			profileSettings.AIAPIKey = ""
+		case "ai.base_url", "base_url", "baseurl":
+			profileSettings.AIBaseURL = ""
+		case "ai.model", "model":
+			profileSettings.AIModel = ""
+		case "cache.enabled":
+			profileSettings.CacheEnabled = nil
+		case "profile", "ai.profile":
+			profileSettings.Profile = ""
+		case "timeout":
+			profileSettings.Timeout = ""
+		case "log_tail", "logtail", "log-tail":
+			profileSettings.LogTail = nil
+		case "max_log_bytes", "maxlogbytes", "max-logs-bytes":
+			profileSettings.MaxLogBytes = nil
+		case "default_output", "defaultoutput", "output":
+			profileSettings.DefaultOutput = ""
+		case "redact":
+			profileSettings.Redact = nil
+		case "paranoid":
+			profileSettings.Paranoid = nil
+		case "apply_requires_dry_run", "applydryrun":
+			profileSettings.ApplyDryRun = nil
+		}
+		cfg.Profiles[cfg.ActiveProfile] = profileSettings
+	}
 	return Save(cfg)
 }
 
@@ -503,11 +549,37 @@ func Validate(cfg Config) ValidationResult {
 	return result
 }
 
+func FirstNonEmpty(values ...string) string {
+	for _, val := range values {
+		if val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
 func Profiles() []string {
-	return []string{"sre", "security", "finops", "platform", "beginner"}
+	builtIn := []string{"sre", "security", "finops", "platform", "beginner"}
+	cfg, err := Load()
+	if err != nil {
+		return builtIn
+	}
+	out := append([]string{}, builtIn...)
+	for name := range cfg.CustomProfiles {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func ProfilePrompt(profile string) string {
+	cfg, err := Load()
+	if err == nil && cfg.CustomProfiles != nil {
+		if prompt, ok := cfg.CustomProfiles[strings.ToLower(profile)]; ok {
+			return prompt
+		}
+	}
 	switch strings.ToLower(profile) {
 	case "security":
 		return "Prioritize least privilege, policy failures, secret safety, container hardening, and admission controller evidence."
@@ -659,6 +731,62 @@ func Auth(args []string) error {
 		cfg.AIAPIKey = key
 		cfg.AIBaseURL = baseURL
 		cfg.AIModel = model
+
+		// Profile selection
+		promptProfiles := Profiles()
+		activeProfile := FirstNonEmpty(cfg.Profile, "sre")
+		activeIdx := 1
+		for i, p := range promptProfiles {
+			if strings.EqualFold(p, activeProfile) {
+				activeIdx = i + 1
+				break
+			}
+		}
+
+		fmt.Printf("\nSelect AI Prompt Profile (current: %s):\n", activeProfile)
+		for i, p := range promptProfiles {
+			desc := ProfilePrompt(p)
+			if len(desc) > 70 {
+				desc = desc[:67] + "..."
+			}
+			fmt.Printf("  %d. %s\n     %s\n", i+1, p, desc)
+		}
+		fmt.Printf("  %d. Create Custom Profile\n", len(promptProfiles)+1)
+		fmt.Printf("Enter choice [%d]: ", activeIdx)
+
+		pChoiceStr, _ := reader.ReadString('\n')
+		pChoiceStr = strings.TrimSpace(pChoiceStr)
+		pChoice := activeIdx
+		if pChoiceStr != "" {
+			if c, err := strconv.Atoi(pChoiceStr); err == nil {
+				pChoice = c
+			}
+		}
+
+		var selectedProfile string
+		if pChoice > 0 && pChoice <= len(promptProfiles) {
+			selectedProfile = promptProfiles[pChoice-1]
+		} else if pChoice == len(promptProfiles)+1 {
+			fmt.Print("\nEnter Custom Profile Name: ")
+			pName, _ := reader.ReadString('\n')
+			pName = strings.TrimSpace(pName)
+			if pName != "" {
+				fmt.Print("Enter Custom Prompt Instructions: ")
+				pPrompt, _ := reader.ReadString('\n')
+				pPrompt = strings.TrimSpace(pPrompt)
+				if pPrompt != "" {
+					if cfg.CustomProfiles == nil {
+						cfg.CustomProfiles = make(map[string]string)
+					}
+					cfg.CustomProfiles[strings.ToLower(pName)] = pPrompt
+					selectedProfile = pName
+				}
+			}
+		}
+
+		if selectedProfile != "" {
+			cfg.Profile = selectedProfile
+		}
 	} else {
 		cfg.AIProvider = args[0]
 		cfg.AIAPIKey = args[1]
@@ -795,6 +923,28 @@ func LoadOrDefault(cfg Config) Config {
 	return cfg
 }
 
+func BlankProfileSettings() Settings {
+	cacheEnabled := true
+	logTail := 120
+	maxLogBytes := 24000
+	redact := true
+	applyDryRun := true
+	return Settings{
+		AIProvider:    "",
+		AIBaseURL:     "",
+		AIModel:       "",
+		AIAPIKey:      "",
+		Profile:       "sre",
+		CacheEnabled:  &cacheEnabled,
+		Timeout:       "90s",
+		LogTail:       &logTail,
+		MaxLogBytes:   &maxLogBytes,
+		DefaultOutput: "text",
+		Redact:        &redact,
+		ApplyDryRun:   &applyDryRun,
+	}
+}
+
 func settingsFromConfig(cfg Config) Settings {
 	cacheEnabled := cfg.CacheEnabled
 	logTail := cfg.LogTail
@@ -806,6 +956,7 @@ func settingsFromConfig(cfg Config) Settings {
 		AIProvider:    cfg.AIProvider,
 		AIBaseURL:     cfg.AIBaseURL,
 		AIModel:       cfg.AIModel,
+		AIAPIKey:      cfg.AIAPIKey,
 		Profile:       cfg.Profile,
 		CacheEnabled:  &cacheEnabled,
 		Timeout:       cfg.Timeout,
@@ -824,6 +975,8 @@ func setSetting(settings *Settings, key, value string) error {
 		settings.Namespace = value
 	case "ai.provider", "provider":
 		settings.AIProvider = value
+	case "ai.api_key", "api_key", "apikey":
+		settings.AIAPIKey = value
 	case "ai.base_url", "base_url", "baseurl":
 		settings.AIBaseURL = value
 	case "ai.model", "model":

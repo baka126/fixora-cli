@@ -122,6 +122,11 @@ var (
 var tuiTabs = []string{"Incidents", "Workloads", "Network", "Storage", "Security", "Fix Plans", "Events", "Logs", "Graph", "Settings"}
 
 func RunTUI(ctx context.Context, k kube.Reader, opts TUIOptions) error {
+	if opts.AIProvider == "" {
+		if cfg, err := config.Load(); err == nil {
+			opts.AIProvider = cfg.AIProvider
+		}
+	}
 	if opts.Refresh <= 0 {
 		opts.Refresh = 30 * time.Second
 	}
@@ -416,6 +421,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cfg, err := config.Load()
 		if err == nil {
 			m.opts.AIProvider = cfg.AIProvider
+			m.opts.Redact = cfg.Redact
+			m.opts.ApplyDryRun = cfg.ApplyDryRun
+			m.a = newTUIAnalyzer(m.k, m.opts)
 		}
 	}
 	var cmd tea.Cmd

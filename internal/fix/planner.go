@@ -109,6 +109,20 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Inject the missing ConfigMap or Secret reference.", Preview: plan.PatchTemplate})
 		plan.Confidence = 80
 		plan.Warnings = append(plan.Warnings, "Ensure the referenced ConfigMap/Secret exists in the same namespace before applying.")
+	case strings.Contains(finding.Status, "ExecFormatError"):
+		plan.Strategy = "fix-architecture"
+		plan.PatchTemplate = archPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Pin a verified multi-architecture image for the failing container.", Preview: plan.PatchTemplate})
+		plan.Confidence = 85
+		plan.Warnings = append(plan.Warnings, "The container image is built for a different CPU architecture than the target node.")
+		plan.Steps = append(plan.Steps, "Rebuild the image with docker buildx build --platform linux/amd64,linux/arm64 to support multiple architectures.")
+		plan.Steps = append(plan.Steps, "Use nodeSelector only as a reviewed fallback after confirming matching node capacity and scheduling policy.")
+	case strings.Contains(finding.Status, "PermissionDenied"):
+		plan.Strategy = "security"
+		plan.PatchTemplate = securityContextPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Configure securityContext fsGroup or runAsUser for the container.", Preview: plan.PatchTemplate})
+		plan.Confidence = 75
+		plan.Warnings = append(plan.Warnings, "Setting specific UIDs or fsGroup can affect volume write access.")
 	case strings.Contains(finding.Status, "NoEndpoints") || strings.Contains(finding.Status, "ConnectionRefused"):
 		plan.PatchTemplate = serviceSelectorPatchTemplate(finding)
 		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: resource, Description: "Repair the Service selector to match running pods.", Preview: plan.PatchTemplate})
@@ -192,11 +206,61 @@ func Concretize(plan Plan, opts ConcreteOptions) Plan {
 	return plan
 }
 
+func WithValidatedAIPatch(plan Plan, patch string, confidence int) Plan {
+	patch = strings.TrimSpace(patch)
+	if patch == "" {
+		return plan
+	}
+	plan.PatchTemplate = patch
+	plan.CanApply = true
+	plan.Safe = true
+	plan.Risk = "low"
+	plan.Confidence = max(plan.Confidence, max(confidence, 90))
+	plan.BlockedReasons = nil
+	plan.Guardrails = appendUnique(plan.Guardrails, "ai-patch-safety-validated")
+	plan.Warnings = appendUnique(plan.Warnings, "AI generated this patch from redacted evidence; review the diff before shadow verification or apply.")
+	if len(plan.Patches) == 0 {
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: plan.Resource, Description: "AI-generated Kubernetes remediation patch.", Preview: patch})
+	} else {
+		plan.Patches[0].Preview = patch
+		if plan.Patches[0].Description == "" {
+			plan.Patches[0].Description = "AI-generated Kubernetes remediation patch."
+		}
+	}
+	plan.refreshApplyEligibility(false)
+	return plan
+}
+
+func WithReviewOnlyAIPatch(plan Plan, patch, reason string) Plan {
+	patch = strings.TrimSpace(patch)
+	if patch == "" {
+		return plan
+	}
+	plan.PatchTemplate = patch
+	plan.CanApply = false
+	plan.ApplyEligible = false
+	plan.Safe = false
+	plan.Risk = "review-only"
+	plan.BlockedReasons = appendUnique(plan.BlockedReasons, firstNonEmpty(reason, "AI patch requires human source review before production delivery."))
+	plan.Guardrails = appendUnique(plan.Guardrails, "ai-patch-review-only")
+	plan.Warnings = appendUnique(plan.Warnings, "AI generated a review-only patch for a non-shadow-verifiable resource; use GitOps/source review before production.")
+	if len(plan.Patches) == 0 {
+		plan.Patches = append(plan.Patches, Patch{Type: "review-only", Target: plan.Resource, Description: "AI-generated review-only Kubernetes remediation patch.", Preview: patch})
+	} else {
+		plan.Patches[0].Type = "review-only"
+		plan.Patches[0].Preview = patch
+		if plan.Patches[0].Description == "" {
+			plan.Patches[0].Description = "AI-generated review-only Kubernetes remediation patch."
+		}
+	}
+	return plan
+}
+
 func validateConcretePatch(plan Plan) ([]string, []string) {
 	strategy := strings.ToLower(strings.TrimSpace(plan.Strategy))
 	patch := strings.ToLower(plan.PatchTemplate)
 	switch strategy {
-	case "image":
+	case "image", "fix-architecture":
 		if !strings.Contains(patch, "image:") {
 			return nil, []string{"image strategy requires a concrete image field"}
 		}
@@ -261,73 +325,41 @@ func (p Plan) PatchYAML() string {
 }
 
 func imagePatchTemplate(f analyzer.Finding) string {
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: %s
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  template:
-    spec:
-      containers:
-      - name: TODO_CONTAINER_NAME
-        image: TODO_PINNED_MULTI_ARCH_IMAGE
-`, normalizeKind(f.ResourceKind), f.ResourceName, f.Namespace)
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  image: TODO_PINNED_MULTI_ARCH_IMAGE
+`)
 }
 
 func resourcesPatchTemplate(f analyzer.Finding) string {
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: %s
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  template:
-    spec:
-      containers:
-      - name: TODO_CONTAINER_NAME
-        resources:
-          requests:
-            memory: TODO_OBSERVED_REQUEST
-            cpu: TODO_OBSERVED_CPU_REQUEST
-          limits:
-            memory: TODO_SAFE_LIMIT
-`, normalizeKind(f.ResourceKind), f.ResourceName, f.Namespace)
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  resources:
+    requests:
+      memory: TODO_OBSERVED_REQUEST
+      cpu: TODO_OBSERVED_CPU_REQUEST
+    limits:
+      memory: TODO_SAFE_LIMIT
+`)
 }
 
 func runtimePatchTemplate(f analyzer.Finding) string {
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: %s
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  template:
-    spec:
-      containers:
-      - name: TODO_CONTAINER_NAME
-        # Add only the proven command, args, probe, env, or securityContext change.
-`, normalizeKind(f.ResourceKind), f.ResourceName, f.Namespace)
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  # Add only the proven command, args, probe, env, or securityContext change.
+`)
 }
 
 func envPatchTemplate(f analyzer.Finding) string {
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: %s
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  template:
-    spec:
-      containers:
-      - name: TODO_CONTAINER_NAME
-        env:
-        - name: TODO_ENV_NAME
-          valueFrom:
-            configMapKeyRef:
-              name: TODO_CONFIGMAP
-              key: TODO_KEY
-`, normalizeKind(f.ResourceKind), f.ResourceName, f.Namespace)
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  env:
+  - name: TODO_ENV_NAME
+    valueFrom:
+      configMapKeyRef:
+        name: TODO_CONFIGMAP
+        key: TODO_KEY
+`)
 }
 
 func serviceSelectorPatchTemplate(f analyzer.Finding) string {
@@ -380,6 +412,80 @@ func genericPatchTemplate(f analyzer.Finding) string {
 # Status: %s
 # Add a source-controlled manifest, Helm values, or Kustomize patch after reviewing evidence.
 `, f.ResourceKind, f.ResourceName, f.Namespace, f.Status)
+}
+
+func archPatchTemplate(f analyzer.Finding) string {
+	return imagePatchTemplate(f)
+}
+
+func securityContextPatchTemplate(f analyzer.Finding) string {
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  securityContext:
+    runAsUser: TODO_UID
+    runAsNonRoot: false
+`)
+}
+
+func workloadPatchTemplate(f analyzer.Finding, podSpecPatch string) string {
+	kind := normalizeKind(f.ResourceKind)
+	switch kind {
+	case "Pod":
+		return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+spec:
+%s`, f.ResourceName, f.Namespace, indent(podSpecPatch, 2))
+	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
+		return fmt.Sprintf(`apiVersion: apps/v1
+kind: %s
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  template:
+    spec:
+%s`, kind, f.ResourceName, f.Namespace, indent(podSpecPatch, 6))
+	case "Job":
+		return fmt.Sprintf(`apiVersion: batch/v1
+kind: Job
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  template:
+    spec:
+%s`, f.ResourceName, f.Namespace, indent(podSpecPatch, 6))
+	case "CronJob":
+		return fmt.Sprintf(`apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+%s`, f.ResourceName, f.Namespace, indent(podSpecPatch, 10))
+	default:
+		return fmt.Sprintf(`# Fixora does not know how to safely patch pod template fields for %s/%s.
+# Add this pod spec change in the source manifest, Helm values, or Kustomize overlay:
+%s`, f.ResourceKind, f.ResourceName, indent(podSpecPatch, 0))
+	}
+}
+
+func indent(value string, spaces int) string {
+	prefix := strings.Repeat(" ", spaces)
+	lines := strings.Split(strings.TrimRight(value, "\n"), "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func normalizeKind(kind string) string {

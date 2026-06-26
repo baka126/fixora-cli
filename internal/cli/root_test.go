@@ -12,6 +12,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 )
 
 func TestLintAcceptsFilenameFlag(t *testing.T) {
@@ -162,19 +163,35 @@ func TestAnalyzerFilterSelectionForCommands(t *testing.T) {
 	if strings.Join(quick, ",") != "pod" {
 		t.Fatalf("quick incident scan should use pod only, got %#v", quick)
 	}
+	defaultScan := analyzerFiltersForCommand("incidents", nil, options{})
+	if strings.Join(defaultScan, ",") != "pod" {
+		t.Fatalf("default incident scan should use pod only, got %#v", defaultScan)
+	}
+	health := analyzerFiltersForCommand("health", nil, options{})
+	for _, want := range []string{"pod", "deployment", "service", "pvc"} {
+		if !hasString(health, want) {
+			t.Fatalf("health filters should stay comprehensive, missing %q: %#v", want, health)
+		}
+	}
 }
 
 func TestIncidentDefaultsSimplifyProductionWorkflow(t *testing.T) {
 	opts := options{visited: map[string]bool{}}
 	applyWorkflowDefaults("fix", &opts)
-	if !opts.includeLogs || !opts.typedClient || !opts.redact || !opts.paranoid || !opts.shadowVerify {
-		t.Fatalf("fix defaults should enable logs, typed client, redaction, paranoid, and shadow: %#v", opts)
+	if !opts.includeLogs || !opts.typedClient || !opts.redact || !opts.paranoid || !opts.shadowVerify || !opts.useAI {
+		t.Fatalf("fix defaults should enable logs, typed client, redaction, paranoid, AI, and shadow: %#v", opts)
+	}
+	if opts.shadowRetries != 1 {
+		t.Fatalf("fix defaults should allow one redacted AI shadow retry, got %d", opts.shadowRetries)
 	}
 
-	opts = options{quick: true, visited: map[string]bool{}}
+	opts = options{quick: true, visited: map[string]bool{"no-ai": true}, noAI: true}
 	applyWorkflowDefaults("fix", &opts)
 	if opts.shadowVerify {
 		t.Fatalf("quick fix should skip default shadow verification: %#v", opts)
+	}
+	if opts.useAI {
+		t.Fatalf("--no-ai should disable default AI remediation: %#v", opts)
 	}
 
 	opts = options{gitops: true, repoPath: "./charts/api", visited: map[string]bool{}}
@@ -227,6 +244,295 @@ func TestShadowDeliveryPRRequiresYesBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestShadowClusterDeliveryBlocksGitOpsManagedResource(t *testing.T) {
+	finding := analyzer.Finding{
+		Namespace:    "prod",
+		ResourceKind: "Deployment",
+		ResourceName: "api",
+		Status:       "ImagePullBackOff",
+		GitOps:       analyzer.GitOpsHints{ManagedBy: "Helm", TargetAdvice: "Patch the Helm values source, not rendered Kubernetes YAML."},
+	}
+	plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{Container: "api", Image: "repo/api:v2"})
+	var stdout, stderr bytes.Buffer
+	code := runShadowWorkflow(context.Background(), &stdout, &stderr, options{delivery: "cluster"}, kube.Kubectl{}, finding, plan)
+	if code != 2 || !strings.Contains(stderr.String(), "GitOps-managed") {
+		t.Fatalf("expected GitOps cluster delivery block, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestShadowPRDeliveryBlocksAdvisoryHelmSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: api\nversion: 0.1.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finding := analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", Status: "ImagePullBackOff"}
+	plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{Container: "api", Image: "repo/api:v2"})
+	var stdout, stderr bytes.Buffer
+	code := runShadowWorkflow(context.Background(), &stdout, &stderr, options{delivery: "pr", repoPath: dir, yes: true}, kube.Kubectl{}, finding, plan)
+	if code != 2 || !strings.Contains(stderr.String(), "Helm PR delivery is blocked") {
+		t.Fatalf("expected Helm PR delivery block, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestEditorCommandPrefersVisualAndDoesNotUseShell(t *testing.T) {
+	parts, err := editorCommand("go env", "vi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 2 || parts[0] != "go" || parts[1] != "env" {
+		t.Fatalf("expected VISUAL command to be split into argv, got %#v", parts)
+	}
+	if _, err := editorCommand("", "/definitely/not/fixora-editor"); err == nil {
+		t.Fatal("expected missing editor binary to be rejected")
+	}
+}
+
+func TestApplyAIPatchIfSafeAcceptsValidatedPatch(t *testing.T) {
+	finding := analyzer.Finding{
+		Namespace:    "prod",
+		ResourceKind: "Deployment",
+		ResourceName: "api",
+		Status:       "ImagePullBackOff",
+		AI: &analyzer.AIResult{
+			PatchYAML: `spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+`,
+			Confidence: 94,
+		},
+	}
+	plan := applyAIPatchIfSafe(context.Background(), fix.BuildPlan(finding), finding, &bytes.Buffer{}, true)
+	if !plan.ApplyEligible {
+		t.Fatalf("expected AI patch to become apply eligible: %#v", plan)
+	}
+	if !strings.Contains(plan.PatchTemplate, "image: repo/api:v2") {
+		t.Fatalf("expected AI patch in plan:\n%s", plan.PatchTemplate)
+	}
+	if !hasString(plan.Guardrails, "ai-patch-safety-validated") {
+		t.Fatalf("expected AI validation guardrail: %#v", plan.Guardrails)
+	}
+}
+
+func TestApplyAIPatchIfSafeRejectsUnsafePatch(t *testing.T) {
+	finding := analyzer.Finding{
+		Namespace:    "prod",
+		ResourceKind: "Deployment",
+		ResourceName: "api",
+		Status:       "ImagePullBackOff",
+		AI: &analyzer.AIResult{
+			PatchYAML: `metadata:
+  labels:
+    app: changed
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+`,
+		},
+	}
+	plan := applyAIPatchIfSafe(context.Background(), fix.BuildPlan(finding), finding, &bytes.Buffer{}, true)
+	if plan.ApplyEligible {
+		t.Fatalf("unsafe AI patch must not become apply eligible: %#v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "AI patch rejected") {
+		t.Fatalf("expected AI rejection warning, got %#v", plan.Warnings)
+	}
+}
+
+func TestApplyAIPatchIfSafeKeepsServicePatchReviewOnly(t *testing.T) {
+	finding := analyzer.Finding{
+		Namespace:    "prod",
+		ResourceKind: "Service",
+		ResourceName: "api",
+		Status:       "NoEndpoints",
+		AI: &analyzer.AIResult{
+			PatchYAML: `apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: prod
+spec:
+  selector:
+    app.kubernetes.io/name: api
+`,
+			Confidence: 90,
+		},
+	}
+	plan := applyAIPatchIfSafe(context.Background(), fix.BuildPlan(finding), finding, &bytes.Buffer{}, true)
+	if plan.ApplyEligible {
+		t.Fatalf("service selector patch must remain review-only: %#v", plan)
+	}
+	if !strings.Contains(plan.PatchTemplate, "kind: Service") || !hasString(plan.Guardrails, "ai-patch-review-only") {
+		t.Fatalf("expected review-only service patch, got %#v patch=%s", plan.Guardrails, plan.PatchTemplate)
+	}
+}
+
+func TestValidateReviewOnlyAIPatchRejectsUnsafeFields(t *testing.T) {
+	err := validateReviewOnlyAIPatch(`apiVersion: v1
+kind: Pod
+metadata:
+  name: bad
+spec:
+  hostNetwork: true
+  containers:
+  - name: app
+    image: busybox
+`)
+	if err == nil {
+		t.Fatal("expected unsafe review-only patch rejection")
+	}
+	if err := validateReviewOnlyAIPatch(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: prod
+data:
+  MODE: safe
+`); err != nil {
+		t.Fatalf("expected configmap review patch to be allowed: %v", err)
+	}
+}
+
+func TestPatchImagesAndNodePlatformFromFinding(t *testing.T) {
+	finding := analyzer.Finding{Evidence: []analyzer.Evidence{
+		{Label: "Node platform", Value: "linux/arm64"},
+		{Label: "Container image api", Value: "repo/api:v1"},
+	}}
+	platform, ok := nodePlatformFromFinding(finding)
+	if !ok || platform.OS != "linux" || platform.Architecture != "arm64" {
+		t.Fatalf("unexpected platform: %#v ok=%t", platform, ok)
+	}
+	images, err := patchImages(`spec:
+  containers:
+  - name: api
+    image: repo/api:v2
+  - name: sidecar
+    image: repo/sidecar:v1
+`)
+	if err != nil || len(images) != 2 || images[0] != "repo/api:v2" {
+		t.Fatalf("unexpected patch images: %#v err=%v", images, err)
+	}
+}
+
+func TestBestTrustedImageCandidatePrefersHigherScore(t *testing.T) {
+	finding := analyzer.Finding{Evidence: []analyzer.Evidence{
+		{Label: "Ranked public image candidate (score 45)", Value: "example/low | public"},
+		{Label: "Ranked public image candidate (score 65)", Value: "example/high | public"},
+	}}
+	image, score := bestTrustedImageCandidate(finding)
+	if image != "example/high" || score != 65 {
+		t.Fatalf("unexpected trusted candidate %q score=%d", image, score)
+	}
+}
+
+func TestWriteReviewPatchUsesEditedFileAsPlanPatch(t *testing.T) {
+	dir := t.TempDir()
+	editor := filepath.Join(dir, "editor.sh")
+	err := os.WriteFile(editor, []byte(`#!/bin/sh
+cat > "$1" <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v3
+EOF
+`), 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VISUAL", editor)
+
+	outFile := filepath.Join(dir, "fixora-patch.yaml")
+	plan := fix.Plan{Resource: "Deployment/api", Strategy: "image", PatchTemplate: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+`}
+	var stdout, stderr bytes.Buffer
+	updated, err := writeReviewPatch(context.Background(), &stdout, &stderr, options{outFile: outFile, editPatch: true}, plan)
+	if err != nil {
+		t.Fatalf("writeReviewPatch failed: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(updated.PatchTemplate, "image: repo/api:v3") {
+		t.Fatalf("edited patch was not loaded into plan:\n%s", updated.PatchTemplate)
+	}
+	onDisk, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != updated.PatchTemplate {
+		t.Fatalf("plan patch should match reviewed file:\nfile=%s\nplan=%s", string(onDisk), updated.PatchTemplate)
+	}
+}
+
+func TestWriteReviewPatchRejectsInvalidEditedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	editor := filepath.Join(dir, "editor.sh")
+	err := os.WriteFile(editor, []byte(`#!/bin/sh
+sed -i.bak 's/apiVersion: v1/apiVersion: v0/' "$1"
+rm -f "$1.bak"
+`), 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VISUAL", editor)
+	outFile := filepath.Join(dir, "fixora-patch.yaml")
+	plan := fix.Plan{Resource: "Pod/api", Strategy: "image", PatchTemplate: `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+spec:
+  containers:
+  - name: api
+    image: repo/api:v1
+`}
+	_, err = writeReviewPatch(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, options{outFile: outFile, editPatch: true}, plan)
+	if err == nil || !strings.Contains(err.Error(), "apiVersion must match") {
+		t.Fatalf("expected edited identity validation error, got %v", err)
+	}
+}
+
+func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{Attempts: []shadow.Attempt{{Number: 1, Phase: "Pending", ExitReason: "Error", Logs: []string{"password=hunter2"}}}}, "fixora-patch.yaml")
+	got := output.String()
+	for _, want := range []string{"Shadow verification failed", "No production mutation", "Last log: password=[REDACTED]", "fixora-patch.yaml"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow failure output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\"verified\"") {
+		t.Fatalf("shadow failure should not render JSON:\n%s", got)
+	}
+}
+
+func TestShadowRetryProviderUsesConfiguredProvider(t *testing.T) {
+	t.Setenv("FIXORA_AI_PROVIDER", "noop")
+	provider, retries := shadowRetryProvider(options{useAI: true, shadowRetries: 1}, &bytes.Buffer{})
+	if provider == nil || retries != 1 {
+		t.Fatalf("expected configured AI retry provider and one retry, provider=%T retries=%d", provider, retries)
+	}
+}
+
 func TestPolicyCheckUsesLint(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	dir := t.TempDir()
@@ -274,6 +580,16 @@ func TestConfigCommandsAreSecretSafe(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "aiApiKeySet") {
 		t.Fatalf("config view did not show key presence: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = Execute([]string{"config"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("bare config command failed: code=%d stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "secret-token") {
+		t.Fatalf("bare config command leaked secret: %s", stdout.String())
 	}
 
 	stdout.Reset()

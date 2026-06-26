@@ -9,6 +9,11 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 )
 
+const (
+	compactTextWidth = 88
+	wideTextWidth    = 108
+)
+
 type Options struct {
 	Wide    bool
 	NoColor bool
@@ -39,27 +44,33 @@ func Findings(w io.Writer, findings []analyzer.Finding, opts Options) {
 func Why(w io.Writer, f analyzer.Finding, p fix.Plan, proof bool, opts Options) {
 	fmt.Fprintf(w, "Fixora why: %s/%s\n", f.ResourceKind, f.ResourceName)
 	fmt.Fprintf(w, "Namespace: %s\nStatus: %s\nSeverity: %s\nConfidence: %d%%\nRisk: %s\n\n", f.Namespace, f.Status, f.Severity, p.Confidence, p.Risk)
-	fmt.Fprintf(w, "Likely cause\n  %s\n\n", f.Summary)
+	fmt.Fprintln(w, "Likely cause")
+	writeWrapped(w, "  ", f.Summary, textWidth(opts))
+	fmt.Fprintln(w)
 	if len(f.Recommendations) > 0 {
-		fmt.Fprintf(w, "Recommended next step\n  %s: %s\n\n", f.Recommendations[0].Title, f.Recommendations[0].Description)
+		fmt.Fprintln(w, "Recommended next step")
+		writeWrapped(w, "  ", f.Recommendations[0].Title+": "+f.Recommendations[0].Description, textWidth(opts))
+		fmt.Fprintln(w)
 	}
 	if len(p.BlockedReasons) > 0 {
 		fmt.Fprintln(w, "Why no direct auto-fix")
 		for _, reason := range p.BlockedReasons {
-			fmt.Fprintf(w, "  - %s\n", reason)
+			writeWrapped(w, "  - ", reason, textWidth(opts))
 		}
 		fmt.Fprintln(w)
 	}
 	if p.RollbackCommand != "" {
-		fmt.Fprintf(w, "Rollback hint\n  %s\n\n", p.RollbackCommand)
+		fmt.Fprintln(w, "Rollback hint")
+		writeWrapped(w, "  ", p.RollbackCommand, textWidth(opts))
+		fmt.Fprintln(w)
 	}
 	if proof {
 		fmt.Fprintln(w, "Proof")
 		for _, ev := range f.Evidence {
-			fmt.Fprintf(w, "  - %s: %s\n", ev.Label, trim(ev.Value, 180))
+			writeWrapped(w, "  - ", ev.Label+": "+trim(ev.Value, 180), textWidth(opts))
 		}
 		for _, log := range f.Logs {
-			fmt.Fprintf(w, "  - %s log: %s\n", log.Source, trim(log.Text, 220))
+			writeWrapped(w, "  - ", log.Source+" log: "+trim(log.Text, 220), textWidth(opts))
 		}
 	}
 }
@@ -68,17 +79,73 @@ func Plan(w io.Writer, p fix.Plan, opts Options) {
 	fmt.Fprintf(w, "Fixora plan for %s\n", p.Resource)
 	fmt.Fprintf(w, "Strategy: %s | Confidence: %d%% | Risk: %s | Apply: %t\n\n", p.Strategy, p.Confidence, p.Risk, p.CanApply)
 	for _, step := range p.Steps {
-		fmt.Fprintf(w, "+ %s\n", step)
+		writeWrapped(w, "+ ", step, textWidth(opts))
 	}
 	for _, reason := range p.BlockedReasons {
-		fmt.Fprintf(w, "x %s\n", reason)
+		writeWrapped(w, "x ", reason, textWidth(opts))
 	}
 	for _, warning := range p.Warnings {
-		fmt.Fprintf(w, "! %s\n", warning)
+		writeWrapped(w, "! ", warning, textWidth(opts))
 	}
 	if p.RollbackCommand != "" {
-		fmt.Fprintf(w, "\nRollback: %s\n", p.RollbackCommand)
+		fmt.Fprintln(w, "\nRollback:")
+		writeWrapped(w, "  ", p.RollbackCommand, textWidth(opts))
 	}
+}
+
+func textWidth(opts Options) int {
+	if opts.Wide {
+		return wideTextWidth
+	}
+	return compactTextWidth
+}
+
+// writeWrapped keeps human-facing incident output readable in terminals that do
+// not reliably soft-wrap long lines. It intentionally does not alter data used
+// for patch validation, shadow deployment, or delivery.
+func writeWrapped(w io.Writer, prefix, value string, width int) {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		fmt.Fprintln(w, prefix)
+		return
+	}
+	if width <= len(prefix)+8 {
+		width = len(prefix) + 8
+	}
+	continuation := strings.Repeat(" ", len(prefix))
+	linePrefix := prefix
+	lineLen := len(linePrefix)
+	for _, word := range strings.Fields(value) {
+		wordLen := len(word)
+		separator := 0
+		if lineLen > len(linePrefix) {
+			separator = 1
+		}
+		if lineLen+separator+wordLen > width && lineLen > len(linePrefix) {
+			fmt.Fprintln(w)
+			linePrefix = continuation
+			lineLen = len(linePrefix)
+			separator = 0
+		}
+		if lineLen == len(linePrefix) {
+			fmt.Fprint(w, linePrefix)
+		} else if separator == 1 {
+			fmt.Fprint(w, " ")
+		}
+		lineLen += separator
+		for len(word) > width-lineLen {
+			available := width - lineLen
+			fmt.Fprint(w, word[:available])
+			word = word[available:]
+			fmt.Fprintln(w)
+			linePrefix = continuation
+			lineLen = len(linePrefix)
+			fmt.Fprint(w, linePrefix)
+		}
+		fmt.Fprint(w, word)
+		lineLen += len(word)
+	}
+	fmt.Fprintln(w)
 }
 
 func color(severity, value string, noColor bool) string {

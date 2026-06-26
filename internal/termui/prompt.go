@@ -67,6 +67,23 @@ func ConfirmShadowDeploy(diff string, in io.Reader, out io.Writer) bool {
 	return response == "" || response == "y" || response == "yes"
 }
 
+func ConfirmEditPatch(path string, in io.Reader, out io.Writer) bool {
+	if in == nil {
+		in = os.Stdin
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprintf(out, "\nEdit generated patch %s before verification or delivery? [y/N]: ", path)
+	reader := bufio.NewReader(in)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes"
+}
+
 func ConfirmVerifiedDelivery(summary repo.ChangeSummary, in io.Reader, out io.Writer) bool {
 	if in == nil {
 		in = os.Stdin

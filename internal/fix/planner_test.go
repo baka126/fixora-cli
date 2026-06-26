@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -84,5 +85,41 @@ func TestResourcePatchRequiresResourceFields(t *testing.T) {
 	plan = Concretize(plan, ConcreteOptions{})
 	if plan.CanApply || plan.ApplyEligible {
 		t.Fatalf("resource strategy without resource evidence must be blocked: %#v", plan)
+	}
+}
+
+func TestExecFormatPodPatchUsesPodShapeAndImageFix(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		Namespace:    "default",
+		ResourceKind: "Pod",
+		ResourceName: "oom-test",
+		Status:       "ExecFormatError",
+	})
+	if plan.Strategy != "fix-architecture" {
+		t.Fatalf("expected fix-architecture, got %q", plan.Strategy)
+	}
+	for _, forbidden := range []string{"apiVersion: apps/v1", "template:", "nodeSelector", "TODO_TARGET_ARCHITECTURE"} {
+		if strings.Contains(plan.PatchTemplate, forbidden) {
+			t.Fatalf("architecture patch contains forbidden %q:\n%s", forbidden, plan.PatchTemplate)
+		}
+	}
+	for _, want := range []string{"apiVersion: v1", "kind: Pod", "image: TODO_PINNED_MULTI_ARCH_IMAGE"} {
+		if !strings.Contains(plan.PatchTemplate, want) {
+			t.Fatalf("architecture patch missing %q:\n%s", want, plan.PatchTemplate)
+		}
+	}
+}
+
+func TestWorkloadPatchTemplatesUseControllerPodTemplateShape(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		Namespace:    "prod",
+		ResourceKind: "Deployment",
+		ResourceName: "api",
+		Status:       "ImagePullBackOff",
+	})
+	for _, want := range []string{"apiVersion: apps/v1", "kind: Deployment", "spec:\n  template:\n    spec:\n      containers:"} {
+		if !strings.Contains(plan.PatchTemplate, want) {
+			t.Fatalf("deployment patch missing %q:\n%s", want, plan.PatchTemplate)
+		}
 	}
 }
