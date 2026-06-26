@@ -1306,6 +1306,16 @@ func runWatch(ctx context.Context, stdout, stderr io.Writer, opts options, a ana
 	}
 }
 
+// handleUnstructuredAI discards an AI result the model failed to structure and
+// emits a visible (non-verbose) warning so the user knows the deterministic
+// plan is in use.
+func handleUnstructuredAI(finding *analyzer.Finding, stderr io.Writer) {
+	if finding.AI != nil && finding.AI.Unstructured {
+		fmt.Fprintln(stderr, "warning: AI response could not be parsed; using the deterministic plan.")
+		finding.AI = nil
+	}
+}
+
 func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options, stderr io.Writer) {
 	if !opts.redact && !opts.unsafeAI {
 		if opts.verbose {
@@ -1354,7 +1364,8 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 		return
 	}
 	finding.AI = result
-	if cfg.CacheEnabled {
+	handleUnstructuredAI(finding, stderr)
+	if finding.AI != nil && cfg.CacheEnabled {
 		_ = cache.New().Set(cache.Key(aiFinding), result)
 	}
 }

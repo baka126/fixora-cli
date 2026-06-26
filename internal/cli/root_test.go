@@ -632,3 +632,17 @@ func TestConfigResolvedAndValidate(t *testing.T) {
 		t.Fatalf("expected valid config, got %s", stdout.String())
 	}
 }
+
+func TestAugmentWithAIDiscardsUnstructured(t *testing.T) {
+	finding := analyzer.Finding{Summary: "deterministic summary"}
+	finding.AI = &analyzer.AIResult{RootCause: "garbage", Unstructured: true}
+	var stderr bytes.Buffer
+	// handleUnstructuredAI is the extracted, testable post-processing step.
+	handleUnstructuredAI(&finding, &stderr)
+	if finding.AI != nil {
+		t.Fatalf("expected AI result discarded when unstructured")
+	}
+	if !strings.Contains(stderr.String(), "deterministic plan") {
+		t.Fatalf("expected warning about deterministic fallback, got %q", stderr.String())
+	}
+}

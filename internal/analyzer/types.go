@@ -192,6 +192,10 @@ type AIResult struct {
 	Analyzers      []string `json:"analyzers,omitempty"`
 	Commands       []string `json:"commands,omitempty"`
 	Warnings       []string `json:"warnings,omitempty"`
+	// Unstructured is set by the AI client when the model returned text that
+	// could not be parsed as the JSON contract. Callers must ignore the rest
+	// of the result and use the deterministic plan instead.
+	Unstructured bool `json:"-"`
 }
 
 type GitOpsHints struct {

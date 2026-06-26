@@ -111,7 +111,7 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 }
 
 func jsonContract() string {
-	return "Return only JSON with keys summary, rootCause, recommendedFix, patchYAML, strategy, confidence, analyzers, commands, warnings. Use the provided logs, events, metrics, object status, and related analyzer findings. patchYAML must be empty unless you can produce a concrete single-document Kubernetes YAML patch with no TODO placeholders. For pod-template remediations, only propose containers/initContainers image, resources, env, or envFrom changes. For service, ingress, storage, configmap, node, policy, or controller issues, patchYAML may be a minimal review-only source patch. Never include Secret resources or secret values, metadata labels/annotations/ownerReferences, unsafe selectors unless the issue is explicitly a Service or route backend mismatch, serviceAccountName, nodeSelector, tolerations, affinity, host networking/PID/IPC, volumes, hostPath, privileged containers, or shell command overrides in patchYAML."
+	return "Return only JSON with keys summary, rootCause, recommendedFix, patchYAML, strategy, confidence, analyzers, commands, warnings. Use the provided logs, events, metrics, object status, and related analyzer findings. patchYAML must be empty unless you can produce a concrete single-document Kubernetes YAML patch with no TODO placeholders. For pod-template remediations, only propose containers/initContainers image, resources, env, or envFrom changes. For service, ingress, storage, configmap, node, policy, or controller issues, patchYAML may be a minimal review-only source patch. Never include Secret resources or secret values, metadata labels/annotations/ownerReferences, unsafe selectors unless the issue is explicitly a Service or route backend mismatch, serviceAccountName, nodeSelector, tolerations, affinity, host networking/PID/IPC, volumes, hostPath, privileged containers, or shell command overrides in patchYAML. Write rootCause and recommendedFix for an experienced SRE: precise, technical, and concise. Name the specific resource, container, and field involved. Use correct Kubernetes terminology and do not add business-impact framing or marketing language."
 }
 
 func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -276,10 +276,10 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 	var result analyzer.AIResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
 		result = analyzer.AIResult{
-			Summary:        "AI returned a non-JSON response.",
-			RootCause:      content,
-			RecommendedFix: "Review the response manually before acting.",
-			Warnings:       []string{"Non-JSON AI response could not be structured."},
+			Summary:      "AI response was not valid JSON.",
+			RootCause:    content,
+			Warnings:     []string{"AI response could not be parsed; falling back to the deterministic plan."},
+			Unstructured: true,
 		}
 	}
 	return &result, nil

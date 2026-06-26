@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,6 +46,21 @@ func TestExplainGeminiParsesStructuredContent(t *testing.T) {
 	}
 	if result.Summary != "s" || result.RootCause != "r" || len(result.Commands) != 1 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestExplainOpenAIMarksNonJSONUnstructured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"sorry, I cannot help"}}]}`)
+	}))
+	defer srv.Close()
+	c := Client{Provider: "openai", BaseURL: srv.URL, Model: "gpt-x", HTTP: srv.Client()}
+	res, err := c.explainOpenAI(context.Background(), "payload")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Unstructured {
+		t.Fatalf("expected Unstructured=true for non-JSON content")
 	}
 }
 
