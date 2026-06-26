@@ -43,3 +43,15 @@ func TestConfirmShadowOrEdit(t *testing.T) {
 		t.Fatalf("n: expected proceed=false")
 	}
 }
+
+func TestWalkthroughPromptsEOFDefaults(t *testing.T) {
+	if got := PromptDelivery(strings.NewReader(""), &bytes.Buffer{}); got != DeliverCancel {
+		t.Fatalf("EOF: PromptDelivery got %v, want DeliverCancel", got)
+	}
+	if got := PromptStep("x", strings.NewReader(""), &bytes.Buffer{}); got != StepQuit {
+		t.Fatalf("EOF: PromptStep got %v, want StepQuit", got)
+	}
+	if p, e := ConfirmShadowOrEdit(strings.NewReader(""), &bytes.Buffer{}); p || e {
+		t.Fatalf("EOF: ConfirmShadowOrEdit got proceed=%v edit=%v, want false,false", p, e)
+	}
+}
