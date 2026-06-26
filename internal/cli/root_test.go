@@ -646,3 +646,26 @@ func TestAugmentWithAIDiscardsUnstructured(t *testing.T) {
 		t.Fatalf("expected warning about deterministic fallback, got %q", stderr.String())
 	}
 }
+
+func TestFailWritesNextStep(t *testing.T) {
+	var buf bytes.Buffer
+	code := fail(&buf, "something broke", "kubectl fixora fix api --repo .")
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "error: something broke") {
+		t.Fatalf("missing error line: %q", out)
+	}
+	if !strings.Contains(out, "Next: kubectl fixora fix api --repo .") {
+		t.Fatalf("missing Next line: %q", out)
+	}
+}
+
+func TestFailWithoutNextStep(t *testing.T) {
+	var buf bytes.Buffer
+	fail(&buf, "no hint", "")
+	if strings.Contains(buf.String(), "Next:") {
+		t.Fatalf("did not expect Next line: %q", buf.String())
+	}
+}

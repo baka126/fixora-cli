@@ -787,7 +787,7 @@ func runCost(ctx context.Context, stdout, stderr io.Writer, opts options, a anal
 
 func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan) int {
 	if !plan.ApplyEligible {
-		fmt.Fprintln(stderr, "error: shadow verification requires an apply-eligible concrete patch; provide concrete values or use --force-risky after approval")
+		failNext(stderr, "shadow verification requires an apply-eligible concrete patch", "supply concrete values (e.g. --image/--memory-request) or use --delivery=pr for a review-only source patch")
 		return 1
 	}
 	mode := shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery)))
@@ -804,11 +804,11 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 	}
 	if mode == shadow.DeliveryPR {
 		if opts.repoPath == "" {
-			fmt.Fprintln(stderr, "error: --delivery=pr requires --repo")
+			failNext(stderr, "--delivery=pr requires --repo", "re-run with --repo <path-to-your-manifests-repo>")
 			return 2
 		}
 		if !opts.yes {
-			fmt.Fprintln(stderr, "error: --delivery=pr requires --yes because it commits, pushes, and opens a review request")
+			failNext(stderr, "--delivery=pr requires --yes (it commits, pushes, and opens a review request)", "re-run with --yes to confirm PR/MR delivery")
 			return 2
 		}
 		repoMode, err := repo.Detect(opts.repoPath)
@@ -2785,4 +2785,19 @@ func showProfileDetails(w io.Writer, name string, s config.Settings, isActive bo
 	fmt.Fprintf(w, "  Redact:       %s\n", valOrD(s.Redact))
 	fmt.Fprintf(w, "  Paranoid:     %s\n", valOrD(s.Paranoid))
 	fmt.Fprintf(w, "  ApplyDryRun:  %s\n", valOrD(s.ApplyDryRun))
+}
+
+// fail writes a standardized error and, when provided, an actionable next step.
+// It always reports exit code 1; callers needing another code should print via
+// failNext and return their own code.
+func fail(w io.Writer, msg, next string) int {
+	failNext(w, msg, next)
+	return 1
+}
+
+func failNext(w io.Writer, msg, next string) {
+	fmt.Fprintf(w, "error: %s\n", msg)
+	if strings.TrimSpace(next) != "" {
+		fmt.Fprintf(w, "Next: %s\n", next)
+	}
 }
