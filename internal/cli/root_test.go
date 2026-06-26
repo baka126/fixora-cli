@@ -194,10 +194,14 @@ func TestIncidentDefaultsSimplifyProductionWorkflow(t *testing.T) {
 		t.Fatalf("--no-ai should disable default AI remediation: %#v", opts)
 	}
 
-	opts = options{gitops: true, repoPath: "./charts/api", visited: map[string]bool{}}
+	// --gitops now maps to --delivery=pr via reconcileDeliveryFlags (intentional consolidation).
+	// applyWorkflowDefaults still disables shadow for --gitops; delivery is set by reconcileDeliveryFlags.
+	opts = options{gitops: true, repoPath: "./charts/api", visited: map[string]bool{"gitops": true}}
+	var warnBuf bytes.Buffer
 	applyWorkflowDefaults("fix", &opts)
-	if !opts.sourcePatch || opts.shadowVerify {
-		t.Fatalf("gitops fix should prefer source patch output without implicit shadow: %#v", opts)
+	reconcileDeliveryFlags(&opts, &warnBuf)
+	if opts.delivery != "pr" || opts.shadowVerify {
+		t.Fatalf("gitops fix should set delivery=pr and disable shadow: delivery=%q shadowVerify=%v opts=%#v", opts.delivery, opts.shadowVerify, opts)
 	}
 
 	opts = options{visited: map[string]bool{}}
@@ -668,4 +672,34 @@ func TestFailWithoutNextStep(t *testing.T) {
 	if strings.Contains(buf.String(), "Next:") {
 		t.Fatalf("did not expect Next line: %q", buf.String())
 	}
+}
+
+func TestReconcileDeliveryFlags(t *testing.T) {
+	t.Run("apply maps to cluster", func(t *testing.T) {
+		var w bytes.Buffer
+		o := &options{apply: true, delivery: "patch", visited: map[string]bool{"apply": true}}
+		reconcileDeliveryFlags(o, &w)
+		if o.delivery != "cluster" {
+			t.Fatalf("got %q", o.delivery)
+		}
+		if !strings.Contains(w.String(), "deprecated") {
+			t.Fatalf("expected deprecation notice, got %q", w.String())
+		}
+	})
+	t.Run("gitops maps to pr", func(t *testing.T) {
+		var w bytes.Buffer
+		o := &options{gitops: true, delivery: "patch", visited: map[string]bool{"gitops": true}}
+		reconcileDeliveryFlags(o, &w)
+		if o.delivery != "pr" {
+			t.Fatalf("got %q", o.delivery)
+		}
+	})
+	t.Run("explicit delivery wins", func(t *testing.T) {
+		var w bytes.Buffer
+		o := &options{apply: true, delivery: "pr", visited: map[string]bool{"apply": true, "delivery": true}}
+		reconcileDeliveryFlags(o, &w)
+		if o.delivery != "pr" {
+			t.Fatalf("explicit --delivery must win, got %q", o.delivery)
+		}
+	})
 }

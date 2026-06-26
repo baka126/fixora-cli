@@ -170,6 +170,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	applyWorkflowDefaults(cmd, &opts)
+	if cmd == "fix" {
+		reconcileDeliveryFlags(&opts, stderr)
+	}
 	opts.promptInput = bufio.NewReader(os.Stdin)
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -701,6 +704,28 @@ func normalizeCommand(cmd string, rest []string) (string, []string, error) {
 	}
 }
 
+// reconcileDeliveryFlags maps the deprecated --apply/--source-patch/--gitops
+// flags onto the canonical --delivery selector. An explicit --delivery always
+// wins; a legacy flag only applies when --delivery is still at its default.
+func reconcileDeliveryFlags(opts *options, warn io.Writer) {
+	explicit := opts.visited["delivery"] && strings.TrimSpace(opts.delivery) != "" && opts.delivery != "patch"
+	set := func(mode, flag string) {
+		fmt.Fprintf(warn, "warning: --%s is deprecated; use --delivery=%s\n", flag, mode)
+		if !explicit {
+			opts.delivery = mode
+		}
+	}
+	if opts.visited["apply"] && opts.apply {
+		set("cluster", "apply")
+	}
+	if opts.visited["source-patch"] && opts.sourcePatch {
+		set("pr", "source-patch")
+	}
+	if opts.visited["gitops"] && opts.gitops {
+		set("pr", "gitops")
+	}
+}
+
 func applyWorkflowDefaults(cmd string, opts *options) {
 	if opts.visited == nil {
 		opts.visited = map[string]bool{}
@@ -732,12 +757,8 @@ func applyWorkflowDefaults(cmd string, opts *options) {
 		if !opts.visited["shadow-retries"] && !opts.quick && opts.useAI {
 			opts.shadowRetries = 1
 		}
-		if opts.repoPath != "" || opts.gitops {
-			opts.sourcePatch = true
-		}
 	}
 	if opts.gitops {
-		opts.sourcePatch = true
 		if !opts.visited["shadow"] {
 			opts.shadowVerify = false
 		}
