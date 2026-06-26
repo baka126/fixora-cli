@@ -693,6 +693,12 @@ func TestReconcileDeliveryFlags(t *testing.T) {
 		if o.delivery != "pr" {
 			t.Fatalf("got %q", o.delivery)
 		}
+		if !o.sourcePatch {
+			t.Fatalf("gitops must keep sourcePatch=true for the legacy non-shadow delivery path")
+		}
+		if !strings.Contains(w.String(), "deprecated") {
+			t.Fatalf("expected deprecation notice, got %q", w.String())
+		}
 	})
 	t.Run("explicit delivery wins", func(t *testing.T) {
 		var w bytes.Buffer

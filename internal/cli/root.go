@@ -708,6 +708,8 @@ func normalizeCommand(cmd string, rest []string) (string, []string, error) {
 // flags onto the canonical --delivery selector. An explicit --delivery always
 // wins; a legacy flag only applies when --delivery is still at its default.
 func reconcileDeliveryFlags(opts *options, warn io.Writer) {
+	// An explicit --delivery=patch is treated as non-explicit (delivery != "patch"
+	// gate) so a legacy flag can still map it; only a non-default explicit value wins.
 	explicit := opts.visited["delivery"] && strings.TrimSpace(opts.delivery) != "" && opts.delivery != "patch"
 	set := func(mode, flag string) {
 		fmt.Fprintf(warn, "warning: --%s is deprecated; use --delivery=%s\n", flag, mode)
@@ -723,6 +725,7 @@ func reconcileDeliveryFlags(opts *options, warn io.Writer) {
 	}
 	if opts.visited["gitops"] && opts.gitops {
 		set("pr", "gitops")
+		opts.sourcePatch = true // legacy non-shadow path (gitops disables shadow) still writes the source patch
 	}
 }
 
