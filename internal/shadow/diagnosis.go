@@ -25,6 +25,10 @@ type FailureDiagnosis struct {
 }
 
 func DiagnoseFailure(result Result, finding analyzer.Finding, plan fix.Plan) FailureDiagnosis {
+	return DiagnoseFailureForPatch(result, finding, plan, plan.PatchYAML())
+}
+
+func DiagnoseFailureForPatch(result Result, finding analyzer.Finding, plan fix.Plan, patch string) FailureDiagnosis {
 	diagnosis := FailureDiagnosis{
 		Class:           FailureClassUnknown,
 		Summary:         "Shadow verification failed before the candidate became ready.",
@@ -37,9 +41,14 @@ func DiagnoseFailure(result Result, finding analyzer.Finding, plan fix.Plan) Fai
 	}
 
 	original := canonicalReason(finding.Status)
-	shadowReason := canonicalReason(lastShadowReason(result))
-	shadowText := strings.ToLower(joinShadowEvidence(result))
-	sourceText := strings.ToLower(joinFindingEvidence(finding) + "\n" + plan.PatchYAML())
+	terminal, hasTerminal := terminalAttempt(result)
+	shadowReason := ""
+	shadowText := ""
+	if hasTerminal {
+		shadowReason = canonicalReason(attemptFailureReason(terminal))
+		shadowText = strings.ToLower(joinAttemptEvidence(terminal))
+	}
+	sourceText := strings.ToLower(joinFindingEvidence(finding) + "\n" + patch)
 
 	if shadowReason == "timeout" {
 		diagnosis.Class = FailureClassTimeout
@@ -96,15 +105,19 @@ func DiagnoseFailure(result Result, finding analyzer.Finding, plan fix.Plan) Fai
 	return diagnosis
 }
 
-func lastShadowReason(result Result) string {
-	for i := len(result.Attempts) - 1; i >= 0; i-- {
-		attempt := result.Attempts[i]
-		if strings.TrimSpace(attempt.ExitReason) != "" {
-			return attempt.ExitReason
-		}
-		if strings.Contains(strings.ToLower(attempt.Message), "timed out") {
-			return "timeout"
-		}
+func terminalAttempt(result Result) (Attempt, bool) {
+	if len(result.Attempts) == 0 {
+		return Attempt{}, false
+	}
+	return result.Attempts[len(result.Attempts)-1], true
+}
+
+func attemptFailureReason(attempt Attempt) string {
+	if strings.TrimSpace(attempt.ExitReason) != "" {
+		return attempt.ExitReason
+	}
+	if strings.Contains(strings.ToLower(attempt.Message), "timed out") {
+		return "timeout"
 	}
 	return ""
 }
@@ -155,21 +168,19 @@ func displayReason(reason string) string {
 	}
 }
 
-func joinShadowEvidence(result Result) string {
+func joinAttemptEvidence(attempt Attempt) string {
 	var b strings.Builder
-	for _, attempt := range result.Attempts {
-		b.WriteString(attempt.ExitReason)
+	b.WriteString(attempt.ExitReason)
+	b.WriteByte('\n')
+	b.WriteString(attempt.Message)
+	b.WriteByte('\n')
+	for _, log := range attempt.Logs {
+		b.WriteString(log)
 		b.WriteByte('\n')
-		b.WriteString(attempt.Message)
+	}
+	for _, event := range attempt.Events {
+		b.WriteString(event)
 		b.WriteByte('\n')
-		for _, log := range attempt.Logs {
-			b.WriteString(log)
-			b.WriteByte('\n')
-		}
-		for _, event := range attempt.Events {
-			b.WriteString(event)
-			b.WriteByte('\n')
-		}
 	}
 	return b.String()
 }

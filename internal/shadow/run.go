@@ -84,7 +84,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		cleanup(ctx, c, lastPlan, &result)
 	}
 	if !result.Verified {
-		diagnosis := DiagnoseFailure(result, req.Finding, req.Plan)
+		diagnosis := DiagnoseFailureForPatch(result, req.Finding, req.Plan, result.VerifiedPatch)
 		result.FailureClass = diagnosis.Class
 		result.FailureSummary = diagnosis.Summary
 	}

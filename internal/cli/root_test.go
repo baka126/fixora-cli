@@ -96,6 +96,14 @@ func TestFixCommandContextDoesNotExpireBeforeShadow(t *testing.T) {
 	}
 }
 
+func TestClusterCommandContextDoesNotExpire(t *testing.T) {
+	ctx, cancel := commandContext(context.Background(), "cluster", options{timeout: time.Second})
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); ok {
+		t.Fatalf("cluster command context should not have global deadline, got %s", deadline)
+	}
+}
+
 func TestNonFixCommandContextKeepsGlobalTimeout(t *testing.T) {
 	ctx, cancel := commandContext(context.Background(), "incidents", options{timeout: time.Second})
 	defer cancel()

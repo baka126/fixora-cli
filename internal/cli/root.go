@@ -793,7 +793,7 @@ func visitedFlags(fs *flag.FlagSet) map[string]bool {
 }
 
 func commandContext(parent context.Context, cmd string, opts options) (context.Context, context.CancelFunc) {
-	if cmd == "serve" || cmd == "watch" || (cmd == "ui" && opts.tui) || cmd == "fix" {
+	if cmd == "serve" || cmd == "watch" || cmd == "cluster" || (cmd == "ui" && opts.tui) || cmd == "fix" {
 		return parent, func() {}
 	}
 	if opts.timeout > 0 {

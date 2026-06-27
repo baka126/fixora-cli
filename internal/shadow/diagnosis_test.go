@@ -74,3 +74,31 @@ func TestDiagnoseFailureDetectsCandidateRegression(t *testing.T) {
 		t.Fatalf("expected original symptom to be marked resolved: %#v", diagnosis)
 	}
 }
+
+func TestDiagnoseFailureUsesTerminalAttemptEvidence(t *testing.T) {
+	result := Result{Attempts: []Attempt{
+		{Number: 1, ExitReason: "Error", Logs: []string{"exec /bin/app: exec format error"}},
+		{Number: 2, ExitReason: "OOMKilled", Logs: []string{"app allocated memory"}},
+	}}
+	finding := analyzer.Finding{Status: "ExecFormatError"}
+	plan := fix.Plan{Strategy: "fix-architecture", PatchTemplate: "image: repo/api@sha256:abc"}
+
+	diagnosis := DiagnoseFailure(result, finding, plan)
+	if diagnosis.Class != FailureClassSecondaryFailure {
+		t.Fatalf("expected terminal attempt OOM secondary failure, got %#v", diagnosis)
+	}
+	if !diagnosis.OriginalSymptomResolved {
+		t.Fatalf("expected terminal attempt to mark original symptom resolved: %#v", diagnosis)
+	}
+}
+
+func TestDiagnoseFailureForPatchUsesFinalCandidatePatch(t *testing.T) {
+	result := Result{Attempts: []Attempt{{Number: 2, ExitReason: "OOMKilled", Logs: []string{"app allocated memory"}}}}
+	finding := analyzer.Finding{Status: "ExecFormatError"}
+	originalPlan := fix.Plan{Strategy: "fix-architecture", PatchTemplate: "image: stress-ng"}
+
+	diagnosis := DiagnoseFailureForPatch(result, finding, originalPlan, "image: repo/api@sha256:abc")
+	if diagnosis.Class != FailureClassSecondaryFailure {
+		t.Fatalf("expected final non-stress patch to avoid stress classification, got %#v", diagnosis)
+	}
+}
