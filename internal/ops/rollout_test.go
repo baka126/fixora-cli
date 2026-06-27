@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,9 +49,11 @@ func TestVerifyRolloutTimeout(t *testing.T) {
 		ok:     false,
 		output: "Waiting for deployment rollout to finish: 1 of 3 updated replicas are available",
 		events: []kube.Event{
-			{Type: "Warning", Reason: "FailedCreate", Message: "pod api-x failed", InvolvedObject: kube.ObjectReference{Name: "api", Namespace: "prod"}},
+			{Type: "Warning", Reason: "FailedCreate", Message: "deployment api failed", InvolvedObject: kube.ObjectReference{Kind: "Deployment", Name: "api", Namespace: "prod"}},
 			// Same name, different namespace: must NOT be matched (cross-namespace collision guard).
-			{Type: "Warning", Reason: "FailedCreate", Message: "other-ns noise", InvolvedObject: kube.ObjectReference{Name: "api", Namespace: "staging"}},
+			{Type: "Warning", Reason: "FailedCreate", Message: "other-ns noise", InvolvedObject: kube.ObjectReference{Kind: "Deployment", Name: "api", Namespace: "staging"}},
+			// Same name and namespace, different kind: must NOT be matched.
+			{Type: "Warning", Reason: "FailedCreate", Message: "service noise", InvolvedObject: kube.ObjectReference{Kind: "Service", Name: "api", Namespace: "prod"}},
 		},
 	}
 	out := VerifyRollout(context.Background(), checker, deployFinding(), planWithRollback(), time.Minute)
@@ -77,6 +80,17 @@ func TestVerifyRolloutSkipsUnsupportedKind(t *testing.T) {
 	out := VerifyRollout(context.Background(), fakeRolloutChecker{ok: false}, f, planWithRollback(), time.Minute)
 	if out.Class != RolloutSkipped {
 		t.Fatalf("got %q want %q", out.Class, RolloutSkipped)
+	}
+}
+
+func TestVerifyRolloutInvalidWhenSupportedKindHasNoName(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", Namespace: "prod"}
+	out := VerifyRollout(context.Background(), fakeRolloutChecker{ok: false}, f, planWithRollback(), time.Minute)
+	if out.Class != RolloutInvalid {
+		t.Fatalf("got %q want %q", out.Class, RolloutInvalid)
+	}
+	if !strings.Contains(out.Summary, "missing resource name") {
+		t.Fatalf("expected missing name summary, got %#v", out)
 	}
 }
 

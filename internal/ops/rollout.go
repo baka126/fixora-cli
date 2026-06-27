@@ -16,6 +16,7 @@ const (
 	RolloutTimeout = "rollout-timeout"
 	RolloutSkipped = "rollout-skipped"
 	RolloutUnknown = "rollout-unknown"
+	RolloutInvalid = "rollout-invalid"
 )
 
 // RolloutChecker is the testability seam for post-apply rollout verification.
@@ -39,7 +40,10 @@ func VerifyRollout(ctx context.Context, checker RolloutChecker, finding analyzer
 	kind := strings.ToLower(strings.TrimSpace(finding.ResourceKind))
 	name := strings.TrimSpace(finding.ResourceName)
 	ns := strings.TrimSpace(finding.Namespace)
-	if name == "" || !rolloutSupportedKind(kind) {
+	if name == "" {
+		return RolloutOutcome{Class: RolloutInvalid, Summary: "could not verify rollout: missing resource name"}
+	}
+	if !rolloutSupportedKind(kind) {
 		return RolloutOutcome{Class: RolloutSkipped, Summary: "rollout status is not applicable to " + displayKind(finding.ResourceKind) + "; verify completion/readiness manually"}
 	}
 
@@ -61,7 +65,7 @@ func VerifyRollout(ctx context.Context, checker RolloutChecker, finding analyzer
 
 	if events, evErr := checker.GetEvents(ctx, ns, ""); evErr == nil {
 		for _, ev := range events {
-			if ev.InvolvedObject.Name == name && (ns == "" || ev.InvolvedObject.Namespace == ns) {
+			if rolloutEventMatches(ev, kind, name, ns) {
 				outcome.Events = append(outcome.Events, ev.Type+" "+ev.Reason+": "+ev.Message)
 			}
 		}
@@ -69,6 +73,17 @@ func VerifyRollout(ctx context.Context, checker RolloutChecker, finding analyzer
 	outcome.CauseHints = rolloutCauseHints(append([]string{output}, outcome.Events...))
 	outcome.Rollback = BuildRollback(finding, plan, true)
 	return outcome
+}
+
+func rolloutEventMatches(ev kube.Event, kind, name, namespace string) bool {
+	involved := ev.InvolvedObject
+	if !strings.EqualFold(strings.TrimSpace(involved.Kind), strings.TrimSpace(kind)) {
+		return false
+	}
+	if strings.TrimSpace(involved.Name) != name {
+		return false
+	}
+	return namespace == "" || strings.TrimSpace(involved.Namespace) == namespace
 }
 
 func rolloutSupportedKind(kind string) bool {

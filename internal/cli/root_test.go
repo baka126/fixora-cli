@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -850,6 +851,44 @@ func TestGateRolloutHealthyReturnsZero(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "rollout healthy") {
 		t.Fatalf("healthy status must go to stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutSkippedReturnsZero(t *testing.T) {
+	g := &fakeGate{ok: false}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: "Pod", ResourceName: "api-0", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, gatePlan(), time.Minute)
+	if code != 0 {
+		t.Fatalf("skipped rollout must return 0, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "warning:") {
+		t.Fatalf("skipped rollout must warn on stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutUnknownReturnsZero(t *testing.T) {
+	g := &fakeGate{statErr: errors.New("forbidden")}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, gateFinding(), gatePlan(), time.Minute)
+	if code != 0 {
+		t.Fatalf("unknown rollout must return 0, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "warning:") {
+		t.Fatalf("unknown rollout must warn on stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutMissingNameFailsVerification(t *testing.T) {
+	g := &fakeGate{ok: false}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: "Deployment", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, gatePlan(), time.Minute)
+	if code == 0 {
+		t.Fatal("missing rollout target name must fail verification")
+	}
+	if !strings.Contains(errb.String(), "missing resource name") {
+		t.Fatalf("missing name failure must explain the verification issue, got %q", errb.String())
 	}
 }
 

@@ -1002,7 +1002,7 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		} else {
 			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
 		}
-		return gateRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, finding, plan, opts.rolloutTimeout)
+		return gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
 	case shadow.DeliveryPR:
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 		if err != nil {
@@ -1248,7 +1248,7 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 			}
 			fmt.Fprintln(stdout, "applied patch")
 			_ = memory.Add(finding, plan, "guided-fix")
-			return gateRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, finding, plan, opts.rolloutTimeout)
+			return gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
 		}
 	}
 	_ = memory.Add(finding, plan, "guided-fix")
