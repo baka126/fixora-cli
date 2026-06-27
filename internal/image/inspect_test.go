@@ -34,6 +34,7 @@ func TestParseReference(t *testing.T) {
 		{value: "polinux/stress-ng", registry: "registry-1.docker.io", repository: "polinux/stress-ng", reference: "latest"},
 		{value: "nginx:1.27", registry: "registry-1.docker.io", repository: "library/nginx", reference: "1.27"},
 		{value: "ghcr.io/acme/api@sha256:abc", registry: "ghcr.io", repository: "acme/api", reference: "sha256:abc"},
+		{value: "ghcr.io/acme/api:v1@sha256:abc", registry: "ghcr.io", repository: "acme/api", reference: "sha256:abc"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.value, func(t *testing.T) {

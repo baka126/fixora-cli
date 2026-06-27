@@ -85,6 +85,7 @@ func Inspect(ctx context.Context, reference string) (Result, error) {
 		{tool: "docker", args: []string{"manifest", "inspect", reference}},
 	}
 	var unavailable []string
+	var toolErrs []string
 	for _, command := range commands {
 		if _, err := exec.LookPath(command.tool); err != nil {
 			unavailable = append(unavailable, command.tool)
@@ -92,7 +93,10 @@ func Inspect(ctx context.Context, reference string) (Result, error) {
 		}
 		out, err := exec.CommandContext(ctx, command.tool, command.args...).CombinedOutput()
 		if err != nil {
-			return Result{}, fmt.Errorf("inspect image %q with %s: %s", reference, command.tool, strings.TrimSpace(string(out)))
+			// A present-but-failing CLI (stale binary, auth hiccup, daemon down)
+			// must not block the registry fallback; record and keep going.
+			toolErrs = append(toolErrs, fmt.Sprintf("%s: %s", command.tool, strings.TrimSpace(string(out))))
+			continue
 		}
 		platforms, err := parsePlatforms(out)
 		if err != nil {
@@ -106,6 +110,9 @@ func Inspect(ctx context.Context, reference string) (Result, error) {
 			if fallback, fallbackErr := inspectDockerHubTag(ctx, reference); fallbackErr == nil {
 				return fallback, nil
 			}
+		}
+		if len(toolErrs) > 0 {
+			return Result{}, fmt.Errorf("inspect image %q: registry fallback failed after local tool errors (%s): %w", reference, strings.Join(toolErrs, "; "), err)
 		}
 		return Result{}, fmt.Errorf("inspect image %q with registry API after %s unavailable: %w", reference, strings.Join(unavailable, ", "), err)
 	}
@@ -287,12 +294,15 @@ func parseReference(value string) (reference, error) {
 		return reference{}, fmt.Errorf("invalid image reference")
 	}
 	name, refValue, hasRef := strings.Cut(value, "@")
-	if !hasRef {
-		lastSlash := strings.LastIndex(name, "/")
-		if colon := strings.LastIndex(name, ":"); colon > lastSlash {
+	// Strip an optional :tag from the name even when the reference is
+	// digest-pinned (e.g. ghcr.io/acme/api:v1@sha256:...), so the tag never
+	// leaks into Repository. The digest wins as the reference when present.
+	lastSlash := strings.LastIndex(name, "/")
+	if colon := strings.LastIndex(name, ":"); colon > lastSlash {
+		if !hasRef {
 			refValue = name[colon+1:]
-			name = name[:colon]
 		}
+		name = name[:colon]
 	}
 	if refValue == "" {
 		refValue = "latest"
