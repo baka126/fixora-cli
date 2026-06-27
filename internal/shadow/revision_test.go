@@ -356,6 +356,57 @@ func TestValidateRevisedPatchAllowsAIConcreteNameFromTODOOriginal(t *testing.T) 
 	}
 }
 
+func TestRevisePatchIgnoresUnstructuredResult(t *testing.T) {
+	// An Unstructured AI result must be ignored even when it carries a
+	// syntactically valid PatchYAML; the deterministic fallback (original
+	// patch) wins.
+	mock := &mockAIResult{result: &analyzer.AIResult{
+		Unstructured: true,
+		PatchYAML: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+	}}
+	revised, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{ExitReason: "retry"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatalf("unstructured AI result must not produce a usable revision, got: %s", revised)
+	}
+	if revised != originalImagePatch {
+		t.Fatalf("expected original patch to remain in effect, got:\n%s", revised)
+	}
+}
+
+func TestValidateRevisedPatchRejectsAppendedContainerAgainstTODOOriginal(t *testing.T) {
+	// Regression: a TODO_ placeholder original leaves originalNames empty, which
+	// previously disabled the membership check and let a revision append extra
+	// containers. The count guard must now reject that.
+	original := `spec:
+  template:
+    spec:
+      containers:
+      - name: TODO_CONTAINER_NAME
+        image: TODO_PINNED_MULTI_ARCH_IMAGE
+`
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+      - name: sidecar
+        image: busybox
+`
+	if err := ValidateRevisedPatch(original, revised, "fix-architecture"); err == nil {
+		t.Fatal("expected appended-container rejection against TODO original")
+	}
+}
+
 func TestValidateReviewedPatchRejectsIdentityDrift(t *testing.T) {
 	original := `apiVersion: v1
 kind: Pod

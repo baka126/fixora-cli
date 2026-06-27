@@ -230,6 +230,7 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 	var reasons []string
 	for _, section := range []string{"containers", "initContainers"} {
 		originalNames := containerNames(original[section])
+		originalCount := len(sliceMaps(original[section]))
 		if value, ok := spec[section]; ok {
 			items, ok := value.([]any)
 			if !ok || len(items) == 0 {
@@ -242,7 +243,15 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 				}
 			}
 		}
-		for _, c := range sliceMaps(spec[section]) {
+		revisedContainers := sliceMaps(spec[section])
+		// Guard against appended containers. Name membership only catches this
+		// when the original names are concrete; TODO_ placeholders (e.g. the
+		// fix-architecture template) leave originalNames empty, so also cap the
+		// count at the original so a revision cannot introduce extra containers.
+		if len(revisedContainers) > originalCount {
+			reasons = append(reasons, section+" must not add entries that are not in the original patch")
+		}
+		for _, c := range revisedContainers {
 			name := stringValue(c["name"])
 			if name == "" {
 				reasons = append(reasons, section+" entries must include name")

@@ -35,6 +35,10 @@ func revisePatch(ctx context.Context, aiProvider ai.Provider, patch, planType st
 	if res == nil {
 		return patch, false, nil
 	}
+	if res.Unstructured {
+		// Unparseable AI responses must be ignored; fall back to the existing patch.
+		return patch, false, nil
+	}
 	candidate := strings.TrimSpace(res.PatchYAML)
 	if candidate == "" {
 		candidate = strings.TrimSpace(res.RecommendedFix)
