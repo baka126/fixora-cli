@@ -91,6 +91,7 @@ func withoutIdentity(obj map[string]any) map[string]any {
 		case "metadata":
 			meta, ok := value.(map[string]any)
 			if !ok {
+				out["metadata"] = value
 				continue
 			}
 			trimmed := map[string]any{}
