@@ -932,10 +932,10 @@ func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, as
 	outcome := ops.VerifyRollout(ctx, k, finding, plan, timeout)
 	switch outcome.Class {
 	case ops.RolloutHealthy:
-		fmt.Fprintf(stdout, "rollout healthy: %s\n", outcome.Summary)
+		fmt.Fprintf(stderr, "rollout healthy: %s\n", outcome.Summary)
 		return 0
 	case ops.RolloutSkipped, ops.RolloutUnknown:
-		fmt.Fprintf(stdout, "warning: %s\n", outcome.Summary)
+		fmt.Fprintf(stderr, "warning: %s\n", outcome.Summary)
 		return 0
 	}
 	fmt.Fprintf(stderr, "rollout failed: %s\n", outcome.Summary)
@@ -954,13 +954,13 @@ func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, as
 		fmt.Fprintf(stderr, "rollback not run (non-interactive). To roll back:\n  %s\n", cmd)
 		return 1
 	}
-	if termui.ConfirmRollback(cmd, in, stdout) {
+	if termui.ConfirmRollback(cmd, in, stderr) {
 		if outcome.Rollback.Binary == "kubectl" {
 			if _, err := k.Run(ctx, outcome.Rollback.Args...); err != nil {
 				fmt.Fprintf(stderr, "error: rollback failed: %v\n", err)
 				return 1
 			}
-			fmt.Fprintln(stdout, "rollback applied")
+			fmt.Fprintln(stderr, "rollback applied")
 		} else {
 			fmt.Fprintf(stderr, "run this rollback manually:\n  %s\n", cmd)
 		}
@@ -996,9 +996,12 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		result.Delivery = "cluster"
 		if opts.output != "text" {
-			return output.Write(stdout, opts.output, result)
+			if code := output.Write(stdout, opts.output, result); code != 0 {
+				return code
+			}
+		} else {
+			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
 		}
-		fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
 		return gateRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, finding, plan, opts.rolloutTimeout)
 	case shadow.DeliveryPR:
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)

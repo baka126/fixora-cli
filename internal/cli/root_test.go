@@ -844,6 +844,13 @@ func TestGateRolloutHealthyReturnsZero(t *testing.T) {
 	if len(g.runCalls) != 0 {
 		t.Fatalf("healthy rollout must not run rollback, got %#v", g.runCalls)
 	}
+	// Status lines go to stderr so structured stdout (json/yaml/sarif) stays clean.
+	if out.Len() != 0 {
+		t.Fatalf("gate must not write status to stdout, got %q", out.String())
+	}
+	if !strings.Contains(errb.String(), "rollout healthy") {
+		t.Fatalf("healthy status must go to stderr, got %q", errb.String())
+	}
 }
 
 func TestGateRolloutFailureOffersAndRunsRollback(t *testing.T) {
