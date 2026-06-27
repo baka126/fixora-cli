@@ -131,7 +131,7 @@ func RunTUI(ctx context.Context, k kube.Reader, opts TUIOptions) error {
 		opts.Refresh = 30 * time.Second
 	}
 	if opts.ScanTimeout <= 0 {
-		opts.ScanTimeout = 20 * time.Second
+		opts.ScanTimeout = 60 * time.Second
 	}
 	if len(opts.Filters) == 0 {
 		opts.Filters = fastTUIFilters()
@@ -1086,7 +1086,7 @@ func (m tuiModel) shadowVerifyCmd() (tea.Model, tea.Cmd) {
 			Patch:     m.plan.PatchTemplate,
 			Finding:   m.selected,
 			Plan:      m.plan,
-			Timeout:   firstDuration(m.opts.ShadowTimeout, m.opts.ScanTimeout, 5*time.Minute),
+			Timeout:   firstDuration(m.opts.ShadowTimeout, 10*time.Minute),
 			Retries:   m.opts.ShadowRetries,
 			Keep:      m.opts.KeepShadow,
 			Egress:    firstNonEmpty(m.opts.ShadowEgress, "allow"),
@@ -1329,7 +1329,7 @@ func (c *shadowVerifyCommand) Run() error {
 	stdout := firstWriter(c.stdout, os.Stdout)
 	stderr := firstWriter(c.stderr, os.Stderr)
 	if c.req.Timeout <= 0 {
-		c.req.Timeout = 5 * time.Minute
+		c.req.Timeout = 10 * time.Minute
 	}
 	diff := shadow.PatchDiff(c.req.Resource, c.req.Patch)
 	if !ConfirmShadowDeploy(diff, c.stdin, stdout) {

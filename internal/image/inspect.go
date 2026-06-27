@@ -137,7 +137,7 @@ func inspectDockerHubTag(ctx context.Context, value string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	response, err := (&http.Client{Timeout: 8 * time.Second}).Do(request)
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
 		return Result{}, err
 	}
@@ -182,9 +182,9 @@ func FindCompatible(ctx context.Context, current string, target Platform, limit 
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	endpoint := parsed.baseURL() + "/v2/" + parsed.Repository + "/tags/list?n=50"
 	body, _, err := registryGet(ctx, client, endpoint, parsed.Repository)
 	if err != nil {
@@ -252,7 +252,7 @@ func inspectRegistry(ctx context.Context, reference string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	manifestURL := ref.baseURL() + "/v2/" + ref.Repository + "/manifests/" + url.PathEscape(ref.Reference)
 	body, headers, err := registryGet(ctx, client, manifestURL, ref.Repository)
 	if err != nil {

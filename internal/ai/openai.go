@@ -69,13 +69,13 @@ func NewFromEnv() (Client, error) {
 		BaseURL:  baseURL,
 		APIKey:   key,
 		Model:    model,
-		HTTP:     &http.Client{Timeout: 45 * time.Second},
+		HTTP:     &http.Client{Timeout: 60 * time.Second},
 	}, nil
 }
 
 func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
 	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 45 * time.Second}
+		c.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
 	payload, err := json.MarshalIndent(finding, "", "  ")
 	if err != nil {

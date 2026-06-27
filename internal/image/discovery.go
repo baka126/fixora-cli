@@ -27,7 +27,7 @@ func DiscoverTrusted(ctx context.Context, current string, target Platform, limit
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	candidates := []Candidate{}
 	if sameRepo, err := FindCompatible(ctx, current, target, limit); err == nil {
@@ -72,7 +72,7 @@ func discoverDockerHub(ctx context.Context, repository string, target Platform, 
 	params.Set("query", query)
 	params.Set("page_size", "25")
 	u.RawQuery = params.Encode()
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err

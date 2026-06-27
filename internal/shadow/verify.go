@@ -13,7 +13,7 @@ import (
 
 func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool) Attempt {
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		timeout = 10 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -143,7 +143,7 @@ func terminalFailure(reason string) bool {
 }
 
 func enrichFailure(c *kube.TypedClient, namespace, name string, attempt *Attempt) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if logs, err := c.Logs(ctx, namespace, name, false); err == nil && strings.TrimSpace(logs) != "" {
 		attempt.Logs = append(attempt.Logs, logs)

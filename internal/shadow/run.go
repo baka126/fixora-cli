@@ -23,7 +23,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		req.Resource = req.Finding.ResourceKind + "/" + req.Finding.ResourceName
 	}
 	if req.Timeout <= 0 {
-		req.Timeout = 5 * time.Minute
+		req.Timeout = 10 * time.Minute
 	}
 	if req.Retries < 0 {
 		req.Retries = 0
@@ -83,6 +83,11 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	if !req.Keep && lastPlan.Clone != nil {
 		cleanup(ctx, c, lastPlan, &result)
 	}
+	if !result.Verified {
+		diagnosis := DiagnoseFailureForPatch(result, req.Finding, req.Plan, result.VerifiedPatch)
+		result.FailureClass = diagnosis.Class
+		result.FailureSummary = diagnosis.Summary
+	}
 	if !req.Keep && len(result.cleanupFailures()) > 0 {
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
@@ -100,7 +105,7 @@ func resourceAllowsCompletion(resource string) bool {
 }
 
 func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *Result) {
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if plan.Clone != nil {
 		if !isShadowObject(plan.Clone.Labels) {
