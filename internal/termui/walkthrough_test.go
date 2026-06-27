@@ -44,6 +44,28 @@ func TestConfirmShadowOrEdit(t *testing.T) {
 	}
 }
 
+func TestConfirmProceedOrEdit(t *testing.T) {
+	var out bytes.Buffer
+	if p, e := ConfirmProceedOrEdit(strings.NewReader("e\n"), &out); !p || !e {
+		t.Fatalf("e: got proceed=%v edit=%v", p, e)
+	}
+	if p, e := ConfirmProceedOrEdit(strings.NewReader("\n"), &out); !p || e {
+		t.Fatalf("enter: got proceed=%v edit=%v", p, e)
+	}
+	if p, _ := ConfirmProceedOrEdit(strings.NewReader("n\n"), &out); p {
+		t.Fatalf("n: expected proceed=false")
+	}
+	if p, e := ConfirmProceedOrEdit(strings.NewReader(""), &out); p || e {
+		t.Fatalf("EOF: got proceed=%v edit=%v, want false,false", p, e)
+	}
+	if !strings.Contains(out.String(), "Proceed with this fix?") {
+		t.Fatalf("expected generic proceed prompt, got %q", out.String())
+	}
+	if strings.Contains(out.String(), "shadow") {
+		t.Fatalf("proceed prompt must not mention shadow, got %q", out.String())
+	}
+}
+
 func TestWalkthroughPromptsEOFDefaults(t *testing.T) {
 	if got := PromptDelivery(strings.NewReader(""), &bytes.Buffer{}); got != DeliverCancel {
 		t.Fatalf("EOF: PromptDelivery got %v, want DeliverCancel", got)

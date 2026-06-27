@@ -1059,7 +1059,7 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 			plan = updatedPlan
 			if opts.sourcePatch {
 				if opts.repoPath == "" {
-					fmt.Fprintln(stderr, "error: --gitops or --source-patch requires --repo")
+					failNext(stderr, "--delivery=pr (--gitops/--source-patch) requires --repo", "re-run with --repo <path-to-your-manifests-repo>")
 					return 2
 				}
 				sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
@@ -1115,7 +1115,7 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 	}
 	if opts.apply {
 		if sourceManaged(finding) {
-			fmt.Fprintln(stderr, "error: direct apply is blocked for Helm/GitOps-managed resources; use --repo for source delivery")
+			failNext(stderr, "direct apply is blocked for Helm/GitOps-managed resources", "use --delivery=pr with --repo to deliver a validated source change")
 			return 2
 		}
 		if opts.applyDryRun {

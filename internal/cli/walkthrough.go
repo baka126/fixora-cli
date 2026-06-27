@@ -79,8 +79,14 @@ func runFixWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return deliverWalkthrough(ctx, stdout, stderr, opts, k, finding, updated, shadow.Result{}, true)
 	}
 
-	// Confirm shadow validation, or open the patch in an editor first.
-	proceed, edit := termui.ConfirmShadowOrEdit(in, stdout)
+	// Confirm shadow validation (or just the fix when shadow is disabled), or
+	// open the patch in an editor first.
+	var proceed, edit bool
+	if opts.shadowVerify {
+		proceed, edit = termui.ConfirmShadowOrEdit(in, stdout)
+	} else {
+		proceed, edit = termui.ConfirmProceedOrEdit(in, stdout)
+	}
 	if !proceed {
 		fmt.Fprintln(stdout, "fix cancelled")
 		return 0
@@ -97,13 +103,22 @@ func runFixWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts optio
 	}
 	plan = updated
 
-	// Step 3/4 — Shadow validation (verify only; no delivery yet).
-	fmt.Fprintln(stdout, "\nStep 3/4  Shadow validation")
-	result, verified, code := verifyInShadow(ctx, stdout, stderr, opts, k, finding, plan, false)
-	if !verified {
-		return code
+	// Step 3/4 — Shadow validation (verify only; no delivery yet). Only
+	// apply-eligible plans reach this branch (review-only routes above), so
+	// skipping shadow does not open a non-eligible apply path.
+	var result shadow.Result
+	if opts.shadowVerify {
+		fmt.Fprintln(stdout, "\nStep 3/4  Shadow validation")
+		res, verified, code := verifyInShadow(ctx, stdout, stderr, opts, k, finding, plan, false)
+		if !verified {
+			return code
+		}
+		fmt.Fprintf(stdout, "Shadow validation PASSED (parity %d%%)\n", res.Parity)
+		result = res
+	} else {
+		fmt.Fprintln(stdout, "\nStep 3/4  Shadow validation")
+		fmt.Fprintln(stdout, "  skipped (--no-shadow); delivering an unverified patch.")
 	}
-	fmt.Fprintf(stdout, "Shadow validation PASSED (parity %d%%)\n", result.Parity)
 
 	// Step 4/4 — Deliver.
 	fmt.Fprintln(stdout, "\nStep 4/4  Deliver")
@@ -111,9 +126,28 @@ func runFixWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts optio
 }
 
 // deliverWalkthrough prompts for a delivery mode and routes through the shared
-// delivery guards + helper. reviewOnly restricts the menu to pr/file.
+// delivery guards + helper. reviewOnly restricts the menu to pr/file. An explicit
+// --delivery (or a legacy alias mapped onto it by reconcileDeliveryFlags) skips
+// the menu and pre-selects the mode.
 func deliverWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, reviewOnly bool) int {
-	choice := termui.PromptDelivery(inputFor(opts), stdout)
+	// reconcileDeliveryFlags maps legacy --apply/--source-patch/--gitops onto
+	// opts.delivery (without setting visited["delivery"]), so a non-default value
+	// or an explicit --delivery=patch both count as explicit.
+	explicit := opts.visited["delivery"] || opts.delivery != "patch"
+	var choice termui.DeliveryChoice
+	if explicit {
+		switch shadow.DeliveryMode(strings.ToLower(strings.TrimSpace(opts.delivery))) {
+		case shadow.DeliveryCluster:
+			choice = termui.DeliverCluster
+		case shadow.DeliveryPR:
+			choice = termui.DeliverPR
+		default:
+			choice = termui.DeliverPatch
+		}
+		fmt.Fprintf(stdout, "Delivering via %s (from --delivery).\n", opts.delivery)
+	} else {
+		choice = termui.PromptDelivery(inputFor(opts), stdout)
+	}
 	var mode shadow.DeliveryMode
 	switch choice {
 	case termui.DeliverCluster:

@@ -98,3 +98,24 @@ func ConfirmShadowOrEdit(in io.Reader, out io.Writer) (bool, bool) {
 		return true, false
 	}
 }
+
+// ConfirmProceedOrEdit mirrors ConfirmShadowOrEdit but without shadow-specific
+// wording, for use when shadow verification is disabled (--no-shadow/--quick).
+func ConfirmProceedOrEdit(in io.Reader, out io.Writer) (bool, bool) {
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprint(out, "\nProceed with this fix? [Y/n]  ([e] edit patch): ")
+	resp, ok := readLine(in)
+	if !ok {
+		return false, false
+	}
+	switch resp {
+	case "e":
+		return true, true
+	case "n", "no":
+		return false, false
+	default:
+		return true, false
+	}
+}
