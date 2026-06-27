@@ -5,5 +5,12 @@ dist/
 coverage.txt
 .DS_Store
 kubectl-fixora
-.antigravitycli
-k8sgpt/
+CLAUDE.md
+docs/superpowers
+
+# build + fix outputs
+/fixora-cli
+fixora-patch.yaml
+
+# Go build cache (Codex/local)
+.codex-go-cache/

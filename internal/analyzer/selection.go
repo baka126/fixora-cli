@@ -3,10 +3,11 @@ package analyzer
 import "strings"
 
 func DefaultIncidentFilters(quick bool) []string {
-	if quick {
-		return []string{"pod"}
-	}
-	return []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob", "service", "ingress", "hpa", "pdb", "pvc", "node", "networkpolicy", "configmap"}
+	return []string{"pod"}
+}
+
+func ComprehensiveDiagnosticFilters() []string {
+	return []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob", "service", "ingress", "hpa", "pdb", "pvc", "node", "networkpolicy", "configmap", "security"}
 }
 
 func SmartFiltersFor(resource, status string) []string {

@@ -34,11 +34,19 @@ func TestDefaultIncidentFilters(t *testing.T) {
 	if got := DefaultIncidentFilters(true); !reflect.DeepEqual(got, []string{"pod"}) {
 		t.Fatalf("quick filters=%#v", got)
 	}
-	got := DefaultIncidentFilters(false)
+	if got := DefaultIncidentFilters(false); !reflect.DeepEqual(got, []string{"pod"}) {
+		t.Fatalf("default incident filters should be pod-only, got %#v", got)
+	}
+	got := ComprehensiveDiagnosticFilters()
 	for _, want := range []string{"pod", "deployment", "service", "hpa", "pvc", "networkpolicy", "configmap"} {
 		if !containsString(got, want) {
-			t.Fatalf("default filters missing %q: %#v", want, got)
+			t.Fatalf("comprehensive filters missing %q: %#v", want, got)
 		}
+	}
+	// Comprehensive (used by the health command) must still select pod-security
+	// hygiene checks; its aliases are pod-security/podsecurity/security.
+	if !matchesAny(filterSet(got), "pod-security", "podsecurity", "security") {
+		t.Fatalf("comprehensive filters no longer select pod-security: %#v", got)
 	}
 }
 

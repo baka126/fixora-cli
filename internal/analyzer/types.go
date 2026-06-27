@@ -46,6 +46,19 @@ func (s *ScanContext) GetPods() (kube.PodList, error) {
 	return pods, err
 }
 
+func (s *ScanContext) GetNodes() ([]kube.Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nodes != nil {
+		return s.nodes, nil
+	}
+	nodes, err := s.Reader.GetNodes(s)
+	if err == nil {
+		s.nodes = nodes
+	}
+	return nodes, err
+}
+
 func (s *ScanContext) GetEvents() ([]kube.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,8 +199,16 @@ type AIResult struct {
 	Summary        string   `json:"summary"`
 	RootCause      string   `json:"rootCause"`
 	RecommendedFix string   `json:"recommendedFix"`
+	PatchYAML      string   `json:"patchYAML,omitempty"`
+	Strategy       string   `json:"strategy,omitempty"`
+	Confidence     int      `json:"confidence,omitempty"`
+	Analyzers      []string `json:"analyzers,omitempty"`
 	Commands       []string `json:"commands,omitempty"`
 	Warnings       []string `json:"warnings,omitempty"`
+	// Unstructured is set by the AI client when the model returned text that
+	// could not be parsed as the JSON contract. Callers must ignore the rest
+	// of the result and use the deterministic plan instead.
+	Unstructured bool `json:"-"`
 }
 
 type GitOpsHints struct {

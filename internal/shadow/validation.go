@@ -31,6 +31,86 @@ func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
 	return nil
 }
 
+// ValidateReviewedPatch validates an operator-edited concrete patch before it
+// can be used for shadow verification or delivery. Unlike an AI revision, a
+// reviewed patch may retain its resource identity, but that identity must not
+// drift from Fixora's generated patch.
+func ValidateReviewedPatch(originalPatch, reviewedPatch, planType string) error {
+	planType = strings.ToLower(strings.TrimSpace(planType))
+	if !allowedRevisionStrategy(planType) {
+		return PatchValidationError{Reasons: []string{fmt.Sprintf("unknown or unsafe strategy %q", planType)}}
+	}
+	original, err := parseSinglePatch(originalPatch)
+	if err != nil {
+		return PatchValidationError{Reasons: []string{"original patch is not valid YAML: " + err.Error()}}
+	}
+	reviewed, err := parseSinglePatch(reviewedPatch)
+	if err != nil {
+		return PatchValidationError{Reasons: []string{err.Error()}}
+	}
+	reasons := validateReviewIdentity(original, reviewed)
+	original = withoutIdentity(original)
+	reviewed = withoutIdentity(reviewed)
+	reasons = append(reasons, validatePatchObject(reviewed)...)
+	reasons = append(reasons, validateProjectedDiff(original, reviewed, planType)...)
+	if len(reasons) > 0 {
+		sort.Strings(reasons)
+		return PatchValidationError{Reasons: reasons}
+	}
+	return nil
+}
+
+func validateReviewIdentity(original, reviewed map[string]any) []string {
+	var reasons []string
+	for _, key := range []string{"apiVersion", "kind"} {
+		if value, ok := original[key]; ok && fmt.Sprint(reviewed[key]) != fmt.Sprint(value) {
+			reasons = append(reasons, key+" must match the generated patch")
+		}
+	}
+	originalMeta, _ := nestedMap(original, "metadata")
+	reviewedMeta, _ := nestedMap(reviewed, "metadata")
+	for _, key := range []string{"name", "namespace"} {
+		if value, ok := originalMeta[key]; ok && fmt.Sprint(reviewedMeta[key]) != fmt.Sprint(value) {
+			reasons = append(reasons, "metadata."+key+" must match the generated patch")
+		}
+	}
+	return reasons
+}
+
+// withoutIdentity drops the fields validateReviewIdentity already pinned
+// (apiVersion, kind, metadata.name, metadata.namespace) so they don't trip the
+// downstream change checks. It preserves the rest of metadata so
+// validatePatchObject still rejects label/annotation/ownerReferences drift in a
+// reviewed patch, keeping it as strict as ValidateRevisedPatch.
+func withoutIdentity(obj map[string]any) map[string]any {
+	out := make(map[string]any, len(obj))
+	for key, value := range obj {
+		switch key {
+		case "apiVersion", "kind":
+			continue
+		case "metadata":
+			meta, ok := value.(map[string]any)
+			if !ok {
+				out["metadata"] = value
+				continue
+			}
+			trimmed := map[string]any{}
+			for k, v := range meta {
+				if k == "name" || k == "namespace" {
+					continue
+				}
+				trimmed[k] = v
+			}
+			if len(trimmed) > 0 {
+				out["metadata"] = trimmed
+			}
+		default:
+			out[key] = value
+		}
+	}
+	return out
+}
+
 func parseSinglePatch(patch string) (map[string]any, error) {
 	patch = strings.TrimSpace(patch)
 	if patch == "" {
@@ -55,7 +135,7 @@ func parseSinglePatch(patch string) (map[string]any, error) {
 
 func allowedRevisionStrategy(strategy string) bool {
 	switch strategy {
-	case "image", "resources", "env":
+	case "image", "fix-architecture", "resources", "env":
 		return true
 	default:
 		return false
@@ -146,7 +226,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		return reasons
 	}
 	switch strategy {
-	case "image":
+	case "image", "fix-architecture":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "image": true}, strategy)...)
 	case "resources":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "resources": true}, strategy)...)
@@ -162,7 +242,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 
 func allowedSpecKeys(strategy string) map[string]bool {
 	switch strategy {
-	case "image", "resources", "env":
+	case "image", "fix-architecture", "resources", "env":
 		return map[string]bool{"containers": true, "initContainers": true}
 	default:
 		return map[string]bool{}
@@ -173,6 +253,7 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 	var reasons []string
 	for _, section := range []string{"containers", "initContainers"} {
 		originalNames := containerNames(original[section])
+		originalCount := len(sliceMaps(original[section]))
 		if value, ok := spec[section]; ok {
 			items, ok := value.([]any)
 			if !ok || len(items) == 0 {
@@ -185,7 +266,15 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 				}
 			}
 		}
-		for _, c := range sliceMaps(spec[section]) {
+		revisedContainers := sliceMaps(spec[section])
+		// Guard against appended containers. Name membership only catches this
+		// when the original names are concrete; TODO_ placeholders (e.g. the
+		// fix-architecture template) leave originalNames empty, so also cap the
+		// count at the original so a revision cannot introduce extra containers.
+		if len(revisedContainers) > originalCount {
+			reasons = append(reasons, section+" must not add entries that are not in the original patch")
+		}
+		for _, c := range revisedContainers {
 			name := stringValue(c["name"])
 			if name == "" {
 				reasons = append(reasons, section+" entries must include name")
@@ -206,6 +295,9 @@ func containerNames(value any) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range sliceMaps(value) {
 		if name := stringValue(c["name"]); name != "" {
+			if strings.HasPrefix(name, "TODO_") {
+				continue
+			}
 			out[name] = true
 		}
 	}

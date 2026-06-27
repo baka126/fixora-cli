@@ -201,10 +201,18 @@ func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {
 	cmd := exec.CommandContext(ctx, "kubectl", full...)
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
+	if err != nil && kubectlErrorOutput(text) {
+		return "", fmt.Errorf("kubectl diff: %w: %s", err, text)
+	}
 	if err != nil && text == "" {
 		return "", err
 	}
 	return text, nil
+}
+
+func kubectlErrorOutput(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "error:") || strings.Contains(value, "\nerror:")
 }
 
 func (k Kubectl) AuthCanI(ctx context.Context, namespace, serviceAccount, verb, resource string) (string, error) {

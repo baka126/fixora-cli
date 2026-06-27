@@ -100,6 +100,23 @@ func TestEnsureNoUnrelatedChangesAllowsIntendedModifiedPath(t *testing.T) {
 	}
 }
 
+func TestPrepareBranchRefusesToOverwriteExistingBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitTest(t, dir, "init")
+	gitTest(t, dir, "config", "user.email", "fixora@example.com")
+	gitTest(t, dir, "config", "user.name", "Fixora Test")
+	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), []byte("kind: Pod\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, dir, "add", ".")
+	gitTest(t, dir, "commit", "-m", "initial")
+	gitTest(t, dir, "branch", "fixora/existing")
+	err := PrepareBranch(context.Background(), dir, "fixora/existing", false, "")
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected existing branch guard, got %v", err)
+	}
+}
+
 func gitTest(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)

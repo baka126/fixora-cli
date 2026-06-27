@@ -74,6 +74,31 @@ func TestNetworkPolicyAnalyzerImportsK8sGPTSelectorChecks(t *testing.T) {
 	assertNoFindingForResource(t, findings, "matched")
 }
 
+func TestServiceAnalyzerUsesEndpointSlices(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"services": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api"},
+				"spec":     map[string]any{"selector": map[string]any{"app": "api"}},
+			},
+		},
+		"endpointslices.discovery.k8s.io": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api-abc", "labels": map[string]any{"kubernetes.io/service-name": "api"}},
+				"endpoints": []any{
+					map[string]any{"addresses": []any{"10.0.0.10"}, "conditions": map[string]any{"ready": false}},
+				},
+			},
+		},
+	})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeServiceEndpoints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "NoEndpoints")
+	assertFindingStatus(t, findings, "NotReadyEndpoints")
+}
+
 func TestNodeAnalyzerImportsK8sGPTConditionChecks(t *testing.T) {
 	ctx := scanContextWithItems(map[string][]map[string]any{
 		"nodes": {

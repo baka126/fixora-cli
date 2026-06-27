@@ -110,12 +110,16 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 	}
 }
 
+func jsonContract() string {
+	return "Return only JSON with keys summary, rootCause, recommendedFix, patchYAML, strategy, confidence, analyzers, commands, warnings. Use the provided logs, events, metrics, object status, and related analyzer findings. patchYAML must be empty unless you can produce a concrete single-document Kubernetes YAML patch with no TODO placeholders. For pod-template remediations, only propose containers/initContainers image, resources, env, or envFrom changes. For service, ingress, storage, configmap, node, policy, or controller issues, patchYAML may be a minimal review-only source patch. Never include Secret resources or secret values, metadata labels/annotations/ownerReferences, unsafe selectors unless the issue is explicitly a Service or route backend mismatch, serviceAccountName, nodeSelector, tolerations, affinity, host networking/PID/IPC, volumes, hostPath, privileged containers, or shell command overrides in patchYAML. Write rootCause and recommendedFix for an experienced SRE: precise, technical, and concise. Name the specific resource, container, and field involved. Use correct Kubernetes terminology and do not add business-impact framing or marketing language."
+}
+
 func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AIResult, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":       c.Model,
 		"temperature": 0.1,
 		"messages": []map[string]string{
-			{"role": "system", "content": "Return only JSON with summary, rootCause, recommendedFix, commands, warnings."},
+			{"role": "system", "content": jsonContract()},
 			{"role": "user", "content": "Analyze this redacted Kubernetes finding:\n" + payload},
 		},
 	})
@@ -162,7 +166,7 @@ func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AI
 
 func (c Client) explainHuggingFace(ctx context.Context, payload string) (*analyzer.AIResult, error) {
 	body, err := json.Marshal(map[string]any{
-		"inputs": "Return only JSON with summary, rootCause, recommendedFix, commands, warnings.\nAnalyze this Kubernetes finding:\n" + payload,
+		"inputs": jsonContract() + "\nAnalyze this Kubernetes finding:\n" + payload,
 		"parameters": map[string]any{
 			"temperature":      0.1,
 			"return_full_text": false,
@@ -226,7 +230,7 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 		Messages: []chatMessage{
 			{
 				Role:    "system",
-				Content: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. Return only JSON with keys summary, rootCause, recommendedFix, commands, warnings.",
+				Content: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
 			},
 			{
 				Role:    "user",
@@ -264,21 +268,7 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("AI provider returned no choices")
 	}
-	content := strings.TrimSpace(decoded.Choices[0].Message.Content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-	var result analyzer.AIResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		result = analyzer.AIResult{
-			Summary:        "AI returned a non-JSON response.",
-			RootCause:      content,
-			RecommendedFix: "Review the response manually before acting.",
-			Warnings:       []string{"Non-JSON AI response could not be structured."},
-		}
-	}
-	return &result, nil
+	return parseAIContent(decoded.Choices[0].Message.Content)
 }
 
 func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -286,7 +276,7 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 		Model:       c.Model,
 		Temperature: 0.1,
 		Messages: []chatMessage{
-			{Role: "system", Content: "You are Fixora CLI, a local Kubernetes SRE assistant. Return only JSON with keys summary, rootCause, recommendedFix, commands, warnings."},
+			{Role: "system", Content: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract()},
 			{Role: "user", Content: "Analyze this redacted Kubernetes finding:\n" + payload},
 		},
 	}
@@ -339,7 +329,7 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AIResult, error) {
 	body, err := json.Marshal(map[string]any{
 		"systemInstruction": map[string]any{
-			"parts": []map[string]string{{"text": "You are Fixora CLI, a local Kubernetes SRE assistant. Return only JSON with summary, rootCause, recommendedFix, commands, warnings."}},
+			"parts": []map[string]string{{"text": "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract()}},
 		},
 		"contents": []map[string]any{{
 			"role":  "user",
@@ -403,7 +393,7 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 		"model":  c.Model,
 		"stream": false,
 		"messages": []chatMessage{
-			{Role: "system", Content: "Return only JSON with summary, rootCause, recommendedFix, commands, warnings."},
+			{Role: "system", Content: jsonContract()},
 			{Role: "user", Content: "Analyze this Kubernetes finding:\n" + payload},
 		},
 	})
@@ -437,7 +427,7 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 	body, err := json.Marshal(map[string]any{
 		"model":      c.Model,
 		"max_tokens": 1200,
-		"system":     "You are Fixora CLI. Return only JSON with summary, rootCause, recommendedFix, commands, warnings.",
+		"system":     "You are Fixora CLI. " + jsonContract(),
 		"messages": []map[string]string{
 			{"role": "user", "content": "Analyze this redacted Kubernetes finding:\n" + payload},
 		},
@@ -478,6 +468,10 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 	return parseAIContent(decoded.Content[0].Text)
 }
 
+// parseAIContent enforces the JSON contract for every provider: malformed
+// content, or a syntactically valid but empty object, yields an Unstructured
+// result so callers fall back to the deterministic plan instead of failing
+// hard or surfacing blank AI sections.
 func parseAIContent(content string) (*analyzer.AIResult, error) {
 	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
@@ -486,9 +480,23 @@ func parseAIContent(content string) (*analyzer.AIResult, error) {
 	content = strings.TrimSpace(content)
 	var result analyzer.AIResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content: %q)", err, content)
+		return unstructuredAIResult(content), nil
+	}
+	if strings.TrimSpace(result.Summary) == "" &&
+		strings.TrimSpace(result.RootCause) == "" &&
+		strings.TrimSpace(result.RecommendedFix) == "" {
+		return unstructuredAIResult(content), nil
 	}
 	return &result, nil
+}
+
+func unstructuredAIResult(content string) *analyzer.AIResult {
+	return &analyzer.AIResult{
+		Summary:      "AI response did not satisfy the JSON contract.",
+		RootCause:    content,
+		Warnings:     []string{"AI response could not be parsed; falling back to the deterministic plan."},
+		Unstructured: true,
+	}
 }
 
 func defaultBaseURL(provider string) string {

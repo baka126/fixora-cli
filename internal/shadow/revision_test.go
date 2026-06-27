@@ -43,6 +43,31 @@ func TestRevisePatchAcceptsValidImageOnlyPatch(t *testing.T) {
 	}
 }
 
+func TestRevisePatchPrefersStructuredPatchYAML(t *testing.T) {
+	mock := &mockAIResult{result: &analyzer.AIResult{
+		RecommendedFix: "Use a compatible image.",
+		PatchYAML: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+	}}
+	revised, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{ExitReason: "ExecFormatError"}, true)
+	if err != nil || !ok || !strings.Contains(revised, "repo/app:v2") {
+		t.Fatalf("expected PatchYAML revision, ok=%t err=%v patch=%s", ok, err, revised)
+	}
+}
+
+type mockAIResult struct {
+	result *analyzer.AIResult
+}
+
+func (m *mockAIResult) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
+	return m.result, nil
+}
+
 func TestRevisePatchRequiresRedaction(t *testing.T) {
 	mock := &mockAI{patch: originalImagePatch}
 	_, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{Logs: []string{"password=hunter2"}}, false)
@@ -308,6 +333,142 @@ func TestValidateRevisedPatchRejectsUnknownStrategy(t *testing.T) {
 	err := ValidateRevisedPatch(originalImagePatch, strings.Replace(originalImagePatch, "v1", "v2", 1), "runtime")
 	if err == nil {
 		t.Fatal("expected unknown strategy rejection")
+	}
+}
+
+func TestValidateRevisedPatchAllowsAIConcreteNameFromTODOOriginal(t *testing.T) {
+	original := `spec:
+  template:
+    spec:
+      containers:
+      - name: TODO_CONTAINER_NAME
+        image: TODO_PINNED_MULTI_ARCH_IMAGE
+`
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+`
+	if err := ValidateRevisedPatch(original, revised, "fix-architecture"); err != nil {
+		t.Fatalf("expected AI concrete image patch to validate against TODO template: %v", err)
+	}
+}
+
+func TestRevisePatchIgnoresUnstructuredResult(t *testing.T) {
+	// An Unstructured AI result must be ignored even when it carries a
+	// syntactically valid PatchYAML; the deterministic fallback (original
+	// patch) wins.
+	mock := &mockAIResult{result: &analyzer.AIResult{
+		Unstructured: true,
+		PatchYAML: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`,
+	}}
+	revised, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", Attempt{ExitReason: "retry"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok {
+		t.Fatalf("unstructured AI result must not produce a usable revision, got: %s", revised)
+	}
+	if revised != originalImagePatch {
+		t.Fatalf("expected original patch to remain in effect, got:\n%s", revised)
+	}
+}
+
+func TestValidateRevisedPatchRejectsAppendedContainerAgainstTODOOriginal(t *testing.T) {
+	// Regression: a TODO_ placeholder original leaves originalNames empty, which
+	// previously disabled the membership check and let a revision append extra
+	// containers. The count guard must now reject that.
+	original := `spec:
+  template:
+    spec:
+      containers:
+      - name: TODO_CONTAINER_NAME
+        image: TODO_PINNED_MULTI_ARCH_IMAGE
+`
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: repo/api:v2
+      - name: sidecar
+        image: busybox
+`
+	if err := ValidateRevisedPatch(original, revised, "fix-architecture"); err == nil {
+		t.Fatal("expected appended-container rejection against TODO original")
+	}
+}
+
+func TestValidateReviewedPatchRejectsIdentityDrift(t *testing.T) {
+	original := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+spec:
+  containers:
+  - name: api
+    image: repo/api:v1
+`
+	reviewed := strings.Replace(original, "apiVersion: v1", "apiVersion: v0", 1)
+	err := ValidateReviewedPatch(original, reviewed, "image")
+	if err == nil || !strings.Contains(err.Error(), "apiVersion must match") {
+		t.Fatalf("expected apiVersion drift rejection, got %v", err)
+	}
+}
+
+func TestValidateReviewedPatchRejectsAddedMetadataLabels(t *testing.T) {
+	// Hardening: withoutIdentity keeps non-identity metadata under validation, so
+	// a reviewed patch cannot smuggle in labels/annotations/ownerReferences.
+	original := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+spec:
+  containers:
+  - name: api
+    image: repo/api:v1
+`
+	reviewed := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+  labels:
+    injected: "true"
+spec:
+  containers:
+  - name: api
+    image: repo/api:v2
+`
+	if err := ValidateReviewedPatch(original, reviewed, "image"); err == nil {
+		t.Fatal("expected reviewed patch adding metadata labels to be rejected")
+	}
+}
+
+func TestValidateReviewedPatchAllowsConcreteImageEdit(t *testing.T) {
+	original := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+spec:
+  containers:
+  - name: api
+    image: repo/api:v1
+`
+	reviewed := strings.Replace(original, "repo/api:v1", "repo/api@sha256:abc", 1)
+	if err := ValidateReviewedPatch(original, reviewed, "image"); err != nil {
+		t.Fatalf("expected reviewed image change to be accepted: %v", err)
 	}
 }
 

@@ -11,7 +11,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
-func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int) Attempt {
+func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool) Attempt {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
@@ -20,6 +20,16 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 	result := Attempt{Number: attempt, CloneName: name}
 	if pod, err := c.GetTypedPod(ctx, namespace, name); err == nil {
 		updateAttemptFromPod(&result, pod)
+		if pod.Status.Phase == corev1.PodSucceeded {
+			if allowCompletion {
+				result.Ready = true
+				result.Message = "shadow batch pod completed successfully"
+				return result
+			}
+			result.Message = "shadow pod completed before becoming ready"
+			enrichFailure(c, namespace, name, &result)
+			return result
+		}
 		if terminalFailure(result.ExitReason) || pod.Status.Phase == corev1.PodFailed {
 			enrichFailure(c, namespace, name, &result)
 			return result
@@ -54,6 +64,16 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 				continue
 			}
 			updateAttemptFromPod(&result, pod)
+			if pod.Status.Phase == corev1.PodSucceeded {
+				if allowCompletion {
+					result.Ready = true
+					result.Message = "shadow batch pod completed successfully"
+					return result
+				}
+				result.Message = "shadow pod completed before becoming ready"
+				enrichFailure(c, namespace, name, &result)
+				return result
+			}
 			if terminalFailure(result.ExitReason) {
 				enrichFailure(c, namespace, name, &result)
 				return result

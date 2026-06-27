@@ -32,10 +32,21 @@ func revisePatch(ctx context.Context, aiProvider ai.Provider, patch, planType st
 	if err != nil {
 		return patch, false, err
 	}
-	if res == nil || res.RecommendedFix == "" || strings.Contains(res.RecommendedFix, "Review the response manually") {
+	if res == nil {
 		return patch, false, nil
 	}
-	revised := trimFencedYAML(res.RecommendedFix)
+	if res.Unstructured {
+		// Unparseable AI responses must be ignored; fall back to the existing patch.
+		return patch, false, nil
+	}
+	candidate := strings.TrimSpace(res.PatchYAML)
+	if candidate == "" {
+		candidate = strings.TrimSpace(res.RecommendedFix)
+	}
+	if candidate == "" || strings.Contains(candidate, "Review the response manually") {
+		return patch, false, nil
+	}
+	revised := trimFencedYAML(candidate)
 	if err := ValidateRevisedPatch(patch, revised, planType); err != nil {
 		return patch, false, err
 	}

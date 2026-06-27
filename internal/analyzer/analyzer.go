@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/fixora/kubectl-fixora/internal/config"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/redact"
 
@@ -102,7 +103,7 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 								relatedEvents = append(relatedEvents, event)
 							}
 						}
-						finding, ok := a.findingForPod(workerCtx, p, relatedEvents)
+						finding, ok := a.findingForPod(workerCtx, sctx, p, relatedEvents)
 						if ok {
 							mu.Lock()
 							findings = append(findings, finding)
@@ -166,11 +167,19 @@ func (r ScanReport) Envelope() ScanEnvelope {
 	for _, skipped := range r.Skipped {
 		warnings = append(warnings, skipped.Name+": "+skipped.Reason)
 	}
+	provider := os.Getenv("FIXORA_AI_PROVIDER")
+	if provider == "" {
+		if cfg, err := config.Load(); err == nil && cfg.AIProvider != "" {
+			provider = cfg.AIProvider
+		} else {
+			provider = "local"
+		}
+	}
 	return ScanEnvelope{
 		APIVersion: "fixora.dev/v1alpha1",
 		Kind:       "AnalysisReport",
 		Status:     status,
-		Provider:   firstNonEmpty(os.Getenv("FIXORA_AI_PROVIDER"), "local"),
+		Provider:   provider,
 		Problems:   len(r.Findings),
 		Results:    r.Findings,
 		Skipped:    r.Skipped,
@@ -191,7 +200,7 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 			return Finding{}, err
 		}
 		events, _ := a.k.GetEvents(ctx, ns, "")
-		finding, ok := a.findingForPod(ctx, pod, events)
+		finding, ok := a.findingForPod(ctx, nil, pod, events)
 		if !ok {
 			finding = a.healthyFinding(pod)
 		}
@@ -244,9 +253,10 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 	}
 	finding.Evidence = append(finding.Evidence, Evidence{Label: "Owned pods", Value: fmt.Sprint(len(related))})
 	var failures []Finding
+	sctx := NewScanContext(ctx, a.k, a.opts)
 	for _, pod := range related {
 		podEvents := eventsForPod(events, pod)
-		if pf, ok := a.findingForPod(ctx, pod, podEvents); ok {
+		if pf, ok := a.findingForPod(ctx, sctx, pod, podEvents); ok {
 			failures = append(failures, pf)
 		}
 	}
@@ -436,7 +446,7 @@ func (a Analyzer) Cost(ctx context.Context, rest []string) ([]CostRow, error) {
 	return rows, nil
 }
 
-func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube.Event) (Finding, bool) {
+func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube.Pod, events []kube.Event) (Finding, bool) {
 	status, category, severity := podProblem(pod)
 	if status == "" {
 		return Finding{}, false
@@ -460,6 +470,11 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 		},
 		Recommendations: recommendationsForStatus(status, pod),
 	}
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		if container.Name != "" && container.Image != "" {
+			f.Evidence = append(f.Evidence, Evidence{Label: "Container image " + container.Name, Value: container.Image})
+		}
+	}
 
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
@@ -478,7 +493,72 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 			f.Logs = append(f.Logs, LogSnippet{Source: "previous", Text: AggregateLogs(a.redact(logs))})
 		}
 	}
+
+	// Refine diagnostics based on logs
+	var logText string
+	for _, l := range f.Logs {
+		logText += l.Text + "\n"
+	}
+	if strings.Contains(logText, "exec format error") {
+		f.Status = "ExecFormatError"
+		f.Summary = "Container failed to execute due to an architecture mismatch (exec format error)."
+		f.Category = "runtime"
+		f.Recommendations = []Recommendation{{
+			Title:         "Deploy matching image architecture",
+			Description:   "The container image architecture does not match the CPU architecture of the node. Rebuild the image for this platform (e.g., using docker buildx for linux/arm64 or linux/amd64) or schedule the pod on a node with a matching CPU architecture.",
+			PatchType:     "fix-architecture",
+			SafeByDefault: true,
+		}}
+		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
+	} else if strings.Contains(logText, "Permission denied") || strings.Contains(logText, "permission denied") {
+		f.Status = "PermissionDenied"
+		f.Summary = "Container execution failed due to insufficient file or system permissions."
+		f.Category = "security"
+		f.Recommendations = []Recommendation{{
+			Title:         "Adjust securityContext or file permissions",
+			Description:   "Check runAsUser, fsGroup, readOnlyRootFilesystem, and volume/mount directory permissions.",
+			PatchType:     "security",
+			SafeByDefault: false,
+		}}
+	}
+	// Keep the identity aligned with the final status: the log-refinement
+	// branches above can change f.Status after the ID was first built.
+	f.ID = pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + f.Status
+
 	return f, true
+}
+
+// nodeList returns the cluster nodes, using the per-scan cache when a
+// ScanContext is available so concurrent pod workers don't each issue a
+// cluster-wide node listing.
+func (a Analyzer) nodeList(ctx context.Context, sctx *ScanContext) ([]kube.Node, error) {
+	if sctx != nil {
+		return sctx.GetNodes()
+	}
+	return a.k.GetNodes(ctx)
+}
+
+func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanContext, finding *Finding, nodeName string) {
+	if finding == nil || strings.TrimSpace(nodeName) == "" {
+		return
+	}
+	nodes, err := a.nodeList(ctx, sctx)
+	if err != nil {
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform lookup", Value: err.Error()})
+		return
+	}
+	for _, node := range nodes {
+		if node.Metadata.Name != nodeName {
+			continue
+		}
+		architecture := firstNonEmpty(node.Metadata.Labels["kubernetes.io/arch"], node.Metadata.Labels["beta.kubernetes.io/arch"])
+		osName := firstNonEmpty(node.Metadata.Labels["kubernetes.io/os"], node.Metadata.Labels["beta.kubernetes.io/os"], "linux")
+		if architecture != "" {
+			finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform", Value: osName + "/" + architecture})
+		}
+		return
+	}
+	finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform lookup", Value: "node not returned by API"})
 }
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {

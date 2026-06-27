@@ -1,14 +1,18 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const SchemaVersion = 1
@@ -32,6 +36,7 @@ type Config struct {
 	ActiveProfile   string              `json:"activeProfile,omitempty"`
 	Profiles        map[string]Settings `json:"profiles,omitempty"`
 	Contexts        map[string]Settings `json:"contexts,omitempty"`
+	CustomProfiles  map[string]string   `json:"customProfiles,omitempty"`
 }
 
 type Settings struct {
@@ -39,6 +44,7 @@ type Settings struct {
 	AIProvider    string `json:"aiProvider,omitempty"`
 	AIBaseURL     string `json:"aiBaseURL,omitempty"`
 	AIModel       string `json:"aiModel,omitempty"`
+	AIAPIKey      string `json:"aiApiKey,omitempty"`
 	Profile       string `json:"profile,omitempty"`
 	CacheEnabled  *bool  `json:"cacheEnabled,omitempty"`
 	Timeout       string `json:"timeout,omitempty"`
@@ -210,7 +216,9 @@ func Set(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("config set requires key and value")
 	}
-	cfg, err := Load()
+	// Use the raw stored config: Load() applies the active profile onto the
+	// top-level fields, which Save would then persist as resolved values.
+	cfg, err := loadStored()
 	if err != nil {
 		return err
 	}
@@ -272,6 +280,15 @@ func Set(args []string) error {
 	default:
 		return fmt.Errorf("unknown config key %q", args[0])
 	}
+	if cfg.ActiveProfile != "" {
+		if cfg.Profiles == nil {
+			cfg.Profiles = make(map[string]Settings)
+		}
+		profileSettings := cfg.Profiles[cfg.ActiveProfile]
+		if err := setSetting(&profileSettings, args[0], args[1]); err == nil {
+			cfg.Profiles[cfg.ActiveProfile] = profileSettings
+		}
+	}
 	return Save(cfg)
 }
 
@@ -295,7 +312,7 @@ func ProfileCommand(args []string) (any, error) {
 		if len(args) < 2 {
 			return nil, fmt.Errorf("config profile create requires a name")
 		}
-		cfg.Profiles[args[1]] = settingsFromConfig(LoadOrDefault(cfg))
+		cfg.Profiles[args[1]] = BlankProfileSettings()
 	case "use":
 		if len(args) < 2 {
 			return nil, fmt.Errorf("config profile use requires a name")
@@ -373,6 +390,9 @@ func (cfg *Config) ApplySettings(s Settings) {
 	if s.AIModel != "" {
 		cfg.AIModel = s.AIModel
 	}
+	if s.AIAPIKey != "" {
+		cfg.AIAPIKey = s.AIAPIKey
+	}
 	if s.Profile != "" {
 		cfg.Profile = s.Profile
 	}
@@ -413,7 +433,8 @@ func Unset(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("config unset requires a key")
 	}
-	cfg, err := Load()
+	// Raw stored config (see Set): avoid persisting resolved profile values.
+	cfg, err := loadStored()
 	if err != nil {
 		return err
 	}
@@ -448,6 +469,41 @@ func Unset(args []string) error {
 		cfg.ApplyDryRun = def.ApplyDryRun
 	default:
 		return fmt.Errorf("unknown config key %q", args[0])
+	}
+	if cfg.ActiveProfile != "" {
+		if cfg.Profiles == nil {
+			cfg.Profiles = make(map[string]Settings)
+		}
+		profileSettings := cfg.Profiles[cfg.ActiveProfile]
+		switch key {
+		case "ai.provider", "provider":
+			profileSettings.AIProvider = ""
+		case "ai.api_key", "api_key", "apikey":
+			profileSettings.AIAPIKey = ""
+		case "ai.base_url", "base_url", "baseurl":
+			profileSettings.AIBaseURL = ""
+		case "ai.model", "model":
+			profileSettings.AIModel = ""
+		case "cache.enabled":
+			profileSettings.CacheEnabled = nil
+		case "profile", "ai.profile":
+			profileSettings.Profile = ""
+		case "timeout":
+			profileSettings.Timeout = ""
+		case "log_tail", "logtail", "log-tail":
+			profileSettings.LogTail = nil
+		case "max_log_bytes", "maxlogbytes", "max-logs-bytes":
+			profileSettings.MaxLogBytes = nil
+		case "default_output", "defaultoutput", "output":
+			profileSettings.DefaultOutput = ""
+		case "redact":
+			profileSettings.Redact = nil
+		case "paranoid":
+			profileSettings.Paranoid = nil
+		case "apply_requires_dry_run", "applydryrun":
+			profileSettings.ApplyDryRun = nil
+		}
+		cfg.Profiles[cfg.ActiveProfile] = profileSettings
 	}
 	return Save(cfg)
 }
@@ -501,11 +557,37 @@ func Validate(cfg Config) ValidationResult {
 	return result
 }
 
+func FirstNonEmpty(values ...string) string {
+	for _, val := range values {
+		if val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
 func Profiles() []string {
-	return []string{"sre", "security", "finops", "platform", "beginner"}
+	builtIn := []string{"sre", "security", "finops", "platform", "beginner"}
+	cfg, err := Load()
+	if err != nil {
+		return builtIn
+	}
+	out := append([]string{}, builtIn...)
+	for name := range cfg.CustomProfiles {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func ProfilePrompt(profile string) string {
+	cfg, err := Load()
+	if err == nil && cfg.CustomProfiles != nil {
+		if prompt, ok := cfg.CustomProfiles[strings.ToLower(profile)]; ok {
+			return prompt
+		}
+	}
 	switch strings.ToLower(profile) {
 	case "security":
 		return "Prioritize least privilege, policy failures, secret safety, container hardening, and admission controller evidence."
@@ -543,23 +625,278 @@ func AddCustomAnalyzer(path string) error {
 	return Save(cfg)
 }
 
-func Auth(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("auth set requires provider and api key")
+// readSecret reads a secret without echoing it when stdin is a terminal, and
+// falls back to the buffered reader for non-TTY input (pipes, tests).
+func readSecret(reader *bufio.Reader) string {
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err == nil {
+			return strings.TrimSpace(string(b))
+		}
 	}
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
+func Auth(args []string) error {
 	cfg, err := Load()
 	if err != nil {
 		return err
 	}
-	cfg.AIProvider = args[0]
-	cfg.AIAPIKey = args[1]
-	if len(args) > 2 {
-		cfg.AIBaseURL = args[2]
+
+	if len(args) < 2 {
+		reader := bufio.NewReader(os.Stdin)
+
+		type providerDef struct {
+			id      string
+			name    string
+			baseURL string
+			models  []string
+		}
+
+		known := []providerDef{
+			{"openai", "OpenAI", "https://api.openai.com/v1", []string{"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"}},
+			{"gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"}},
+			{"anthropic", "Anthropic", "", []string{"claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"}},
+			{"ollama", "Ollama (Local)", "http://localhost:11434/v1", []string{"llama3", "mistral", "gemma", "phi3"}},
+			{"amazonbedrock", "AWS Bedrock", "", []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "meta.llama3-70b-instruct-v1:0"}},
+			{"azureopenai", "Azure OpenAI", "https://<your-resource>.openai.azure.com/", []string{"gpt-4o", "gpt-4", "gpt-35-turbo"}},
+		}
+
+		fmt.Println("Select AI Provider:")
+		for i, p := range known {
+			fmt.Printf("  %d. %s\n", i+1, p.name)
+		}
+		fmt.Printf("  %d. Custom\n", len(known)+1)
+		fmt.Print("Enter choice [1]: ")
+
+		choiceStr, _ := reader.ReadString('\n')
+		choiceStr = strings.TrimSpace(choiceStr)
+		choice := 1
+		if choiceStr != "" {
+			if c, err := strconv.Atoi(choiceStr); err == nil {
+				choice = c
+			}
+		}
+
+		var provider string
+		var baseURL string
+		var models []string
+
+		if choice > 0 && choice <= len(known) {
+			p := known[choice-1]
+			provider = p.id
+			baseURL = p.baseURL
+			models = p.models
+		} else {
+			fmt.Print("Enter Custom Provider Name (e.g., groq, vertex): ")
+			p, _ := reader.ReadString('\n')
+			provider = strings.TrimSpace(p)
+		}
+
+		fmt.Print("\nAPI Key: ")
+		key := readSecret(reader)
+		if key == "" && provider != "ollama" {
+			return fmt.Errorf("api key is required for %s", provider)
+		}
+
+		if baseURL != "" {
+			fmt.Printf("\nBase URL [%s]: ", baseURL)
+		} else {
+			fmt.Print("\nBase URL (optional, press Enter to skip): ")
+		}
+		urlInput, _ := reader.ReadString('\n')
+		urlInput = strings.TrimSpace(urlInput)
+		if urlInput != "" {
+			baseURL = urlInput
+		}
+
+		var model string
+		if len(models) > 0 {
+			if dynModels := fetchModelsDynamically(provider, baseURL, key); len(dynModels) > 0 {
+				models = dynModels
+				fmt.Printf("\nFetched %d models from %s.\n", len(models), provider)
+			}
+
+			fmt.Println("\nSelect Model:")
+			for i, m := range models {
+				fmt.Printf("  %d. %s\n", i+1, m)
+			}
+			fmt.Printf("  %d. Custom\n", len(models)+1)
+			fmt.Print("Enter choice [1]: ")
+
+			mChoiceStr, _ := reader.ReadString('\n')
+			mChoiceStr = strings.TrimSpace(mChoiceStr)
+			mChoice := 1
+			if mChoiceStr != "" {
+				if c, err := strconv.Atoi(mChoiceStr); err == nil {
+					mChoice = c
+				}
+			}
+
+			if mChoice > 0 && mChoice <= len(models) {
+				model = models[mChoice-1]
+			} else {
+				fmt.Print("Enter Custom Model Name: ")
+				m, _ := reader.ReadString('\n')
+				model = strings.TrimSpace(m)
+			}
+		} else {
+			fmt.Print("\nModel (optional, press Enter to skip): ")
+			m, _ := reader.ReadString('\n')
+			model = strings.TrimSpace(m)
+		}
+
+		cfg.AIProvider = provider
+		cfg.AIAPIKey = key
+		cfg.AIBaseURL = baseURL
+		cfg.AIModel = model
+
+		// Profile selection
+		promptProfiles := Profiles()
+		activeProfile := FirstNonEmpty(cfg.Profile, "sre")
+		activeIdx := 1
+		for i, p := range promptProfiles {
+			if strings.EqualFold(p, activeProfile) {
+				activeIdx = i + 1
+				break
+			}
+		}
+
+		fmt.Printf("\nSelect AI Prompt Profile (current: %s):\n", activeProfile)
+		for i, p := range promptProfiles {
+			desc := ProfilePrompt(p)
+			if len(desc) > 70 {
+				desc = desc[:67] + "..."
+			}
+			fmt.Printf("  %d. %s\n     %s\n", i+1, p, desc)
+		}
+		fmt.Printf("  %d. Create Custom Profile\n", len(promptProfiles)+1)
+		fmt.Printf("Enter choice [%d]: ", activeIdx)
+
+		pChoiceStr, _ := reader.ReadString('\n')
+		pChoiceStr = strings.TrimSpace(pChoiceStr)
+		pChoice := activeIdx
+		if pChoiceStr != "" {
+			if c, err := strconv.Atoi(pChoiceStr); err == nil {
+				pChoice = c
+			}
+		}
+
+		var selectedProfile string
+		if pChoice > 0 && pChoice <= len(promptProfiles) {
+			selectedProfile = promptProfiles[pChoice-1]
+		} else if pChoice == len(promptProfiles)+1 {
+			fmt.Print("\nEnter Custom Profile Name: ")
+			pName, _ := reader.ReadString('\n')
+			pName = strings.TrimSpace(pName)
+			if pName != "" {
+				fmt.Print("Enter Custom Prompt Instructions: ")
+				pPrompt, _ := reader.ReadString('\n')
+				pPrompt = strings.TrimSpace(pPrompt)
+				if pPrompt != "" {
+					if cfg.CustomProfiles == nil {
+						cfg.CustomProfiles = make(map[string]string)
+					}
+					cfg.CustomProfiles[strings.ToLower(pName)] = pPrompt
+					selectedProfile = pName
+				}
+			}
+		}
+
+		if selectedProfile != "" {
+			cfg.Profile = selectedProfile
+		}
+	} else {
+		cfg.AIProvider = args[0]
+		cfg.AIAPIKey = args[1]
+		if len(args) > 2 {
+			cfg.AIBaseURL = args[2]
+		}
+		if len(args) > 3 {
+			cfg.AIModel = args[3]
+		}
 	}
-	if len(args) > 3 {
-		cfg.AIModel = args[3]
-	}
+
 	return Save(cfg)
+}
+
+func fetchModelsDynamically(provider, baseURL, apiKey string) []string {
+	client := &http.Client{Timeout: 3 * time.Second}
+	var reqURL string
+
+	switch provider {
+	case "openai":
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models"
+	case "gemini":
+		if baseURL == "" {
+			baseURL = "https://generativelanguage.googleapis.com/v1beta"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models?key=" + apiKey
+	case "ollama":
+		if baseURL == "" {
+			baseURL = "http://localhost:11434/v1"
+		}
+		reqURL = strings.TrimSuffix(baseURL, "/") + "/models"
+	default:
+		return nil
+	}
+
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil
+	}
+
+	if provider == "openai" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil
+	}
+
+	var fetched []string
+	if provider == "gemini" && len(result.Models) > 0 {
+		for _, m := range result.Models {
+			name := strings.TrimPrefix(m.Name, "models/")
+			fetched = append(fetched, name)
+		}
+	} else if len(result.Data) > 0 {
+		for _, d := range result.Data {
+			fetched = append(fetched, d.ID)
+		}
+	}
+	return fetched
+}
+
+// LoadStored returns the persisted config without applying the active profile.
+// Write paths must use it so resolved profile values are not fused into the
+// top-level config on Save.
+func LoadStored() (Config, error) {
+	return loadStored()
 }
 
 func loadStored() (Config, error) {
@@ -614,6 +951,28 @@ func LoadOrDefault(cfg Config) Config {
 	return cfg
 }
 
+func BlankProfileSettings() Settings {
+	cacheEnabled := true
+	logTail := 120
+	maxLogBytes := 24000
+	redact := true
+	applyDryRun := true
+	return Settings{
+		AIProvider:    "",
+		AIBaseURL:     "",
+		AIModel:       "",
+		AIAPIKey:      "",
+		Profile:       "sre",
+		CacheEnabled:  &cacheEnabled,
+		Timeout:       "90s",
+		LogTail:       &logTail,
+		MaxLogBytes:   &maxLogBytes,
+		DefaultOutput: "text",
+		Redact:        &redact,
+		ApplyDryRun:   &applyDryRun,
+	}
+}
+
 func settingsFromConfig(cfg Config) Settings {
 	cacheEnabled := cfg.CacheEnabled
 	logTail := cfg.LogTail
@@ -625,6 +984,7 @@ func settingsFromConfig(cfg Config) Settings {
 		AIProvider:    cfg.AIProvider,
 		AIBaseURL:     cfg.AIBaseURL,
 		AIModel:       cfg.AIModel,
+		AIAPIKey:      cfg.AIAPIKey,
 		Profile:       cfg.Profile,
 		CacheEnabled:  &cacheEnabled,
 		Timeout:       cfg.Timeout,
@@ -643,6 +1003,8 @@ func setSetting(settings *Settings, key, value string) error {
 		settings.Namespace = value
 	case "ai.provider", "provider":
 		settings.AIProvider = value
+	case "ai.api_key", "api_key", "apikey":
+		settings.AIAPIKey = value
 	case "ai.base_url", "base_url", "baseurl":
 		settings.AIBaseURL = value
 	case "ai.model", "model":

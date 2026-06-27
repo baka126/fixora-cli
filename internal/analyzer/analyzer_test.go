@@ -317,6 +317,26 @@ func TestScanReportStopsWorkersOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestPodOnlyIncidentScanSkipsPodSecurityHygiene(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{},
+		items: map[string][]map[string]any{
+			"pods": {
+				{
+					"metadata": map[string]any{"name": "api", "namespace": "prod"},
+					"spec": map[string]any{
+						"containers": []any{map[string]any{"name": "api"}},
+					},
+				},
+			},
+		},
+	}
+	report := New(reader, Options{Namespace: "prod", Filters: []string{"pod"}}).ScanReport(context.Background())
+	if len(report.Findings) != 0 {
+		t.Fatalf("pod-only incident scan should skip pod security hygiene, got %#v", report.Findings)
+	}
+}
+
 func TestRedactFindingForAIRemovesClusterSecrets(t *testing.T) {
 	finding := Finding{
 		ID:      "prod/api",
@@ -337,6 +357,90 @@ data:
 	}
 }
 
+func TestRedactFindingForAIDoesNotMutateOriginalEvidence(t *testing.T) {
+	original := Finding{
+		Evidence: []Evidence{{Label: "Image", Value: "repo/app@sha256:0123456789abcdef"}},
+		Logs:     []LogSnippet{{Source: "current", Text: "password=hunter2"}},
+	}
+	redacted := RedactFindingForAI(original)
+	if original.Evidence[0].Value != "repo/app@sha256:0123456789abcdef" || original.Logs[0].Text != "password=hunter2" {
+		t.Fatalf("AI redaction mutated original finding: %#v", original)
+	}
+	if redacted.Logs[0].Text == original.Logs[0].Text {
+		t.Fatalf("expected independent redacted copy: %#v", redacted)
+	}
+}
+
+func TestExecFormatFindingIDMatchesStatusAndCachesNodes(t *testing.T) {
+	pods := []kube.Pod{
+		{
+			Metadata: kube.ObjectMeta{Name: "api-0", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "api",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		},
+		{
+			Metadata: kube.ObjectMeta{Name: "api-1", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "api",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		},
+	}
+	var nodeCalls int32
+	reader := fakeReader{
+		pods:      kube.PodList{Items: pods},
+		logText:   "standard_init_linux.go: exec format error",
+		nodes:     []kube.Node{{Metadata: kube.ObjectMeta{Name: "node-a", Labels: map[string]string{"kubernetes.io/arch": "arm64", "kubernetes.io/os": "linux"}}}},
+		nodeCalls: &nodeCalls,
+	}
+	report := New(reader, Options{Namespace: "prod", IncludeLogs: true}).ScanReport(context.Background())
+	if got := len(report.Findings); got != 2 {
+		t.Fatalf("expected 2 findings (one per pod), got %d", got)
+	}
+	for _, f := range report.Findings {
+		if f.Status != "ExecFormatError" {
+			t.Fatalf("expected ExecFormatError status, got %q", f.Status)
+		}
+		if want := f.Namespace + "/" + f.PodName + "/" + f.Status; f.ID != want {
+			t.Fatalf("finding ID %q does not match final status, want %q", f.ID, want)
+		}
+	}
+	// Two pods, one shared node listing thanks to the per-scan cache.
+	if got := atomic.LoadInt32(&nodeCalls); got != 1 {
+		t.Fatalf("expected 1 cached node listing across workers, got %d", got)
+	}
+}
+
+func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
+	// No endpointslices key present (GetResourceItems returns nil,nil); the
+	// analyzer must consult legacy Endpoints rather than fabricate NoEndpoints.
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"services": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api"},
+				"spec":     map[string]any{"selector": map[string]any{"app": "api"}},
+			},
+		},
+		"endpoints": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api"},
+				"subsets": []any{
+					map[string]any{"addresses": []any{map[string]any{"ip": "10.0.0.10"}}},
+				},
+			},
+		},
+	})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeServiceEndpoints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForResource(t, findings, "api")
+}
+
 type fakeReader struct {
 	pods      kube.PodList
 	events    []kube.Event
@@ -345,6 +449,9 @@ type fakeReader struct {
 	runErr    error
 	eventsErr error
 	logFn     func()
+	logText   string
+	nodes     []kube.Node
+	nodeCalls *int32
 }
 
 func (f fakeReader) GetPods(context.Context, string, bool) (kube.PodList, error) {
@@ -377,14 +484,17 @@ func (f fakeReader) GetEvents(context.Context, string, string) ([]kube.Event, er
 }
 
 func (f fakeReader) GetNodes(context.Context) ([]kube.Node, error) {
-	return nil, fmt.Errorf("not implemented")
+	if f.nodeCalls != nil {
+		atomic.AddInt32(f.nodeCalls, 1)
+	}
+	return f.nodes, nil
 }
 
 func (f fakeReader) Logs(context.Context, string, string, bool) (string, error) {
 	if f.logFn != nil {
 		f.logFn()
 	}
-	return "", nil
+	return f.logText, nil
 }
 
 func (f fakeReader) Run(context.Context, ...string) ([]byte, error) {

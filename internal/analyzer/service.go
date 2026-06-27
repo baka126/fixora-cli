@@ -10,13 +10,9 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	endpoints, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "endpoints")
+	endpointCounts, err := serviceEndpointCounts(ctx, a.opts.Namespace, a.opts.AllNS)
 	if err != nil {
 		return nil, err
-	}
-	endpointByKey := map[string]map[string]any{}
-	for _, endpoint := range endpoints {
-		endpointByKey[objectKey(endpoint)] = endpoint
 	}
 	out := []Finding{}
 	for _, service := range services {
@@ -29,10 +25,9 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 			continue
 		}
 		namespace, name := objectNamespaceName(service)
-		endpoint := endpointByKey[keyFor(namespace, name)]
-		subsets := nestedSlice(endpoint, "subsets")
-		ready, notReady := endpointAddressCounts(subsets)
-		if len(subsets) == 0 || ready == 0 {
+		counts := endpointCounts[keyFor(namespace, name)]
+		ready, notReady := counts.Ready, counts.NotReady
+		if !counts.Seen || ready == 0 {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Service/"+name+"/NoEndpoints"),
 				Namespace:    namespace,
@@ -80,4 +75,73 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+type endpointCounts struct {
+	Seen     bool
+	Ready    int
+	NotReady int
+}
+
+func serviceEndpointCounts(ctx *ScanContext, namespace string, allNS bool) (map[string]endpointCounts, error) {
+	slices, sliceErr := ctx.GetResourceItems(namespace, allNS, "endpointslices.discovery.k8s.io")
+	if sliceErr == nil && len(slices) > 0 {
+		return endpointSliceCounts(slices), nil
+	}
+	// EndpointSlices were missing (absent key returns nil,nil) or empty: fall
+	// back to legacy Endpoints so we don't fabricate NoEndpoints findings.
+	endpoints, err := ctx.GetResourceItems(namespace, allNS, "endpoints")
+	if err != nil {
+		if sliceErr == nil {
+			// Slices queried cleanly but empty and legacy endpoints are
+			// unavailable: trust the (empty) slice view.
+			return endpointSliceCounts(slices), nil
+		}
+		return nil, err
+	}
+	return legacyEndpointCounts(endpoints), nil
+}
+
+func legacyEndpointCounts(endpoints []map[string]any) map[string]endpointCounts {
+	out := map[string]endpointCounts{}
+	for _, endpoint := range endpoints {
+		ready, notReady := endpointAddressCounts(nestedSlice(endpoint, "subsets"))
+		counts := endpointCounts{Seen: true, Ready: ready, NotReady: notReady}
+		out[objectKey(endpoint)] = counts
+	}
+	return out
+}
+
+func endpointSliceCounts(slices []map[string]any) map[string]endpointCounts {
+	out := map[string]endpointCounts{}
+	for _, slice := range slices {
+		namespace, _ := objectNamespaceName(slice)
+		labels, _ := objectLabelsAnnotations(slice)
+		serviceName := labels["kubernetes.io/service-name"]
+		if serviceName == "" {
+			continue
+		}
+		key := keyFor(namespace, serviceName)
+		counts := out[key]
+		counts.Seen = true
+		for _, endpoint := range nestedSlice(slice, "endpoints") {
+			endpointMap, _ := endpoint.(map[string]any)
+			addresses := nestedSlice(endpointMap, "addresses")
+			if endpointReady(endpointMap) {
+				counts.Ready += len(addresses)
+			} else {
+				counts.NotReady += len(addresses)
+			}
+		}
+		out[key] = counts
+	}
+	return out
+}
+
+func endpointReady(endpoint map[string]any) bool {
+	conditions := nestedMap(endpoint, "conditions")
+	if conditions["ready"] == nil {
+		return true
+	}
+	return boolValue(conditions["ready"])
 }
