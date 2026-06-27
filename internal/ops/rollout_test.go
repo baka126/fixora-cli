@@ -47,14 +47,18 @@ func TestVerifyRolloutTimeout(t *testing.T) {
 	checker := fakeRolloutChecker{
 		ok:     false,
 		output: "Waiting for deployment rollout to finish: 1 of 3 updated replicas are available",
-		events: []kube.Event{{Type: "Warning", Reason: "FailedCreate", Message: "pod api-x failed", InvolvedObject: kube.ObjectReference{Name: "api"}}},
+		events: []kube.Event{
+			{Type: "Warning", Reason: "FailedCreate", Message: "pod api-x failed", InvolvedObject: kube.ObjectReference{Name: "api", Namespace: "prod"}},
+			// Same name, different namespace: must NOT be matched (cross-namespace collision guard).
+			{Type: "Warning", Reason: "FailedCreate", Message: "other-ns noise", InvolvedObject: kube.ObjectReference{Name: "api", Namespace: "staging"}},
+		},
 	}
 	out := VerifyRollout(context.Background(), checker, deployFinding(), planWithRollback(), time.Minute)
 	if out.Class != RolloutTimeout {
 		t.Fatalf("got %q want %q", out.Class, RolloutTimeout)
 	}
 	if len(out.Events) != 1 {
-		t.Fatalf("expected 1 matched event, got %#v", out.Events)
+		t.Fatalf("expected 1 matched event (namespace-scoped), got %#v", out.Events)
 	}
 	if out.Rollback.Command == "" {
 		t.Fatalf("failed rollout must attach a rollback offer")

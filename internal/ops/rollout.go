@@ -61,7 +61,7 @@ func VerifyRollout(ctx context.Context, checker RolloutChecker, finding analyzer
 
 	if events, evErr := checker.GetEvents(ctx, ns, ""); evErr == nil {
 		for _, ev := range events {
-			if ev.InvolvedObject.Name == name {
+			if ev.InvolvedObject.Name == name && (ns == "" || ev.InvolvedObject.Namespace == ns) {
 				outcome.Events = append(outcome.Events, ev.Type+" "+ev.Reason+": "+ev.Message)
 			}
 		}
