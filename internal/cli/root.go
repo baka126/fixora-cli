@@ -727,6 +727,17 @@ func reconcileDeliveryFlags(opts *options, warn io.Writer) {
 		set("pr", "gitops")
 		opts.sourcePatch = true // legacy non-shadow path (gitops disables shadow) still writes the source patch
 	}
+	// Mirror the canonical delivery onto the legacy booleans so the non-shadow
+	// path (e.g. --quick --delivery=cluster|pr) performs the requested delivery
+	// instead of silently only writing a patch file. The shadow path consumes
+	// opts.delivery directly and returns before these booleans are read, so this
+	// cannot double-deliver. Idempotent with the legacy-flag mappings above.
+	switch strings.ToLower(strings.TrimSpace(opts.delivery)) {
+	case "cluster":
+		opts.apply = true
+	case "pr":
+		opts.sourcePatch = true
+	}
 }
 
 func applyWorkflowDefaults(cmd string, opts *options) {
@@ -2707,7 +2718,9 @@ func prBody(result shadow.Result, sourcePatch repo.SourcePatch) string {
 }
 
 func runInteractiveProfileManager(stdout, stderr io.Writer) int {
-	cfg, err := config.Load()
+	// Raw load: editing/switching profiles must not fuse resolved profile
+	// values into the top-level config on save.
+	cfg, err := config.LoadStored()
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -2770,9 +2783,6 @@ func runInteractiveProfileManager(stdout, stderr io.Writer) int {
 			cfg.Profiles[pName] = config.BlankProfileSettings()
 			cfg.ActiveProfile = pName
 
-			// Apply the new profile to the active configuration immediately
-			cfg.ApplySettings(cfg.Profiles[pName])
-
 			if err := config.Save(cfg); err != nil {
 				fmt.Fprintf(stderr, "error saving config: %v\n", err)
 				return 1
@@ -2796,7 +2806,6 @@ func runInteractiveProfileManager(stdout, stderr io.Writer) int {
 		optStr = strings.TrimSpace(optStr)
 		if optStr == "1" {
 			cfg.ActiveProfile = pName
-			cfg.ApplySettings(settings)
 			if err := config.Save(cfg); err != nil {
 				fmt.Fprintf(stderr, "error saving config: %v\n", err)
 				return 1

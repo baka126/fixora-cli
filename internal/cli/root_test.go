@@ -708,6 +708,22 @@ func TestReconcileDeliveryFlags(t *testing.T) {
 			t.Fatalf("explicit --delivery must win, got %q", o.delivery)
 		}
 	})
+	t.Run("delivery=cluster sets apply for the non-shadow path", func(t *testing.T) {
+		var w bytes.Buffer
+		o := &options{delivery: "cluster", visited: map[string]bool{"delivery": true}}
+		reconcileDeliveryFlags(o, &w)
+		if !o.apply {
+			t.Fatal("--delivery=cluster must set apply so --quick performs the apply")
+		}
+	})
+	t.Run("delivery=pr sets sourcePatch for the non-shadow path", func(t *testing.T) {
+		var w bytes.Buffer
+		o := &options{delivery: "pr", visited: map[string]bool{"delivery": true}}
+		reconcileDeliveryFlags(o, &w)
+		if !o.sourcePatch {
+			t.Fatal("--delivery=pr must set sourcePatch so --quick writes the source patch")
+		}
+	})
 }
 
 func TestPrintHelpDocumentsDelivery(t *testing.T) {

@@ -41,6 +41,42 @@ func TestValidateWarnsAboutPlaintextSecrets(t *testing.T) {
 	}
 }
 
+func TestSetDoesNotLeakResolvedProfileValuesIntoBaseConfig(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	cfg := Default()
+	cfg.AIModel = "base-model"
+	cfg.ActiveProfile = "prod"
+	cfg.Profiles = map[string]Settings{"prod": {AIModel: "profile-model"}}
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Mutate an unrelated key; the active profile's model must not be written
+	// back onto the top-level config.
+	if err := Set([]string{"redact", "true"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := loadStored()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AIModel != "base-model" {
+		t.Fatalf("profile model leaked into base config: got %q want %q", stored.AIModel, "base-model")
+	}
+}
+
+func TestUnsetWithActiveProfileAndNilProfilesDoesNotPanic(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	cfg := Default()
+	cfg.ActiveProfile = "prod"
+	cfg.Profiles = nil
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unset([]string{"timeout"}); err != nil {
+		t.Fatalf("unset with active profile and nil profiles failed: %v", err)
+	}
+}
+
 func TestSetUnsetAndResolvedSources(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 

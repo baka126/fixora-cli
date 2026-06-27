@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 const SchemaVersion = 1
@@ -214,7 +216,9 @@ func Set(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("config set requires key and value")
 	}
-	cfg, err := Load()
+	// Use the raw stored config: Load() applies the active profile onto the
+	// top-level fields, which Save would then persist as resolved values.
+	cfg, err := loadStored()
 	if err != nil {
 		return err
 	}
@@ -429,7 +433,8 @@ func Unset(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("config unset requires a key")
 	}
-	cfg, err := Load()
+	// Raw stored config (see Set): avoid persisting resolved profile values.
+	cfg, err := loadStored()
 	if err != nil {
 		return err
 	}
@@ -466,6 +471,9 @@ func Unset(args []string) error {
 		return fmt.Errorf("unknown config key %q", args[0])
 	}
 	if cfg.ActiveProfile != "" {
+		if cfg.Profiles == nil {
+			cfg.Profiles = make(map[string]Settings)
+		}
 		profileSettings := cfg.Profiles[cfg.ActiveProfile]
 		switch key {
 		case "ai.provider", "provider":
@@ -617,6 +625,20 @@ func AddCustomAnalyzer(path string) error {
 	return Save(cfg)
 }
 
+// readSecret reads a secret without echoing it when stdin is a terminal, and
+// falls back to the buffered reader for non-TTY input (pipes, tests).
+func readSecret(reader *bufio.Reader) string {
+	if fd := int(os.Stdin.Fd()); term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Println()
+		if err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line)
+}
+
 func Auth(args []string) error {
 	cfg, err := Load()
 	if err != nil {
@@ -638,8 +660,8 @@ func Auth(args []string) error {
 			{"gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"}},
 			{"anthropic", "Anthropic", "", []string{"claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"}},
 			{"ollama", "Ollama (Local)", "http://localhost:11434/v1", []string{"llama3", "mistral", "gemma", "phi3"}},
-			{"bedrock", "AWS Bedrock", "", []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "meta.llama3-70b-instruct-v1:0"}},
-			{"azure", "Azure OpenAI", "https://<your-resource>.openai.azure.com/", []string{"gpt-4o", "gpt-4", "gpt-35-turbo"}},
+			{"amazonbedrock", "AWS Bedrock", "", []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "anthropic.claude-3-haiku-20240307-v1:0", "meta.llama3-70b-instruct-v1:0"}},
+			{"azureopenai", "Azure OpenAI", "https://<your-resource>.openai.azure.com/", []string{"gpt-4o", "gpt-4", "gpt-35-turbo"}},
 		}
 
 		fmt.Println("Select AI Provider:")
@@ -674,8 +696,7 @@ func Auth(args []string) error {
 		}
 
 		fmt.Print("\nAPI Key: ")
-		key, _ := reader.ReadString('\n')
-		key = strings.TrimSpace(key)
+		key := readSecret(reader)
 		if key == "" && provider != "ollama" {
 			return fmt.Errorf("api key is required for %s", provider)
 		}
@@ -869,6 +890,13 @@ func fetchModelsDynamically(provider, baseURL, apiKey string) []string {
 		}
 	}
 	return fetched
+}
+
+// LoadStored returns the persisted config without applying the active profile.
+// Write paths must use it so resolved profile values are not fused into the
+// top-level config on Save.
+func LoadStored() (Config, error) {
+	return loadStored()
 }
 
 func loadStored() (Config, error) {
