@@ -64,6 +64,19 @@ func TestExplainOpenAIMarksNonJSONUnstructured(t *testing.T) {
 	}
 }
 
+func TestParseAIContentEnforcesContract(t *testing.T) {
+	if res, _ := parseAIContent("not json at all"); res == nil || !res.Unstructured {
+		t.Fatalf("malformed content must be Unstructured, got %#v", res)
+	}
+	if res, _ := parseAIContent("{}"); res == nil || !res.Unstructured {
+		t.Fatalf("empty object must be Unstructured (no required fields), got %#v", res)
+	}
+	res, err := parseAIContent(`{"summary":"s","rootCause":"r","recommendedFix":"f"}`)
+	if err != nil || res == nil || res.Unstructured {
+		t.Fatalf("valid contract content must be structured, got %#v err=%v", res, err)
+	}
+}
+
 func TestExplainAzureOpenAIUsesDeploymentEndpoint(t *testing.T) {
 	var gotPath, gotKey string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

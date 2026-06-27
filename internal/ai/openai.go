@@ -268,21 +268,7 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("AI provider returned no choices")
 	}
-	content := strings.TrimSpace(decoded.Choices[0].Message.Content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-	var result analyzer.AIResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		result = analyzer.AIResult{
-			Summary:      "AI response was not valid JSON.",
-			RootCause:    content,
-			Warnings:     []string{"AI response could not be parsed; falling back to the deterministic plan."},
-			Unstructured: true,
-		}
-	}
-	return &result, nil
+	return parseAIContent(decoded.Choices[0].Message.Content)
 }
 
 func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -482,6 +468,10 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 	return parseAIContent(decoded.Content[0].Text)
 }
 
+// parseAIContent enforces the JSON contract for every provider: malformed
+// content, or a syntactically valid but empty object, yields an Unstructured
+// result so callers fall back to the deterministic plan instead of failing
+// hard or surfacing blank AI sections.
 func parseAIContent(content string) (*analyzer.AIResult, error) {
 	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
@@ -490,9 +480,23 @@ func parseAIContent(content string) (*analyzer.AIResult, error) {
 	content = strings.TrimSpace(content)
 	var result analyzer.AIResult
 	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return nil, fmt.Errorf("failed to parse AI response as JSON: %w (content: %q)", err, content)
+		return unstructuredAIResult(content), nil
+	}
+	if strings.TrimSpace(result.Summary) == "" &&
+		strings.TrimSpace(result.RootCause) == "" &&
+		strings.TrimSpace(result.RecommendedFix) == "" {
+		return unstructuredAIResult(content), nil
 	}
 	return &result, nil
+}
+
+func unstructuredAIResult(content string) *analyzer.AIResult {
+	return &analyzer.AIResult{
+		Summary:      "AI response did not satisfy the JSON contract.",
+		RootCause:    content,
+		Warnings:     []string{"AI response could not be parsed; falling back to the deterministic plan."},
+		Unstructured: true,
+	}
 }
 
 func defaultBaseURL(provider string) string {
