@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -805,5 +806,115 @@ func TestPrintHelpDocumentsDelivery(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, out)
 		}
+	}
+}
+
+type fakeGate struct {
+	ok       bool
+	output   string
+	statErr  error
+	events   []kube.Event
+	runCalls [][]string
+}
+
+func (f *fakeGate) RolloutStatus(_ context.Context, _, _, _ string, _ time.Duration) (bool, string, error) {
+	return f.ok, f.output, f.statErr
+}
+func (f *fakeGate) GetEvents(_ context.Context, _, _ string) ([]kube.Event, error) {
+	return f.events, nil
+}
+func (f *fakeGate) Run(_ context.Context, args ...string) ([]byte, error) {
+	f.runCalls = append(f.runCalls, args)
+	return nil, nil
+}
+
+func gateFinding() analyzer.Finding {
+	return analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}
+}
+func gatePlan() fix.Plan {
+	return fix.Plan{RollbackCommand: "kubectl rollout undo deployment/api -n prod"}
+}
+
+func TestGateRolloutHealthyReturnsZero(t *testing.T) {
+	g := &fakeGate{ok: true, output: "successfully rolled out"}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, gateFinding(), gatePlan(), time.Minute)
+	if code != 0 {
+		t.Fatalf("healthy rollout must return 0, got %d", code)
+	}
+	if len(g.runCalls) != 0 {
+		t.Fatalf("healthy rollout must not run rollback, got %#v", g.runCalls)
+	}
+	// Status lines go to stderr so structured stdout (json/yaml/sarif) stays clean.
+	if out.Len() != 0 {
+		t.Fatalf("gate must not write status to stdout, got %q", out.String())
+	}
+	if !strings.Contains(errb.String(), "rollout healthy") {
+		t.Fatalf("healthy status must go to stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutSkippedReturnsZero(t *testing.T) {
+	g := &fakeGate{ok: false}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: "Pod", ResourceName: "api-0", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, gatePlan(), time.Minute)
+	if code != 0 {
+		t.Fatalf("skipped rollout must return 0, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "warning:") {
+		t.Fatalf("skipped rollout must warn on stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutUnknownReturnsZero(t *testing.T) {
+	g := &fakeGate{statErr: errors.New("forbidden")}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, gateFinding(), gatePlan(), time.Minute)
+	if code != 0 {
+		t.Fatalf("unknown rollout must return 0, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "warning:") {
+		t.Fatalf("unknown rollout must warn on stderr, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutMissingNameFailsVerification(t *testing.T) {
+	g := &fakeGate{ok: false}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: "Deployment", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, gatePlan(), time.Minute)
+	if code == 0 {
+		t.Fatal("missing rollout target name must fail verification")
+	}
+	if !strings.Contains(errb.String(), "missing resource name") {
+		t.Fatalf("missing name failure must explain the verification issue, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutFailureOffersAndRunsRollback(t *testing.T) {
+	g := &fakeGate{ok: false, output: "Waiting for deployment rollout to finish: 1 of 3 updated replicas are available"}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader("y\n"), false, g, gateFinding(), gatePlan(), time.Minute)
+	if code == 0 {
+		t.Fatal("failed rollout must return non-zero")
+	}
+	if len(g.runCalls) != 1 || g.runCalls[0][0] != "rollout" {
+		t.Fatalf("confirmed rollback must run kubectl rollout undo, got %#v", g.runCalls)
+	}
+}
+
+func TestGateRolloutYesModeReportsWithoutRunning(t *testing.T) {
+	g := &fakeGate{ok: false, output: "Waiting for deployment rollout to finish"}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), true, g, gateFinding(), gatePlan(), time.Minute)
+	if code == 0 {
+		t.Fatal("failed rollout must return non-zero in --yes mode")
+	}
+	if len(g.runCalls) != 0 {
+		t.Fatalf("--yes must not auto-rollback, got %#v", g.runCalls)
+	}
+	if !strings.Contains(errb.String(), "kubectl rollout undo deployment/api") {
+		t.Fatalf("--yes must print the rollback command, got %q", errb.String())
 	}
 }

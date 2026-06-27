@@ -44,67 +44,68 @@ import (
 )
 
 type options struct {
-	namespace     string
-	allNS         bool
-	context       string
-	output        string
-	includeLogs   bool
-	useAI         bool
-	noAI          bool
-	autoFix       bool
-	apply         bool
-	yes           bool
-	outFile       string
-	editPatch     bool
-	verbose       bool
-	redact        bool
-	unsafeAI      bool
-	filters       string
-	labelSelector string
-	wide          bool
-	noColor       bool
-	proof         bool
-	paranoid      bool
-	preview       bool
-	forceRisky    bool
-	typedClient   bool
-	tui           bool
-	repoPath      string
-	strategy      string
-	branch        string
-	commit        bool
-	mcp           bool
-	profile       string
-	aiBudget      int
-	container     string
-	image         string
-	memRequest    string
-	memLimit      string
-	cpuRequest    string
-	envName       string
-	configMap     string
-	configKey     string
-	timeout       time.Duration
-	logTail       int
-	maxLogBytes   int
-	applyDryRun   bool
-	sourcePatch   bool
-	shadowVerify  bool
-	shadowTimeout time.Duration
-	shadowRetries int
-	keepShadow    bool
-	shadowEgress  string
-	delivery      string
-	prBase        string
-	prTitle       string
-	watchInterval time.Duration
-	lintFiles     listFlag
-	maxFindings   int
-	quick         bool
-	safe          bool
-	gitops        bool
-	visited       map[string]bool
-	promptInput   *bufio.Reader
+	namespace      string
+	allNS          bool
+	context        string
+	output         string
+	includeLogs    bool
+	useAI          bool
+	noAI           bool
+	autoFix        bool
+	apply          bool
+	yes            bool
+	outFile        string
+	editPatch      bool
+	verbose        bool
+	redact         bool
+	unsafeAI       bool
+	filters        string
+	labelSelector  string
+	wide           bool
+	noColor        bool
+	proof          bool
+	paranoid       bool
+	preview        bool
+	forceRisky     bool
+	typedClient    bool
+	tui            bool
+	repoPath       string
+	strategy       string
+	branch         string
+	commit         bool
+	mcp            bool
+	profile        string
+	aiBudget       int
+	container      string
+	image          string
+	memRequest     string
+	memLimit       string
+	cpuRequest     string
+	envName        string
+	configMap      string
+	configKey      string
+	timeout        time.Duration
+	logTail        int
+	maxLogBytes    int
+	applyDryRun    bool
+	sourcePatch    bool
+	shadowVerify   bool
+	shadowTimeout  time.Duration
+	rolloutTimeout time.Duration
+	shadowRetries  int
+	keepShadow     bool
+	shadowEgress   string
+	delivery       string
+	prBase         string
+	prTitle        string
+	watchInterval  time.Duration
+	lintFiles      listFlag
+	maxFindings    int
+	quick          bool
+	safe           bool
+	gitops         bool
+	visited        map[string]bool
+	promptInput    *bufio.Reader
 }
 
 type listFlag []string
@@ -610,6 +611,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
 	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
 	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
+	fs.DurationVar(&opts.rolloutTimeout, "rollout-timeout", 2*time.Minute, "post-apply rollout verification timeout")
 	fs.IntVar(&opts.shadowRetries, "shadow-retries", 0, "number of shadow re-clone attempts after failure")
 	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep shadow Pod and NetworkPolicy after verification")
 	fs.StringVar(&opts.shadowEgress, "shadow-egress", "allow", "shadow egress policy: allow or deny")
@@ -918,6 +920,54 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 	return result, true, 0
 }
 
+type rolloutGate interface {
+	ops.RolloutChecker
+	Run(ctx context.Context, args ...string) ([]byte, error)
+}
+
+// gateRollout verifies the live rollout after an apply and, on failure, offers
+// the resource-aware rollback. It never auto-rolls-back without explicit
+// interactive confirmation.
+func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, finding analyzer.Finding, plan fix.Plan, timeout time.Duration) int {
+	outcome := ops.VerifyRollout(ctx, k, finding, plan, timeout)
+	switch outcome.Class {
+	case ops.RolloutHealthy:
+		fmt.Fprintf(stderr, "rollout healthy: %s\n", outcome.Summary)
+		return 0
+	case ops.RolloutSkipped, ops.RolloutUnknown:
+		fmt.Fprintf(stderr, "warning: %s\n", outcome.Summary)
+		return 0
+	}
+	fmt.Fprintf(stderr, "rollout failed: %s\n", outcome.Summary)
+	for _, ev := range outcome.Events {
+		fmt.Fprintf(stderr, "  event: %s\n", ev)
+	}
+	for _, hint := range outcome.CauseHints {
+		fmt.Fprintf(stderr, "  hint: %s\n", hint)
+	}
+	cmd := strings.TrimSpace(outcome.Rollback.Command)
+	if cmd == "" {
+		fmt.Fprintln(stderr, "no deterministic rollback command available; review the workload manually")
+		return 1
+	}
+	if assumeYes {
+		fmt.Fprintf(stderr, "rollback not run (non-interactive). To roll back:\n  %s\n", cmd)
+		return 1
+	}
+	if termui.ConfirmRollback(cmd, in, stderr) {
+		if outcome.Rollback.Binary == "kubectl" {
+			if _, err := k.Run(ctx, outcome.Rollback.Args...); err != nil {
+				fmt.Fprintf(stderr, "error: rollback failed: %v\n", err)
+				return 1
+			}
+			fmt.Fprintln(stderr, "rollback applied")
+		} else {
+			fmt.Fprintf(stderr, "run this rollback manually:\n  %s\n", cmd)
+		}
+	}
+	return 1
+}
+
 func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, mode shadow.DeliveryMode) int {
 	switch mode {
 	case shadow.DeliveryPatch:
@@ -945,11 +995,14 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 			return 1
 		}
 		result.Delivery = "cluster"
-		if opts.output == "text" {
+		if opts.output != "text" {
+			if code := output.Write(stdout, opts.output, result); code != 0 {
+				return code
+			}
+		} else {
 			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
-			return 0
 		}
-		return output.Write(stdout, opts.output, result)
+		return gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
 	case shadow.DeliveryPR:
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 		if err != nil {
@@ -1194,6 +1247,8 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 				return 1
 			}
 			fmt.Fprintln(stdout, "applied patch")
+			_ = memory.Add(finding, plan, "guided-fix")
+			return gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
 		}
 	}
 	_ = memory.Add(finding, plan, "guided-fix")
