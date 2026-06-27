@@ -334,13 +334,18 @@ func (k Kubectl) CronJobStatus(ctx context.Context, name, namespace string) (Cro
 		Schedule:       cj.Spec.Schedule,
 		LastSuccessful: cj.Status.LastSuccessfulTime,
 	}
-	failed, detail := k.mostRecentOwnedJobFailed(ctx, name, namespace)
+	failed, detail, err := k.mostRecentOwnedJobFailed(ctx, name, namespace)
+	if err != nil {
+		// A failed read must propagate, not be demoted to "no recent failure" —
+		// the caller maps the error to CronJobUnknown rather than CronJobHealthy.
+		return CronJobState{}, err
+	}
 	state.RecentJobFailed = failed
 	state.Detail = detail
 	return state, nil
 }
 
-func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespace string) (bool, string) {
+func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespace string) (bool, string, error) {
 	args := []string{"get", "jobs"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
@@ -348,7 +353,7 @@ func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespa
 	args = append(args, "-o", "json")
 	var list jobListJSON
 	if err := k.GetJSON(ctx, &list, args...); err != nil {
-		return false, "could not list owned jobs: " + err.Error()
+		return false, "", err
 	}
 	newestTime := ""
 	newest := jobListItemJSON{}
@@ -371,10 +376,10 @@ func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespa
 		}
 	}
 	if !found {
-		return false, "no jobs created by this CronJob yet"
+		return false, "no jobs created by this CronJob yet", nil
 	}
 	st := classifyJobStatus(newest.Status)
-	return st.Failed, "most recent job " + newest.Metadata.Name + ": " + st.Detail
+	return st.Failed, "most recent job " + newest.Metadata.Name + ": " + st.Detail, nil
 }
 
 func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {
