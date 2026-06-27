@@ -425,6 +425,36 @@ spec:
 	}
 }
 
+func TestValidateReviewedPatchRejectsAddedMetadataLabels(t *testing.T) {
+	// Hardening: withoutIdentity keeps non-identity metadata under validation, so
+	// a reviewed patch cannot smuggle in labels/annotations/ownerReferences.
+	original := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+spec:
+  containers:
+  - name: api
+    image: repo/api:v1
+`
+	reviewed := `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+  namespace: prod
+  labels:
+    injected: "true"
+spec:
+  containers:
+  - name: api
+    image: repo/api:v2
+`
+	if err := ValidateReviewedPatch(original, reviewed, "image"); err == nil {
+		t.Fatal("expected reviewed patch adding metadata labels to be rejected")
+	}
+}
+
 func TestValidateReviewedPatchAllowsConcreteImageEdit(t *testing.T) {
 	original := `apiVersion: v1
 kind: Pod

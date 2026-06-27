@@ -674,6 +674,15 @@ func TestFailWithoutNextStep(t *testing.T) {
 	}
 }
 
+func TestSourceManagedTreatsHelmChartAsManaged(t *testing.T) {
+	// Hardening: a finding whose only Helm signal is HelmChart must still be
+	// blocked from direct cluster apply and routed to PR delivery.
+	f := analyzer.Finding{GitOps: analyzer.GitOpsHints{HelmChart: "redis-1.2.3"}}
+	if !sourceManaged(f) {
+		t.Fatal("HelmChart-only finding must be treated as source-managed")
+	}
+}
+
 func TestReconcileDeliveryFlags(t *testing.T) {
 	t.Run("apply maps to cluster", func(t *testing.T) {
 		var w bytes.Buffer

@@ -1148,7 +1148,9 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 }
 
 func sourceManaged(finding analyzer.Finding) bool {
-	if strings.TrimSpace(finding.GitOps.TargetAdvice) != "" || strings.TrimSpace(finding.GitOps.HelmRelease) != "" {
+	if strings.TrimSpace(finding.GitOps.TargetAdvice) != "" ||
+		strings.TrimSpace(finding.GitOps.HelmRelease) != "" ||
+		strings.TrimSpace(finding.GitOps.HelmChart) != "" {
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(finding.GitOps.ManagedBy), "helm") {

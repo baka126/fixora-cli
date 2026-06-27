@@ -77,15 +77,37 @@ func validateReviewIdentity(original, reviewed map[string]any) []string {
 	return reasons
 }
 
+// withoutIdentity drops the fields validateReviewIdentity already pinned
+// (apiVersion, kind, metadata.name, metadata.namespace) so they don't trip the
+// downstream change checks. It preserves the rest of metadata so
+// validatePatchObject still rejects label/annotation/ownerReferences drift in a
+// reviewed patch, keeping it as strict as ValidateRevisedPatch.
 func withoutIdentity(obj map[string]any) map[string]any {
-	copy := make(map[string]any, len(obj))
+	out := make(map[string]any, len(obj))
 	for key, value := range obj {
-		if key == "apiVersion" || key == "kind" || key == "metadata" {
+		switch key {
+		case "apiVersion", "kind":
 			continue
+		case "metadata":
+			meta, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			trimmed := map[string]any{}
+			for k, v := range meta {
+				if k == "name" || k == "namespace" {
+					continue
+				}
+				trimmed[k] = v
+			}
+			if len(trimmed) > 0 {
+				out["metadata"] = trimmed
+			}
+		default:
+			out[key] = value
 		}
-		copy[key] = value
 	}
-	return copy
+	return out
 }
 
 func parseSinglePatch(patch string) (map[string]any, error) {
