@@ -120,6 +120,22 @@ type ObjectReference struct {
 	Name      string `json:"name"`
 }
 
+// JobState is the completion-relevant view of a Job, consumed by ops.CompletionChecker.
+type JobState struct {
+	Complete bool
+	Failed   bool
+	Detail   string
+}
+
+// CronJobState is the validate-only view of a CronJob, consumed by ops.CompletionChecker.
+type CronJobState struct {
+	Suspended       bool
+	Schedule        string
+	LastSuccessful  string
+	RecentJobFailed bool
+	Detail          string
+}
+
 type NodeList struct {
 	Items []Node `json:"items"`
 }

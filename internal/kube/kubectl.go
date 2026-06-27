@@ -222,6 +222,161 @@ func classifyRolloutResult(out string, runErr error) (bool, string, error) {
 	return false, text, runErr
 }
 
+type jobConditionJSON struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+type jobStatusJSON struct {
+	Succeeded  int                `json:"succeeded"`
+	Failed     int                `json:"failed"`
+	Active     int                `json:"active"`
+	Conditions []jobConditionJSON `json:"conditions"`
+}
+
+type jobJSON struct {
+	Metadata ObjectMeta    `json:"metadata"`
+	Status   jobStatusJSON `json:"status"`
+}
+
+type ownerRefJSON struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+type jobListItemJSON struct {
+	Metadata struct {
+		Name              string         `json:"name"`
+		CreationTimestamp string         `json:"creationTimestamp"`
+		OwnerReferences   []ownerRefJSON `json:"ownerReferences"`
+	} `json:"metadata"`
+	Status jobStatusJSON `json:"status"`
+}
+
+type jobListJSON struct {
+	Items []jobListItemJSON `json:"items"`
+}
+
+type cronJobJSON struct {
+	Spec struct {
+		Schedule string `json:"schedule"`
+		Suspend  *bool  `json:"suspend"`
+	} `json:"spec"`
+	Status struct {
+		LastSuccessfulTime string `json:"lastSuccessfulTime"`
+	} `json:"status"`
+}
+
+// classifyJobStatus maps a Job's status into the completion contract: a
+// Complete=True condition is success, a Failed=True condition is terminal
+// failure, anything else is still pending.
+func classifyJobStatus(s jobStatusJSON) JobState {
+	state := JobState{Detail: fmt.Sprintf("succeeded %d, failed %d, active %d", s.Succeeded, s.Failed, s.Active)}
+	for _, c := range s.Conditions {
+		if c.Status != "True" {
+			continue
+		}
+		switch c.Type {
+		case "Complete":
+			state.Complete = true
+		case "Failed":
+			state.Failed = true
+		}
+	}
+	return state
+}
+
+func getArgs(verb, resource, name, namespace string) []string {
+	args := []string{verb, resource, name}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	return append(args, "-o", "json")
+}
+
+// JobStatus polls the live Job until it completes, fails terminally, or the
+// timeout elapses (a still-running Job at timeout returns Complete=false,
+// Failed=false — the caller treats that as non-blocking).
+func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout time.Duration) (JobState, error) {
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var last JobState
+	for {
+		var j jobJSON
+		if err := k.GetJSON(pollCtx, &j, getArgs("get", "job", name, namespace)...); err != nil {
+			if pollCtx.Err() != nil {
+				return last, nil
+			}
+			return JobState{}, err
+		}
+		last = classifyJobStatus(j.Status)
+		if last.Complete || last.Failed {
+			return last, nil
+		}
+		if sleepErr := sleepContext(pollCtx, 2*time.Second); sleepErr != nil {
+			return last, nil // timeout/cancel: report the last pending state
+		}
+	}
+}
+
+// CronJobStatus reads the applied CronJob plus the most-recent Job it owns.
+// Validate-only: it triggers nothing.
+func (k Kubectl) CronJobStatus(ctx context.Context, name, namespace string) (CronJobState, error) {
+	var cj cronJobJSON
+	if err := k.GetJSON(ctx, &cj, getArgs("get", "cronjob", name, namespace)...); err != nil {
+		return CronJobState{}, err
+	}
+	state := CronJobState{
+		Suspended:      cj.Spec.Suspend != nil && *cj.Spec.Suspend,
+		Schedule:       cj.Spec.Schedule,
+		LastSuccessful: cj.Status.LastSuccessfulTime,
+	}
+	failed, detail := k.mostRecentOwnedJobFailed(ctx, name, namespace)
+	state.RecentJobFailed = failed
+	state.Detail = detail
+	return state, nil
+}
+
+func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespace string) (bool, string) {
+	args := []string{"get", "jobs"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	args = append(args, "-o", "json")
+	var list jobListJSON
+	if err := k.GetJSON(ctx, &list, args...); err != nil {
+		return false, "could not list owned jobs: " + err.Error()
+	}
+	newestTime := ""
+	newest := jobListItemJSON{}
+	found := false
+	for _, item := range list.Items {
+		owned := false
+		for _, o := range item.Metadata.OwnerReferences {
+			if o.Kind == "CronJob" && o.Name == cronName {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+		if item.Metadata.CreationTimestamp > newestTime {
+			newestTime = item.Metadata.CreationTimestamp
+			newest = item
+			found = true
+		}
+	}
+	if !found {
+		return false, "no jobs created by this CronJob yet"
+	}
+	st := classifyJobStatus(newest.Status)
+	return st.Failed, "most recent job " + newest.Metadata.Name + ": " + st.Detail
+}
+
 func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {
 	full := []string{}
 	if k.Context != "" {
