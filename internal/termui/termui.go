@@ -61,17 +61,25 @@ func Why(w io.Writer, f analyzer.Finding, p fix.Plan, proof bool, opts Options) 
 	}
 	if p.RollbackCommand != "" {
 		fmt.Fprintln(w, "Rollback hint")
-		writeWrapped(w, "  ", p.RollbackCommand, textWidth(opts))
+		// Render the command verbatim: writeWrapped collapses whitespace and
+		// injects newlines, which would corrupt a copy/paste recovery command.
+		fmt.Fprintln(w, "  "+p.RollbackCommand)
 		fmt.Fprintln(w)
 	}
 	if proof {
-		fmt.Fprintln(w, "Proof")
-		for _, ev := range f.Evidence {
-			writeWrapped(w, "  - ", ev.Label+": "+trim(ev.Value, 180), textWidth(opts))
-		}
-		for _, log := range f.Logs {
-			writeWrapped(w, "  - ", log.Source+" log: "+trim(log.Text, 220), textWidth(opts))
-		}
+		Proof(w, f, opts)
+	}
+}
+
+// Proof renders only the evidence/logs block, so callers revealing proof on
+// demand do not reprint the entire root-cause section.
+func Proof(w io.Writer, f analyzer.Finding, opts Options) {
+	fmt.Fprintln(w, "Proof")
+	for _, ev := range f.Evidence {
+		writeWrapped(w, "  - ", ev.Label+": "+trim(ev.Value, 180), textWidth(opts))
+	}
+	for _, log := range f.Logs {
+		writeWrapped(w, "  - ", log.Source+" log: "+trim(log.Text, 220), textWidth(opts))
 	}
 }
 
@@ -89,7 +97,7 @@ func Plan(w io.Writer, p fix.Plan, opts Options) {
 	}
 	if p.RollbackCommand != "" {
 		fmt.Fprintln(w, "\nRollback:")
-		writeWrapped(w, "  ", p.RollbackCommand, textWidth(opts))
+		fmt.Fprintln(w, "  "+p.RollbackCommand) // verbatim; see Why()
 	}
 }
 

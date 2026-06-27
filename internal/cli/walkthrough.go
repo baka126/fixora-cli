@@ -42,8 +42,8 @@ func runFixWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts optio
 	case termui.StepQuit:
 		return 0
 	case termui.StepShowProof:
-		fmt.Fprintln(stdout, "\nProof")
-		termui.Why(stdout, finding, plan, true, uiOpts)
+		fmt.Fprintln(stdout)
+		termui.Proof(stdout, finding, uiOpts)
 		if termui.PromptStep("Continue to the proposed fix?", in, stdout) == termui.StepQuit {
 			return 0
 		}
@@ -146,7 +146,7 @@ func deliverWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		fmt.Fprintf(stdout, "Delivering via %s (from --delivery).\n", opts.delivery)
 	} else {
-		choice = termui.PromptDelivery(inputFor(opts), stdout)
+		choice = termui.PromptDelivery(inputFor(opts), stdout, reviewOnly)
 	}
 	var mode shadow.DeliveryMode
 	switch choice {

@@ -55,9 +55,30 @@ const (
 	DeliverPatch
 )
 
-func PromptDelivery(in io.Reader, out io.Writer) DeliveryChoice {
+// PromptDelivery asks how to deliver a fix. When reviewOnly is set, direct
+// cluster apply is neither offered nor implied as "safe to ship" — only PR and
+// patch-file delivery are presented.
+func PromptDelivery(in io.Reader, out io.Writer, reviewOnly bool) DeliveryChoice {
 	if out == nil {
 		out = os.Stdout
+	}
+	if reviewOnly {
+		fmt.Fprintln(out, "\nThis patch is review-only (not shadow-verified). How do you want to deliver it?")
+		fmt.Fprintln(out, "  1) Open a GitHub/GitLab PR")
+		fmt.Fprintln(out, "  2) Write patch file only  (default)")
+		fmt.Fprint(out, "Choose [1-2]: ")
+		resp, ok := readLine(in)
+		if !ok {
+			return DeliverCancel
+		}
+		switch resp {
+		case "1":
+			return DeliverPR
+		case "2", "":
+			return DeliverPatch
+		default:
+			return DeliverCancel
+		}
 	}
 	fmt.Fprintln(out, "\nThis fix is verified and safe to ship. How do you want to deliver it?")
 	fmt.Fprintln(out, "  1) Apply directly to the cluster")

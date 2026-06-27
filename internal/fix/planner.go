@@ -419,11 +419,15 @@ func archPatchTemplate(f analyzer.Finding) string {
 }
 
 func securityContextPatchTemplate(f analyzer.Finding) string {
-	return workloadPatchTemplate(f, `containers:
+	// fsGroup is a pod-level field (sibling of containers), which is the
+	// canonical fix for volume-write PermissionDenied. runAsNonRoot is left
+	// unset rather than hardcoded false, which would push workloads toward root.
+	return workloadPatchTemplate(f, `securityContext:
+  fsGroup: TODO_VOLUME_GROUP_ID
+containers:
 - name: TODO_CONTAINER_NAME
   securityContext:
     runAsUser: TODO_UID
-    runAsNonRoot: false
 `)
 }
 

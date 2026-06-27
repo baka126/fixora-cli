@@ -24,9 +24,27 @@ func TestPromptDelivery(t *testing.T) {
 	}
 	for in, want := range cases {
 		var out bytes.Buffer
-		got := PromptDelivery(strings.NewReader(in), &out)
+		got := PromptDelivery(strings.NewReader(in), &out, false)
 		if got != want {
 			t.Fatalf("input %q: got %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestPromptDeliveryReviewOnly(t *testing.T) {
+	// Review-only must not offer or imply direct cluster apply: "1" is PR,
+	// "2"/Enter is patch-file, and the copy must not claim "safe to ship".
+	cases := map[string]DeliveryChoice{
+		"1\n": DeliverPR, "2\n": DeliverPatch, "\n": DeliverPatch, "x\n": DeliverCancel,
+	}
+	for in, want := range cases {
+		var out bytes.Buffer
+		got := PromptDelivery(strings.NewReader(in), &out, true)
+		if got != want {
+			t.Fatalf("review-only input %q: got %v want %v", in, got, want)
+		}
+		if strings.Contains(out.String(), "directly to the cluster") || strings.Contains(out.String(), "safe to ship") {
+			t.Fatalf("review-only prompt must not offer cluster apply, got %q", out.String())
 		}
 	}
 }
@@ -67,7 +85,7 @@ func TestConfirmProceedOrEdit(t *testing.T) {
 }
 
 func TestWalkthroughPromptsEOFDefaults(t *testing.T) {
-	if got := PromptDelivery(strings.NewReader(""), &bytes.Buffer{}); got != DeliverCancel {
+	if got := PromptDelivery(strings.NewReader(""), &bytes.Buffer{}, false); got != DeliverCancel {
 		t.Fatalf("EOF: PromptDelivery got %v, want DeliverCancel", got)
 	}
 	if got := PromptStep("x", strings.NewReader(""), &bytes.Buffer{}); got != StepQuit {
