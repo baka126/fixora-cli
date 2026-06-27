@@ -46,6 +46,19 @@ func (s *ScanContext) GetPods() (kube.PodList, error) {
 	return pods, err
 }
 
+func (s *ScanContext) GetNodes() ([]kube.Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nodes != nil {
+		return s.nodes, nil
+	}
+	nodes, err := s.Reader.GetNodes(s)
+	if err == nil {
+		s.nodes = nodes
+	}
+	return nodes, err
+}
+
 func (s *ScanContext) GetEvents() ([]kube.Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -85,11 +85,18 @@ type endpointCounts struct {
 
 func serviceEndpointCounts(ctx *ScanContext, namespace string, allNS bool) (map[string]endpointCounts, error) {
 	slices, sliceErr := ctx.GetResourceItems(namespace, allNS, "endpointslices.discovery.k8s.io")
-	if sliceErr == nil {
+	if sliceErr == nil && len(slices) > 0 {
 		return endpointSliceCounts(slices), nil
 	}
+	// EndpointSlices were missing (absent key returns nil,nil) or empty: fall
+	// back to legacy Endpoints so we don't fabricate NoEndpoints findings.
 	endpoints, err := ctx.GetResourceItems(namespace, allNS, "endpoints")
 	if err != nil {
+		if sliceErr == nil {
+			// Slices queried cleanly but empty and legacy endpoints are
+			// unavailable: trust the (empty) slice view.
+			return endpointSliceCounts(slices), nil
+		}
 		return nil, err
 	}
 	return legacyEndpointCounts(endpoints), nil

@@ -43,6 +43,11 @@ func TestDefaultIncidentFilters(t *testing.T) {
 			t.Fatalf("comprehensive filters missing %q: %#v", want, got)
 		}
 	}
+	// Comprehensive (used by the health command) must still select pod-security
+	// hygiene checks; its aliases are pod-security/podsecurity/security.
+	if !matchesAny(filterSet(got), "pod-security", "podsecurity", "security") {
+		t.Fatalf("comprehensive filters no longer select pod-security: %#v", got)
+	}
 }
 
 func containsString(values []string, want string) bool {

@@ -103,7 +103,7 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 								relatedEvents = append(relatedEvents, event)
 							}
 						}
-						finding, ok := a.findingForPod(workerCtx, p, relatedEvents)
+						finding, ok := a.findingForPod(workerCtx, sctx, p, relatedEvents)
 						if ok {
 							mu.Lock()
 							findings = append(findings, finding)
@@ -200,7 +200,7 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 			return Finding{}, err
 		}
 		events, _ := a.k.GetEvents(ctx, ns, "")
-		finding, ok := a.findingForPod(ctx, pod, events)
+		finding, ok := a.findingForPod(ctx, nil, pod, events)
 		if !ok {
 			finding = a.healthyFinding(pod)
 		}
@@ -253,9 +253,10 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 	}
 	finding.Evidence = append(finding.Evidence, Evidence{Label: "Owned pods", Value: fmt.Sprint(len(related))})
 	var failures []Finding
+	sctx := NewScanContext(ctx, a.k, a.opts)
 	for _, pod := range related {
 		podEvents := eventsForPod(events, pod)
-		if pf, ok := a.findingForPod(ctx, pod, podEvents); ok {
+		if pf, ok := a.findingForPod(ctx, sctx, pod, podEvents); ok {
 			failures = append(failures, pf)
 		}
 	}
@@ -445,7 +446,7 @@ func (a Analyzer) Cost(ctx context.Context, rest []string) ([]CostRow, error) {
 	return rows, nil
 }
 
-func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube.Event) (Finding, bool) {
+func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube.Pod, events []kube.Event) (Finding, bool) {
 	status, category, severity := podProblem(pod)
 	if status == "" {
 		return Finding{}, false
@@ -508,7 +509,7 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 			PatchType:     "fix-architecture",
 			SafeByDefault: true,
 		}}
-		a.appendNodePlatformEvidence(ctx, &f, pod.Spec.NodeName)
+		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
 	} else if strings.Contains(logText, "Permission denied") || strings.Contains(logText, "permission denied") {
 		f.Status = "PermissionDenied"
 		f.Summary = "Container execution failed due to insufficient file or system permissions."
@@ -520,15 +521,28 @@ func (a Analyzer) findingForPod(ctx context.Context, pod kube.Pod, events []kube
 			SafeByDefault: false,
 		}}
 	}
+	// Keep the identity aligned with the final status: the log-refinement
+	// branches above can change f.Status after the ID was first built.
+	f.ID = pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + f.Status
 
 	return f, true
 }
 
-func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, finding *Finding, nodeName string) {
+// nodeList returns the cluster nodes, using the per-scan cache when a
+// ScanContext is available so concurrent pod workers don't each issue a
+// cluster-wide node listing.
+func (a Analyzer) nodeList(ctx context.Context, sctx *ScanContext) ([]kube.Node, error) {
+	if sctx != nil {
+		return sctx.GetNodes()
+	}
+	return a.k.GetNodes(ctx)
+}
+
+func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanContext, finding *Finding, nodeName string) {
 	if finding == nil || strings.TrimSpace(nodeName) == "" {
 		return
 	}
-	nodes, err := a.k.GetNodes(ctx)
+	nodes, err := a.nodeList(ctx, sctx)
 	if err != nil {
 		finding.Evidence = append(finding.Evidence, Evidence{Label: "Node platform lookup", Value: err.Error()})
 		return
