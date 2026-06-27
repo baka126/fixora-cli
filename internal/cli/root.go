@@ -177,17 +177,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-	if cmd == "serve" || cmd == "watch" || (cmd == "ui" && opts.tui) {
-		ctx, cancel = baseCtx, func() {}
-	} else {
-		if opts.timeout > 0 {
-			ctx, cancel = context.WithTimeout(baseCtx, opts.timeout)
-		} else {
-			ctx, cancel = baseCtx, func() {}
-		}
-	}
+	ctx, cancel := commandContext(baseCtx, cmd, opts)
 	defer cancel()
 
 	k := kube.NewKubectl(opts.context)
@@ -299,8 +289,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		termui.Plan(stdout, plan, termui.Options{Wide: true, NoColor: opts.noColor})
 		return 0
 	case "fix":
+		analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
+		defer analysisCancel()
 		if len(rest) == 0 {
-			selectedResource, err := promptIncidentSelection(ctx, a, stdout, stderr, opts.wide, opts.noColor)
+			selectedResource, err := promptIncidentSelection(analysisCtx, a, stdout, stderr, opts.wide, opts.noColor)
 			if err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 2
@@ -310,29 +302,29 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
-		finding, err := a.AnalyzeResource(ctx, rest[0])
+		finding, err := a.AnalyzeResource(analysisCtx, rest[0])
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		finding = preferSmartFinding(ctx, a, finding)
+		finding = preferSmartFinding(analysisCtx, a, finding)
 		if opts.useAI {
-			finding = enrichFindingForAI(ctx, reader, k, opts, rest[0], finding)
-			augmentWithAI(ctx, &finding, opts, stderr)
+			finding = enrichFindingForAI(analysisCtx, reader, k, opts, rest[0], finding)
+			augmentWithAI(analysisCtx, &finding, opts, stderr)
 		}
 		plan := fix.BuildPlan(finding)
 		plan = fix.Concretize(plan, concreteOptions(opts))
 		if opts.useAI {
-			plan = applyAIPatchIfSafe(ctx, plan, finding, stderr, opts.verbose)
+			plan = applyAIPatchIfSafe(analysisCtx, plan, finding, stderr, opts.verbose)
 		}
 		if !plan.ApplyEligible {
-			plan = applyTrustedImageCandidate(ctx, plan, finding, stderr, opts.verbose)
+			plan = applyTrustedImageCandidate(analysisCtx, plan, finding, stderr, opts.verbose)
 		}
 		if containsString(plan.Guardrails, "trusted-public-image-candidate") {
 			opts.shadowVerify = true
 		}
 		if opts.repoPath != "" {
-			mode, repoErr := repo.Plan(ctx, opts.repoPath, finding, plan)
+			mode, repoErr := repo.Plan(analysisCtx, opts.repoPath, finding, plan)
 			if repoErr == nil {
 				plan.Steps = append(plan.Steps, "Repo mode detected "+mode.Type+" source at "+mode.Path+". "+mode.ValidationNote)
 			} else {
@@ -543,7 +535,7 @@ func parseFlags(args []string) (options, []string, error) {
 	cfg, _ := config.Load()
 	timeout, err := time.ParseDuration(cfg.Timeout)
 	if err != nil || timeout <= 0 {
-		timeout = 90 * time.Second
+		timeout = 3 * time.Minute
 	}
 	defaultOutput := cfg.DefaultOutput
 	if defaultOutput == "" {
@@ -617,7 +609,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
 	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
-	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 5*time.Minute, "shadow clone verification timeout")
+	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
 	fs.IntVar(&opts.shadowRetries, "shadow-retries", 0, "number of shadow re-clone attempts after failure")
 	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep shadow Pod and NetworkPolicy after verification")
 	fs.StringVar(&opts.shadowEgress, "shadow-egress", "allow", "shadow egress policy: allow or deny")
@@ -800,6 +792,23 @@ func visitedFlags(fs *flag.FlagSet) map[string]bool {
 	return visited
 }
 
+func commandContext(parent context.Context, cmd string, opts options) (context.Context, context.CancelFunc) {
+	if cmd == "serve" || cmd == "watch" || (cmd == "ui" && opts.tui) || cmd == "fix" {
+		return parent, func() {}
+	}
+	if opts.timeout > 0 {
+		return context.WithTimeout(parent, opts.timeout)
+	}
+	return parent, func() {}
+}
+
+func fixAnalysisContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(parent, timeout)
+	}
+	return parent, func() {}
+}
+
 func runStatus(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl) int {
 	status, err := k.Status(ctx)
 	return output.WriteOrError(stdout, stderr, opts.output, status, err)
@@ -900,7 +909,7 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 	}
 	if !result.Verified {
 		if opts.output == "text" {
-			writeShadowFailure(stdout, result, opts.outFile)
+			writeShadowFailure(stdout, result, opts.outFile, finding, plan)
 		} else {
 			_ = output.Write(stdout, opts.output, result)
 		}
@@ -1011,7 +1020,7 @@ func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
 	return client, opts.shadowRetries
 }
 
-func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string) {
+func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, finding analyzer.Finding, plan fix.Plan) {
 	fmt.Fprintln(w, "\nShadow verification failed")
 	fmt.Fprintln(w, "No production mutation, PR/MR, or source delivery was performed.")
 	for _, attempt := range result.Attempts {
@@ -1029,10 +1038,54 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string) {
 			fmt.Fprintf(w, "  Last log: %s\n", trimEvidence(lastLog, 220))
 		}
 	}
+	writeShadowFailureGuidance(w, result, finding, plan)
 	if patchFile != "" {
 		fmt.Fprintf(w, "\nReviewed patch retained at %s\n", patchFile)
 	}
 	fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+}
+
+func writeShadowFailureGuidance(w io.Writer, result shadow.Result, finding analyzer.Finding, plan fix.Plan) {
+	diagnosis := shadow.DiagnoseFailure(result, finding, plan)
+	if diagnosis.Summary != "" {
+		fmt.Fprintln(w, "\nFollow-up diagnosis")
+		fmt.Fprintf(w, "  %s\n", diagnosis.Summary)
+		if diagnosis.OriginalSymptomResolved {
+			fmt.Fprintln(w, "  Original symptom: appears resolved in the shadow evidence.")
+		}
+		for _, detail := range diagnosis.Details {
+			fmt.Fprintf(w, "  %s\n", detail)
+		}
+		if diagnosis.DeliveryBlocked {
+			fmt.Fprintln(w, "  Delivery remains blocked until a candidate passes shadow verification.")
+		}
+		return
+	}
+	if !strings.EqualFold(plan.Strategy, "fix-architecture") || !strings.Contains(finding.Status, "ExecFormatError") {
+		return
+	}
+	if !shadowAttemptReason(result, "OOMKilled") {
+		return
+	}
+	fmt.Fprintln(w, "\nFollow-up diagnosis")
+	fmt.Fprintln(w, "  The replacement image got past the original architecture mismatch, but the shadow clone was OOMKilled.")
+	fmt.Fprintln(w, "  Treat this as a failed candidate, not a verified architecture fix.")
+	fmt.Fprintln(w, "  Prefer a same-repository multi-arch tag/digest or rebuild the original image for the node platform.")
+	fmt.Fprintln(w, "  If the image is correct and the workload is expected to allocate memory, create a combined source fix with reviewed resource requests/limits and re-run shadow verification.")
+}
+
+func shadowAttemptReason(result shadow.Result, reason string) bool {
+	for _, attempt := range result.Attempts {
+		if strings.EqualFold(attempt.ExitReason, reason) {
+			return true
+		}
+		for _, event := range attempt.Events {
+			if strings.Contains(strings.ToLower(event), strings.ToLower(reason)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, resourceArg string) int {
@@ -1424,7 +1477,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 		}
 		return
 	}
-	aiCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	aiCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	result, err := client.Explain(aiCtx, aiFinding)
 	if err != nil {
@@ -1441,7 +1494,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 }
 
 func enrichFindingForAI(ctx context.Context, reader kube.Reader, k kube.Kubectl, opts options, resourceArg string, finding analyzer.Finding) analyzer.Finding {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	filters := splitCSV(opts.filters)
 	if len(filters) == 0 {

@@ -51,6 +51,8 @@ type Result struct {
 	Warnings          []string  `json:"warnings,omitempty"`
 	Cleanup           []string  `json:"cleanup,omitempty"`
 	VerifiedPatch     string    `json:"verifiedPatch,omitempty"`
+	FailureClass      string    `json:"failureClass,omitempty"`
+	FailureSummary    string    `json:"failureSummary,omitempty"`
 }
 
 type Attempt struct {

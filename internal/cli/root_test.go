@@ -67,6 +67,43 @@ func TestParseProductionBounds(t *testing.T) {
 	}
 }
 
+func TestProductionDefaultTimeouts(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	opts, _, err := parseFlags(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.timeout != 3*time.Minute {
+		t.Fatalf("expected default analysis timeout 3m, got %s", opts.timeout)
+	}
+	if opts.shadowTimeout != 10*time.Minute {
+		t.Fatalf("expected default shadow timeout 10m, got %s", opts.shadowTimeout)
+	}
+}
+
+func TestFixCommandContextDoesNotExpireBeforeShadow(t *testing.T) {
+	base := context.Background()
+	ctx, cancel := commandContext(base, "fix", options{timeout: time.Second})
+	defer cancel()
+	if deadline, ok := ctx.Deadline(); ok {
+		t.Fatalf("fix command context should not have global deadline before shadow, got %s", deadline)
+	}
+
+	analysisCtx, analysisCancel := fixAnalysisContext(ctx, time.Second)
+	defer analysisCancel()
+	if _, ok := analysisCtx.Deadline(); !ok {
+		t.Fatal("fix analysis context should retain the configured analysis timeout")
+	}
+}
+
+func TestNonFixCommandContextKeepsGlobalTimeout(t *testing.T) {
+	ctx, cancel := commandContext(context.Background(), "incidents", options{timeout: time.Second})
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("non-fix command context should keep the global timeout")
+	}
+}
+
 func TestHelpIsIncidentFocusedByDefault(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"help"}, &stdout, &stderr)
@@ -517,7 +554,7 @@ spec:
 
 func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	var output bytes.Buffer
-	writeShadowFailure(&output, shadow.Result{Attempts: []shadow.Attempt{{Number: 1, Phase: "Pending", ExitReason: "Error", Logs: []string{"password=hunter2"}}}}, "fixora-patch.yaml")
+	writeShadowFailure(&output, shadow.Result{Attempts: []shadow.Attempt{{Number: 1, Phase: "Pending", ExitReason: "Error", Logs: []string{"password=hunter2"}}}}, "fixora-patch.yaml", analyzer.Finding{}, fix.Plan{})
 	got := output.String()
 	for _, want := range []string{"Shadow verification failed", "No production mutation", "Last log: password=[REDACTED]", "fixora-patch.yaml"} {
 		if !strings.Contains(got, want) {
@@ -526,6 +563,23 @@ func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	}
 	if strings.Contains(got, "\"verified\"") {
 		t.Fatalf("shadow failure should not render JSON:\n%s", got)
+	}
+}
+
+func TestWriteShadowFailureExplainsArchitectureOOMFollowup(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(
+		&output,
+		shadow.Result{Attempts: []shadow.Attempt{{Number: 1, Phase: "Pending", ExitReason: "OOMKilled"}}},
+		"fixora-patch.yaml",
+		analyzer.Finding{Status: "ExecFormatError"},
+		fix.Plan{Strategy: "fix-architecture"},
+	)
+	got := output.String()
+	for _, want := range []string{"architecture symptom appears resolved", "Treat this as a second failure", "combined resource right-sizing patch", "Delivery remains blocked"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow architecture/OOM guidance missing %q:\n%s", want, got)
+		}
 	}
 }
 
