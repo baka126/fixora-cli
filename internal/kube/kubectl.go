@@ -192,6 +192,36 @@ func (k Kubectl) DryRunApply(ctx context.Context, file string) error {
 	return err
 }
 
+func (k Kubectl) RolloutStatus(ctx context.Context, kind, name, namespace string, timeout time.Duration) (bool, string, error) {
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	args := []string{"rollout", "status", kind + "/" + name, "--timeout=" + timeout.String()}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	out, err := k.Run(ctx, args...)
+	return classifyRolloutResult(string(out), err)
+}
+
+// classifyRolloutResult maps `kubectl rollout status` output/exit into the
+// RolloutChecker contract: (true,_,nil) rolled out; (false,_,nil) did not
+// finish (timeout or progress deadline); (false,_,err) a real execution error.
+func classifyRolloutResult(out string, runErr error) (bool, string, error) {
+	text := strings.TrimSpace(out)
+	if runErr == nil {
+		return true, text, nil
+	}
+	combined := strings.ToLower(text + " " + runErr.Error())
+	if strings.Contains(combined, "timed out") || strings.Contains(combined, "progress deadline") {
+		if text == "" {
+			text = strings.TrimSpace(runErr.Error())
+		}
+		return false, text, nil
+	}
+	return false, text, runErr
+}
+
 func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {
 	full := []string{}
 	if k.Context != "" {
