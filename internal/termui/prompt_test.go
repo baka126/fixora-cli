@@ -31,3 +31,20 @@ func TestSequentialPromptsShareBufferedInput(t *testing.T) {
 		t.Fatal("expected second response to approve shadow deployment")
 	}
 }
+
+func TestConfirmRollback(t *testing.T) {
+	if !ConfirmRollback("kubectl rollout undo deployment/api -n prod", strings.NewReader("y\n"), &bytes.Buffer{}) {
+		t.Fatal("y must confirm")
+	}
+	if ConfirmRollback("cmd", strings.NewReader("\n"), &bytes.Buffer{}) {
+		t.Fatal("default must be No")
+	}
+	if ConfirmRollback("cmd", strings.NewReader(""), &bytes.Buffer{}) {
+		t.Fatal("EOF must be No")
+	}
+	var out bytes.Buffer
+	ConfirmRollback("kubectl rollout undo deployment/api -n prod", strings.NewReader("n\n"), &out)
+	if !strings.Contains(out.String(), "kubectl rollout undo deployment/api") {
+		t.Fatalf("prompt must show the rollback command, got %q", out.String())
+	}
+}
