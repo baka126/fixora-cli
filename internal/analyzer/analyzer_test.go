@@ -398,6 +398,9 @@ func TestExecFormatFindingIDMatchesStatusAndCachesNodes(t *testing.T) {
 		nodeCalls: &nodeCalls,
 	}
 	report := New(reader, Options{Namespace: "prod", IncludeLogs: true}).ScanReport(context.Background())
+	if got := len(report.Findings); got != 2 {
+		t.Fatalf("expected 2 findings (one per pod), got %d", got)
+	}
 	for _, f := range report.Findings {
 		if f.Status != "ExecFormatError" {
 			t.Fatalf("expected ExecFormatError status, got %q", f.Status)
