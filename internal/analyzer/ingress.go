@@ -3,6 +3,7 @@ package analyzer
 import (
 	"fmt"
 	"strconv"
+	"time"
 )
 
 func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
@@ -109,8 +110,14 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 			})
 		}
 		for _, secretName := range ingressTLSSecretNames(spec) {
+			if secretName == "" {
+				continue
+			}
 			state := a.objectNameState(ctx, namespace, "secret", secretName)
-			if secretName == "" || state.Exists {
+			if state.Exists {
+				if a.opts.CheckCertExpiry {
+					out = append(out, a.tlsCertExpiryFindings(ctx, ingress, namespace, name, secretName)...)
+				}
 				continue
 			}
 			status := "MissingTLSSecret"
@@ -205,4 +212,73 @@ func serviceExposedPorts(service map[string]any) (numbers map[int]bool, names ma
 		}
 	}
 	return numbers, names
+}
+
+const certRecDescription = "The certificate in this Secret is expired or near expiry. Renew it through your certificate workflow (cert-manager, ACME, or manual rotation) and update the Secret. Fixora reads only the public tls.crt for expiry and never the private key, and it cannot mint certificates."
+
+// tlsCertExpiryFindings reads ONLY the public tls.crt from the named TLS Secret
+// (never tls.key) and flags expired / soon-to-expire certificates. Returns at
+// most one finding. The server certificate is public — sent in cleartext on
+// every TLS handshake — which is the carve-out that permits this read.
+func (a Analyzer) tlsCertExpiryFindings(ctx *ScanContext, ingress map[string]any, namespace, ingressName, secretName string) []Finding {
+	unreadable := func(detail string) []Finding {
+		return []Finding{{
+			ID:           keyFor(namespace, "Ingress/"+ingressName+"/TLSCertUnreadable/"+secretName),
+			Namespace:    namespace,
+			ResourceKind: "Ingress",
+			ResourceName: ingressName,
+			Status:       "TLSCertUnreadable",
+			Severity:     "medium",
+			Category:     "networking",
+			Summary:      "Ingress TLS Secret exists but its certificate could not be read or parsed for expiry.",
+			Evidence:     []Evidence{{Label: "TLS secret", Value: secretName}, {Label: "Detail", Value: detail}},
+			GitOps:       gitOpsForObject(ingress),
+			Recommendations: []Recommendation{{
+				Title: "Renew or inspect the TLS certificate", Description: certRecDescription,
+				PatchType: "ingress", SafeByDefault: false,
+			}},
+		}}
+	}
+	secret, err := ctx.GetResource(namespace, "secret/"+secretName)
+	if err != nil {
+		return unreadable(err.Error())
+	}
+	crt, ok := tlsCrtBytes(secret)
+	if !ok {
+		return unreadable("tls.crt not present or not decodable")
+	}
+	notAfter, cn, err := leafCertNotAfter(crt)
+	if err != nil {
+		return unreadable(err.Error())
+	}
+	status, severity, flag := classifyCertExpiry(notAfter, time.Now())
+	if !flag {
+		return nil
+	}
+	summary := "Ingress TLS certificate is expiring soon."
+	if status == "TLSCertExpired" {
+		summary = "Ingress TLS certificate has expired."
+	}
+	days := int(time.Until(notAfter).Hours() / 24)
+	return []Finding{{
+		ID:           keyFor(namespace, "Ingress/"+ingressName+"/"+status+"/"+secretName),
+		Namespace:    namespace,
+		ResourceKind: "Ingress",
+		ResourceName: ingressName,
+		Status:       status,
+		Severity:     severity,
+		Category:     "networking",
+		Summary:      summary,
+		Evidence: []Evidence{
+			{Label: "TLS secret", Value: secretName},
+			{Label: "Not after", Value: notAfter.UTC().Format(time.RFC3339)},
+			{Label: "Days remaining", Value: strconv.Itoa(days)},
+			{Label: "Subject", Value: cn},
+		},
+		GitOps: gitOpsForObject(ingress),
+		Recommendations: []Recommendation{{
+			Title: "Renew the TLS certificate", Description: certRecDescription,
+			PatchType: "ingress", SafeByDefault: false,
+		}},
+	}}
 }
