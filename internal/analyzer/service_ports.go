@@ -93,8 +93,7 @@ func selectedContainerPorts(pods kube.PodList, namespace string, selector map[st
 			continue
 		}
 		selectedAny = true
-		containers := append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
-		for _, c := range containers {
+		for _, c := range pod.Spec.Containers {
 			for _, port := range c.Ports {
 				if port.ContainerPort != 0 {
 					numeric[port.ContainerPort] = true

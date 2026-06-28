@@ -100,6 +100,30 @@ func TestServicePortNamedMismatchHigh(t *testing.T) {
 	}
 }
 
+func TestServicePortIgnoresInitContainerPorts(t *testing.T) {
+	services := []map[string]any{svc("api", map[string]any{"app": "api"},
+		[]any{map[string]any{"port": float64(80), "targetPort": float64(8080)}})}
+	pod := podWithPorts("api-0", map[string]string{"app": "api"},
+		[]kube.ContainerPort{{ContainerPort: 9090}})
+	pod.Spec.InitContainers = []kube.Container{{
+		Name:  "init",
+		Ports: []kube.ContainerPort{{ContainerPort: 8080}},
+	}}
+	ctx, a := servicePortCtx(t, services, kube.PodList{Items: []kube.Pod{pod}})
+
+	findings, err := a.analyzeServicePortTargets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := hasStatus(findings, "ServicePortMismatch")
+	if f == nil {
+		t.Fatal("targetPort exposed only by an init container must not be treated as a match")
+	}
+	if f.Severity != "medium" {
+		t.Fatalf("severity = %q, want medium", f.Severity)
+	}
+}
+
 func TestServicePortNoDeclaredPortsSkips(t *testing.T) {
 	services := []map[string]any{svc("api", map[string]any{"app": "api"},
 		[]any{map[string]any{"port": float64(80), "targetPort": float64(8080)}})}

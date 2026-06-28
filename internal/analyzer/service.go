@@ -54,29 +54,29 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 						SafeByDefault: false,
 					}},
 				})
-				continue
+			} else {
+				out = append(out, Finding{
+					ID:           keyFor(namespace, "Service/"+name+"/NoEndpoints"),
+					Namespace:    namespace,
+					ResourceKind: "Service",
+					ResourceName: name,
+					Status:       "NoEndpoints",
+					Severity:     "high",
+					Category:     "networking",
+					Summary:      "Service selector currently resolves to no ready endpoints.",
+					Evidence: []Evidence{
+						{Label: "Selector", Value: compactStringMap(selector)},
+						{Label: "Ready endpoints", Value: fmt.Sprint(ready)},
+					},
+					GitOps: gitOpsForObject(service),
+					Recommendations: []Recommendation{{
+						Title:         "Repair service backend selection",
+						Description:   "Verify the selector labels match ready pods, then check readiness probes, targetPort, and rollout health before changing traffic.",
+						PatchType:     "service",
+						SafeByDefault: false,
+					}},
+				})
 			}
-			out = append(out, Finding{
-				ID:           keyFor(namespace, "Service/"+name+"/NoEndpoints"),
-				Namespace:    namespace,
-				ResourceKind: "Service",
-				ResourceName: name,
-				Status:       "NoEndpoints",
-				Severity:     "high",
-				Category:     "networking",
-				Summary:      "Service selector currently resolves to no ready endpoints.",
-				Evidence: []Evidence{
-					{Label: "Selector", Value: compactStringMap(selector)},
-					{Label: "Ready endpoints", Value: fmt.Sprint(ready)},
-				},
-				GitOps: gitOpsForObject(service),
-				Recommendations: []Recommendation{{
-					Title:         "Repair service backend selection",
-					Description:   "Verify the selector labels match ready pods, then check readiness probes, targetPort, and rollout health before changing traffic.",
-					PatchType:     "service",
-					SafeByDefault: false,
-				}},
-			})
 		}
 		if notReady > 0 {
 			out = append(out, Finding{
@@ -174,28 +174,37 @@ func endpointReady(endpoint map[string]any) bool {
 	return boolValue(conditions["ready"])
 }
 
-// readinessGateBlock returns a non-empty (conditionType, podName, true) when at
-// least one pod selected by selector in namespace is held out of endpoints
-// solely by an unsatisfied readiness gate: it declares a readinessGate whose
-// matching status condition is not True, while all its containers report ready.
+// readinessGateBlock returns a non-empty (conditionType, podName, true) only
+// when every pod selected by selector in namespace is held out of endpoints by
+// an unsatisfied readiness gate while all containers report ready.
 func readinessGateBlock(pods kube.PodList, namespace string, selector map[string]string) (conditionType, podName string, blocked bool) {
+	matched := false
 	for _, pod := range pods.Items {
 		if pod.Metadata.Namespace != namespace || !labelsMatch(selector, pod.Metadata.Labels) {
 			continue
 		}
+		matched = true
 		if len(pod.Spec.ReadinessGates) == 0 || !allContainersReady(pod) {
-			continue
+			return "", "", false
 		}
+		podBlocked := false
 		for _, gate := range pod.Spec.ReadinessGates {
 			if gate.ConditionType == "" {
 				continue
 			}
 			if !conditionTrue(pod.Status.Conditions, gate.ConditionType) {
-				return gate.ConditionType, pod.Metadata.Name, true
+				if conditionType == "" {
+					conditionType, podName = gate.ConditionType, pod.Metadata.Name
+				}
+				podBlocked = true
+				break
 			}
 		}
+		if !podBlocked {
+			return "", "", false
+		}
 	}
-	return "", "", false
+	return conditionType, podName, matched && conditionType != ""
 }
 
 func allContainersReady(pod kube.Pod) bool {

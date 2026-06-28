@@ -51,6 +51,57 @@ func TestReadinessGateBlocksEndpointsSuppressesNoEndpoints(t *testing.T) {
 	}
 }
 
+func TestReadinessGatePreservesNotReadyEndpoints(t *testing.T) {
+	service := selectorService()
+	reader := fakeReader{
+		items: map[string][]map[string]any{
+			"services": {service},
+			"endpointslices.discovery.k8s.io": {{
+				"metadata": map[string]any{
+					"namespace": "prod",
+					"labels":    map[string]any{"kubernetes.io/service-name": "api"},
+				},
+				"endpoints": []any{map[string]any{
+					"addresses":  []any{"10.0.0.10"},
+					"conditions": map[string]any{"ready": false},
+				}},
+			}},
+		},
+		pods: kube.PodList{Items: []kube.Pod{gateBlockedPod()}},
+	}
+	ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+	findings, err := New(reader, Options{Namespace: "prod"}).analyzeServiceEndpoints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasStatus(findings, "EndpointsBlockedByReadinessGate") == nil {
+		t.Fatal("expected gate-specific finding")
+	}
+	if hasStatus(findings, "NotReadyEndpoints") == nil {
+		t.Fatal("readiness-gate finding must not suppress NotReadyEndpoints")
+	}
+	if hasStatus(findings, "NoEndpoints") != nil {
+		t.Fatal("NoEndpoints must still be suppressed when readiness gates explain all selected pods")
+	}
+}
+
+func TestReadinessGateMixedPodFailuresFallsBackToNoEndpoints(t *testing.T) {
+	otherFailure := gateBlockedPod()
+	otherFailure.Metadata.Name = "api-1"
+	otherFailure.Spec.ReadinessGates = nil
+	ctx, a := readinessCtx(t, selectorService(), kube.PodList{Items: []kube.Pod{gateBlockedPod(), otherFailure}})
+	findings, err := a.analyzeServiceEndpoints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasStatus(findings, "EndpointsBlockedByReadinessGate") != nil {
+		t.Fatal("mixed pod failures must not be classified as readiness-gate-only")
+	}
+	if hasStatus(findings, "NoEndpoints") == nil {
+		t.Fatal("mixed pod failures should fall back to NoEndpoints")
+	}
+}
+
 func TestNoReadinessGateStillReportsNoEndpoints(t *testing.T) {
 	pod := gateBlockedPod()
 	pod.Spec.ReadinessGates = nil
