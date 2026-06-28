@@ -39,6 +39,7 @@ var registry = []Definition{
 	{Name: "OLMOperatorGroup", Kind: "OperatorGroup", Resource: "operatorgroups.operators.coreos.com", Scope: "namespaced", Description: "OLM OperatorGroup count and CSV resolution health", Enabled: true},
 	{Name: "OLMClusterCatalog", Kind: "ClusterCatalog", Resource: "clustercatalogs.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster catalog source and serving health", Enabled: true},
 	{Name: "OLMClusterExtension", Kind: "ClusterExtension", Resource: "clusterextensions.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster extension install and progression health", Enabled: true},
+	{Name: "Secret", Kind: "Secret", Resource: "secrets", Scope: "namespaced", Description: "Secret key presence, base64 validity, and imagePullSecret resolution (key names only, never values)", Enabled: false},
 }
 
 func ListAnalyzers(filters []string) []Definition {

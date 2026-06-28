@@ -513,18 +513,19 @@ func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
 }
 
 type fakeReader struct {
-	pods        kube.PodList
-	events      []kube.Event
-	resource    map[string]any
-	items       map[string][]map[string]any
-	runErr      error
-	eventsErr   error
-	logFn       func()
-	logText     string
-	currentLog  string
-	previousLog string
-	nodes       []kube.Node
-	nodeCalls   *int32
+	pods            kube.PodList
+	events          []kube.Event
+	resource        map[string]any
+	items           map[string][]map[string]any
+	runErr          error
+	eventsErr       error
+	logFn           func()
+	logText         string
+	currentLog      string
+	previousLog     string
+	nodes           []kube.Node
+	nodeCalls       *int32
+	secretItemCalls *int32
 }
 
 func (f fakeReader) GetPods(context.Context, string, bool) (kube.PodList, error) {
@@ -543,6 +544,9 @@ func (f fakeReader) GetResource(context.Context, string, string) (map[string]any
 }
 
 func (f fakeReader) GetResourceItems(_ context.Context, _ string, _ bool, resource string) ([]map[string]any, error) {
+	if resource == "secrets" && f.secretItemCalls != nil {
+		atomic.AddInt32(f.secretItemCalls, 1)
+	}
 	if f.items != nil {
 		return f.items[resource], nil
 	}

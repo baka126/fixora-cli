@@ -40,6 +40,7 @@ type Config struct {
 	Profiles               map[string]Settings `json:"profiles,omitempty"`
 	Contexts               map[string]Settings `json:"contexts,omitempty"`
 	CustomProfiles         map[string]string   `json:"customProfiles,omitempty"`
+	CheckSecretKeys        bool                `json:"checkSecretKeys,omitempty"`
 }
 
 type Settings struct {
