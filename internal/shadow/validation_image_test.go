@@ -68,3 +68,27 @@ func TestImageRegistryPlaceholderSkipped(t *testing.T) {
 		t.Fatalf("placeholder image must be skipped, got %v", reasons)
 	}
 }
+
+func TestImageRegistryUppercaseHostAllowed(t *testing.T) {
+	// GHCR.IO is the same registry as ghcr.io — must not be rejected.
+	reasons := validateImageRegistries(
+		map[string]any{"containers": []any{map[string]any{"name": "app", "image": "ghcr.io/acme/api:v1"}}},
+		map[string]any{"containers": []any{map[string]any{"name": "app", "image": "GHCR.IO/acme/api:v2"}}},
+		DefaultPatchPolicy(),
+	)
+	if len(reasons) != 0 {
+		t.Fatalf("uppercase registry host should be allowed case-insensitively, got %v", reasons)
+	}
+}
+
+func TestImageRegistryDisallowedInitContainerRejected(t *testing.T) {
+	// Disallowed registry in initContainers must be caught.
+	reasons := validateImageRegistries(
+		map[string]any{"initContainers": []any{map[string]any{"name": "init", "image": "ghcr.io/acme/init:v1"}}},
+		map[string]any{"initContainers": []any{map[string]any{"name": "init", "image": "evil.io/acme/init:v2"}}},
+		DefaultPatchPolicy(),
+	)
+	if len(reasons) == 0 {
+		t.Fatal("expected rejection for disallowed registry in initContainers")
+	}
+}

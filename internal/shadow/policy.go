@@ -1,9 +1,6 @@
 package shadow
 
-import (
-	"path"
-	"strings"
-)
+import "path"
 
 // PatchPolicy bounds the values an apply-eligible patch may set. It is a
 // set-once, read-mostly process-wide configured singleton: DefaultPatchPolicy
@@ -37,15 +34,14 @@ func SetPatchPolicy(p PatchPolicy) { patchPolicy = p }
 func activePatchPolicy() PatchPolicy { return patchPolicy }
 
 // hostMatchesAny reports whether host equals or glob-matches any pattern.
+// Patterns follow path.Match syntax; ? and [...] are supported in addition to *.
 func hostMatchesAny(host string, patterns []string) bool {
 	for _, p := range patterns {
 		if p == host {
 			return true
 		}
-		if strings.Contains(p, "*") {
-			if ok, _ := path.Match(p, host); ok {
-				return true
-			}
+		if ok, _ := path.Match(p, host); ok {
+			return true
 		}
 	}
 	return false

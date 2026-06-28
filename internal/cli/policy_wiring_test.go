@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -14,7 +15,18 @@ func TestPolicyFromConfigDefaults(t *testing.T) {
 		t.Fatalf("empty config must yield default ceilings: %+v", p)
 	}
 	if len(p.AllowedRegistries) != len(def.AllowedRegistries) {
-		t.Fatalf("empty config must yield default allowlist")
+		t.Fatalf("empty config must yield default allowlist length: got %d want %d",
+			len(p.AllowedRegistries), len(def.AllowedRegistries))
+	}
+	// Verify the allowlist contents match, not just the count.
+	got := append([]string{}, p.AllowedRegistries...)
+	want := append([]string{}, def.AllowedRegistries...)
+	sort.Strings(got)
+	sort.Strings(want)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("allowlist mismatch at index %d: got %q want %q", i, got[i], want[i])
+		}
 	}
 }
 

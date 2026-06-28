@@ -396,11 +396,11 @@ func validateResourceCeiling(revised map[string]any, policy PatchPolicy) []strin
 					switch dim {
 					case "memory":
 						if policy.MaxMemoryBytes > 0 && q.Value() > policy.MaxMemoryBytes {
-							reasons = append(reasons, fmt.Sprintf("%s.%s memory %s exceeds the ceiling", section, name, raw))
+							reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.memory %s exceeds the ceiling", section, name, kind, raw))
 						}
 					case "cpu":
 						if policy.MaxCPUMillicores > 0 && q.MilliValue() > policy.MaxCPUMillicores {
-							reasons = append(reasons, fmt.Sprintf("%s.%s cpu %s exceeds the ceiling", section, name, raw))
+							reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.cpu %s exceeds the ceiling", section, name, kind, raw))
 						}
 					}
 				}
@@ -413,8 +413,13 @@ func validateResourceCeiling(revised map[string]any, policy PatchPolicy) []strin
 // validateImageRegistries rejects revised container images whose registry host
 // is not allowed. The allowed set is the policy allowlist plus every registry
 // host already present in the original patch (operator-sanctioned).
+// Registry hostnames are compared case-insensitively.
 func validateImageRegistries(original, revised map[string]any, policy PatchPolicy) []string {
-	allowed := append([]string{}, policy.AllowedRegistries...)
+	// Build a lowercased allowed set: policy defaults + original image hosts.
+	allowed := make([]string, 0, len(policy.AllowedRegistries))
+	for _, p := range policy.AllowedRegistries {
+		allowed = append(allowed, strings.ToLower(p))
+	}
 	for _, section := range []string{"containers", "initContainers"} {
 		for _, c := range sliceMaps(original[section]) {
 			img := stringValue(c["image"])
@@ -422,7 +427,7 @@ func validateImageRegistries(original, revised map[string]any, policy PatchPolic
 				continue
 			}
 			if host, err := image.Registry(img); err == nil {
-				allowed = append(allowed, host)
+				allowed = append(allowed, strings.ToLower(host))
 			}
 		}
 	}
@@ -439,7 +444,7 @@ func validateImageRegistries(original, revised map[string]any, policy PatchPolic
 				reasons = append(reasons, fmt.Sprintf("%s.%s image %q is not a valid reference", section, name, img))
 				continue
 			}
-			if !hostMatchesAny(host, allowed) {
+			if !hostMatchesAny(strings.ToLower(host), allowed) {
 				reasons = append(reasons, fmt.Sprintf("%s.%s image registry %q is not allowed", section, name, host))
 			}
 		}

@@ -1,6 +1,9 @@
 package shadow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func resourcesPatch(name string, requests, limits map[string]any) map[string]any {
 	res := map[string]any{}
@@ -54,5 +57,31 @@ func TestResourceCeilingUnlimitedWhenZero(t *testing.T) {
 	policy := PatchPolicy{MaxMemoryBytes: 0, MaxCPUMillicores: 0}
 	if reasons := validateResourceCeiling(rev, policy); len(reasons) != 0 {
 		t.Fatalf("zero ceiling means unlimited, got %v", reasons)
+	}
+}
+
+func TestResourceCeilingInitContainerMemoryOverLimitRejected(t *testing.T) {
+	// Over-ceiling memory in initContainers must also be caught.
+	rev := map[string]any{
+		"initContainers": []any{map[string]any{
+			"name":      "init",
+			"resources": map[string]any{"requests": map[string]any{"memory": "900Gi"}},
+		}},
+	}
+	if reasons := validateResourceCeiling(rev, DefaultPatchPolicy()); len(reasons) == 0 {
+		t.Fatal("expected memory ceiling rejection for initContainers")
+	}
+}
+
+func TestResourceCeilingBadCPUQuantityProducesReason(t *testing.T) {
+	rev := resourcesPatch("app", map[string]any{"cpu": "fast"}, nil)
+	reasons := validateResourceCeiling(rev, DefaultPatchPolicy())
+	if len(reasons) == 0 {
+		t.Fatal("expected a reason for unparseable cpu quantity")
+	}
+	for _, r := range reasons {
+		if !strings.Contains(r, "fast") {
+			t.Errorf("reason should reference the bad value, got %q", r)
+		}
 	}
 }

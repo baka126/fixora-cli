@@ -44,3 +44,18 @@ func TestHostMatchesAny(t *testing.T) {
 		}
 	}
 }
+
+func TestHostMatchesAnyGlobPatterns(t *testing.T) {
+	// ? matches exactly one character (path.Match syntax).
+	if !hostMatchesAny("gcr.io", []string{"gcr.i?"}) {
+		t.Error("? pattern should match gcr.io")
+	}
+	// [...] character class.
+	if !hostMatchesAny("ghcr.io", []string{"[gq]hcr.io"}) {
+		t.Error("[gq] pattern should match ghcr.io")
+	}
+	// Non-matching host must return false.
+	if hostMatchesAny("ecr.io", []string{"gcr.i?", "[gq]hcr.io"}) {
+		t.Error("patterns should not match ecr.io")
+	}
+}
