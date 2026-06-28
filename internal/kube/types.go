@@ -44,6 +44,7 @@ type PodSpec struct {
 	Containers     []Container       `json:"containers"`
 	InitContainers []Container       `json:"initContainers"`
 	Tolerations    []map[string]any  `json:"tolerations"`
+	ReadinessGates []ReadinessGate   `json:"readinessGates"`
 }
 
 type Container struct {
@@ -58,6 +59,17 @@ type Container struct {
 	LivenessProbe   map[string]any       `json:"livenessProbe"`
 	ReadinessProbe  map[string]any       `json:"readinessProbe"`
 	StartupProbe    map[string]any       `json:"startupProbe"`
+	Ports           []ContainerPort      `json:"ports"`
+}
+
+type ContainerPort struct {
+	Name          string `json:"name"`
+	ContainerPort int    `json:"containerPort"`
+	Protocol      string `json:"protocol"`
+}
+
+type ReadinessGate struct {
+	ConditionType string `json:"conditionType"`
 }
 
 type EnvVar struct {
