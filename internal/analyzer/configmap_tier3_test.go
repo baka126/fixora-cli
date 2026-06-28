@@ -61,6 +61,9 @@ func TestConfigMapInvalidFormatYAML(t *testing.T) {
 				if strings.Contains(e.Value, "a: [1, 2") {
 					t.Fatalf("finding evidence must not include the value body, got %q", e.Value)
 				}
+				if !strings.Contains(e.Value, "app.yaml") {
+					t.Fatalf("finding evidence must name the offending key, got %q", e.Value)
+				}
 			}
 		}
 	}
@@ -152,7 +155,7 @@ func TestConfigMapSharedByTwoWorkloads(t *testing.T) {
 		if f.Status == "ConfigMapShared" && f.ResourceName == "shared-cfg" {
 			found := false
 			for _, e := range f.Evidence {
-				if strings.Contains(e.Value, "2") {
+				if strings.Contains(e.Value, "referenced by 2 workloads") {
 					found = true
 				}
 			}
