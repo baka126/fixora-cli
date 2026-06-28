@@ -118,6 +118,18 @@ func TestVerifyCompletionCronJobFailingAttachesSuspendRemedy(t *testing.T) {
 	}
 }
 
+func TestCompletionRemediationTrimsKind(t *testing.T) {
+	job := completionRemediation(analyzer.Finding{ResourceKind: " Job ", ResourceName: "migrate", Namespace: "prod"})
+	if job.Binary != "kubectl" || len(job.Args) == 0 || job.Args[0] != "delete" {
+		t.Fatalf("padded Job kind must attach delete remediation, got %#v", job)
+	}
+
+	cron := completionRemediation(analyzer.Finding{ResourceKind: " CronJob ", ResourceName: "nightly", Namespace: "prod"})
+	if cron.Binary != "kubectl" || len(cron.Args) == 0 || cron.Args[0] != "patch" {
+		t.Fatalf("padded CronJob kind must attach suspend remediation, got %#v", cron)
+	}
+}
+
 func TestVerifyCompletionCronJobSuspended(t *testing.T) {
 	out := VerifyCompletion(context.Background(), fakeCompletionChecker{cron: kube.CronJobState{Suspended: true, Schedule: "0 * * * *"}}, cronFinding(), fix.Plan{}, time.Minute)
 	if out.Class != CronJobSuspended {

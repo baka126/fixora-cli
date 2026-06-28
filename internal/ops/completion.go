@@ -116,7 +116,7 @@ func completionRemediation(finding analyzer.Finding) Rollback {
 	name := strings.TrimSpace(finding.ResourceName)
 	ns := strings.TrimSpace(finding.Namespace)
 	revert := "or re-apply the last known-good manifest / git revert the change"
-	switch strings.ToLower(finding.ResourceKind) {
+	switch strings.ToLower(strings.TrimSpace(finding.ResourceKind)) {
 	case "job":
 		args := []string{"delete", "job", name}
 		cmd := "kubectl delete job/" + name

@@ -75,3 +75,31 @@ func TestJobStatusCanceledBeforeObservationReturnsError(t *testing.T) {
 		t.Fatalf("unobserved cancellation must propagate, got %v", err)
 	}
 }
+
+func TestJobStatusPollErrorParentCancellationWinsAfterObservation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pollCtx, pollCancel := context.WithTimeout(ctx, time.Minute)
+	last := JobState{Detail: "succeeded 0, failed 0, active 1"}
+	cancel()
+	defer pollCancel()
+
+	state, err := jobStatusPollError(ctx, pollCtx, true, last, context.DeadlineExceeded)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("parent cancellation must propagate after observation, got state=%#v err=%v", state, err)
+	}
+}
+
+func TestJobStatusPollErrorInternalTimeoutReturnsObservedState(t *testing.T) {
+	ctx := context.Background()
+	pollCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancel()
+	last := JobState{Detail: "succeeded 0, failed 0, active 1"}
+
+	state, err := jobStatusPollError(ctx, pollCtx, true, last, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("internal timeout after observation must be non-blocking, got %v", err)
+	}
+	if state.Detail != last.Detail {
+		t.Fatalf("internal timeout must return last observed state, got %#v", state)
+	}
+}

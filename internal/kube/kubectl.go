@@ -312,13 +312,7 @@ func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout 
 	for {
 		var j jobJSON
 		if err := k.GetJSON(pollCtx, &j, getArgs("get", "job", name, namespace)...); err != nil {
-			if pollCtx.Err() == context.DeadlineExceeded && observed && ctx.Err() == nil {
-				return last, nil
-			}
-			if pollCtx.Err() != nil {
-				return JobState{}, pollCtx.Err()
-			}
-			return JobState{}, err
+			return jobStatusPollError(ctx, pollCtx, observed, last, err)
 		}
 		last = classifyJobStatus(j.Status)
 		observed = true
@@ -326,13 +320,22 @@ func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout 
 			return last, nil
 		}
 		if sleepErr := sleepContext(pollCtx, 2*time.Second); sleepErr != nil {
-			if pollCtx.Err() == context.DeadlineExceeded && observed && ctx.Err() == nil {
-				return last, nil
-			}
-			}
-			return JobState{}, sleepErr
+			return jobStatusPollError(ctx, pollCtx, observed, last, sleepErr)
 		}
 	}
+}
+
+func jobStatusPollError(ctx, pollCtx context.Context, observed bool, last JobState, cause error) (JobState, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return JobState{}, ctxErr
+	}
+	if pollCtx.Err() == context.DeadlineExceeded && observed {
+		return last, nil
+	}
+	if pollErr := pollCtx.Err(); pollErr != nil {
+		return JobState{}, pollErr
+	}
+	return JobState{}, cause
 }
 
 // CronJobStatus reads the applied CronJob plus the most-recent Job it owns.
