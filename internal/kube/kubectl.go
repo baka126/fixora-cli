@@ -369,6 +369,8 @@ func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespa
 		if !owned {
 			continue
 		}
+		// RFC3339/Z timestamps (what the API server emits) sort chronologically
+		// under lexical comparison, so this avoids a time.Parse. Do not "fix" it.
 		if item.Metadata.CreationTimestamp > newestTime {
 			newestTime = item.Metadata.CreationTimestamp
 			newest = item
