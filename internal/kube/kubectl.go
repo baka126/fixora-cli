@@ -312,7 +312,7 @@ func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout 
 	for {
 		var j jobJSON
 		if err := k.GetJSON(pollCtx, &j, getArgs("get", "job", name, namespace)...); err != nil {
-			if pollCtx.Err() == context.DeadlineExceeded && observed {
+			if pollCtx.Err() == context.DeadlineExceeded && observed && ctx.Err() == nil {
 				return last, nil
 			}
 			if pollCtx.Err() != nil {
@@ -326,8 +326,9 @@ func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout 
 			return last, nil
 		}
 		if sleepErr := sleepContext(pollCtx, 2*time.Second); sleepErr != nil {
-			if pollCtx.Err() == context.DeadlineExceeded && observed {
+			if pollCtx.Err() == context.DeadlineExceeded && observed && ctx.Err() == nil {
 				return last, nil
+			}
 			}
 			return JobState{}, sleepErr
 		}
