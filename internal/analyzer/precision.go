@@ -14,6 +14,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 	}
 	analyzers := []precisionAnalyzer{
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
+		{name: "service-ports", aliases: []string{"service", "services", "networking"}, run: a.analyzeServicePortTargets},
 		{name: "ingress-backends", aliases: []string{"ingress", "ingresses", "networking"}, run: a.analyzeIngressBackends},
 		{name: "hpa-targets", aliases: []string{"hpa", "horizontalpodautoscaler", "autoscaling"}, run: a.analyzeHPATargets},
 		{name: "pdb-disruptions", aliases: []string{"pdb", "poddisruptionbudget", "policy"}, run: a.analyzePDBs},
