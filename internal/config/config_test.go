@@ -8,6 +8,9 @@ import (
 func TestPublicAndExportRedactSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.AIAPIKey = "secret"
+	cfg.AllowedImageRegistries = []string{"registry.example.com"}
+	cfg.MaxPatchMemory = "8Gi"
+	cfg.MaxPatchCPU = "4"
 
 	public := Public(cfg)
 	if public["aiApiKeySet"] != true {
@@ -15,6 +18,12 @@ func TestPublicAndExportRedactSecrets(t *testing.T) {
 	}
 	if _, ok := public["aiApiKey"]; ok {
 		t.Fatalf("public config leaked aiApiKey: %#v", public)
+	}
+	if got := public["allowedImageRegistries"]; len(got.([]string)) != 1 {
+		t.Fatalf("public config must expose patch registry policy, got %#v", got)
+	}
+	if public["maxPatchMemory"] != "8Gi" || public["maxPatchCPU"] != "4" {
+		t.Fatalf("public config must expose patch ceilings, got %#v", public)
 	}
 
 	exported := Export(cfg, false)
@@ -98,6 +107,30 @@ func TestSetUnsetAndResolvedSources(t *testing.T) {
 		t.Fatalf("expected timeout from config, got %#v", resolved["timeout"])
 	}
 
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AllowedImageRegistries = []string{"registry.example.com"}
+	cfg.MaxPatchMemory = "8Gi"
+	cfg.MaxPatchCPU = "4"
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err = Resolved()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved["allowedImageRegistries"].Source != "config" {
+		t.Fatalf("expected allowed registries source from config, got %#v", resolved["allowedImageRegistries"])
+	}
+	if resolved["maxPatchMemory"].Value != "8Gi" || resolved["maxPatchMemory"].Source != "config" {
+		t.Fatalf("expected memory ceiling source from config, got %#v", resolved["maxPatchMemory"])
+	}
+	if resolved["maxPatchCPU"].Value != "4" || resolved["maxPatchCPU"].Source != "config" {
+		t.Fatalf("expected cpu ceiling source from config, got %#v", resolved["maxPatchCPU"])
+	}
+
 	t.Setenv("FIXORA_AI_PROVIDER", "openai")
 	resolved, err = Resolved()
 	if err != nil {
@@ -121,7 +154,7 @@ func TestSetUnsetAndResolvedSources(t *testing.T) {
 	if err := Reset(); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load()
+	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)
 	}

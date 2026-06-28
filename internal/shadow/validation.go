@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/yaml"
+
+	"github.com/fixora/kubectl-fixora/internal/image"
 )
 
 func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
@@ -228,8 +232,10 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 	switch strategy {
 	case "image", "fix-architecture":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "image": true}, strategy)...)
+		reasons = append(reasons, validateImageRegistries(origSpec, revSpec, activePatchPolicy())...)
 	case "resources":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "resources": true}, strategy)...)
+		reasons = append(reasons, validateResourceCeiling(revSpec, activePatchPolicy())...)
 	case "env":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "env": true, "envFrom": true}, strategy)...)
 	}
@@ -343,4 +349,109 @@ func truthy(value any) bool {
 func stringValue(value any) string {
 	s, _ := value.(string)
 	return s
+}
+
+// quantityString renders a resource value (string or YAML number) for parsing.
+func quantityString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	default:
+		return ""
+	}
+}
+
+// validateResourceCeiling rejects revised container cpu/memory requests or
+// limits that exceed the policy ceiling. A 0 ceiling means unlimited.
+func validateResourceCeiling(revised map[string]any, policy PatchPolicy) []string {
+	var reasons []string
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(revised[section]) {
+			name := stringValue(c["name"])
+			resources, ok := nestedMap(c, "resources")
+			if !ok {
+				continue
+			}
+			for _, kind := range []string{"requests", "limits"} {
+				block, ok := nestedMap(resources, kind)
+				if !ok {
+					continue
+				}
+				for _, dim := range []string{"cpu", "memory"} {
+					raw := quantityString(block[dim])
+					if raw == "" {
+						continue
+					}
+					q, err := resource.ParseQuantity(raw)
+					if err != nil {
+						reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.%s %q is not a valid quantity", section, name, kind, dim, raw))
+						continue
+					}
+					if q.Sign() < 0 {
+						reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.%s %s must be non-negative", section, name, kind, dim, raw))
+						continue
+					}
+					switch dim {
+					case "memory":
+						if policy.MaxMemoryBytes > 0 && q.Value() > policy.MaxMemoryBytes {
+							reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.memory %s exceeds the ceiling", section, name, kind, raw))
+						}
+					case "cpu":
+						if policy.MaxCPUMillicores > 0 && q.MilliValue() > policy.MaxCPUMillicores {
+							reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.cpu %s exceeds the ceiling", section, name, kind, raw))
+						}
+					}
+				}
+			}
+		}
+	}
+	return reasons
+}
+
+// validateImageRegistries rejects revised container images whose registry host
+// is not allowed. The allowed set is the policy allowlist plus every registry
+// host already present in the original patch (operator-sanctioned).
+// Registry hostnames are compared case-insensitively.
+func validateImageRegistries(original, revised map[string]any, policy PatchPolicy) []string {
+	// Build a lowercased allowed set: policy defaults + original image hosts.
+	allowed := make([]string, 0, len(policy.AllowedRegistries))
+	for _, p := range policy.AllowedRegistries {
+		allowed = append(allowed, strings.ToLower(p))
+	}
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(original[section]) {
+			img := stringValue(c["image"])
+			if img == "" || strings.Contains(img, "TODO_") {
+				continue
+			}
+			if host, err := image.Registry(img); err == nil {
+				allowed = append(allowed, strings.ToLower(host))
+			}
+		}
+	}
+	var reasons []string
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(revised[section]) {
+			img := stringValue(c["image"])
+			if img == "" || strings.Contains(img, "TODO_") {
+				continue
+			}
+			name := stringValue(c["name"])
+			host, err := image.Registry(img)
+			if err != nil {
+				reasons = append(reasons, fmt.Sprintf("%s.%s image %q is not a valid reference", section, name, img))
+				continue
+			}
+			if !hostMatchesAny(strings.ToLower(host), allowed) {
+				reasons = append(reasons, fmt.Sprintf("%s.%s image registry %q is not allowed", section, name, host))
+			}
+		}
+	}
+	return reasons
 }

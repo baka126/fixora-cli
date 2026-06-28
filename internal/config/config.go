@@ -18,25 +18,28 @@ import (
 const SchemaVersion = 1
 
 type Config struct {
-	SchemaVersion   int                 `json:"schemaVersion"`
-	AIProvider      string              `json:"aiProvider,omitempty"`
-	AIBaseURL       string              `json:"aiBaseURL,omitempty"`
-	AIModel         string              `json:"aiModel,omitempty"`
-	AIAPIKey        string              `json:"aiApiKey,omitempty"`
-	Profile         string              `json:"profile,omitempty"`
-	CacheEnabled    bool                `json:"cacheEnabled"`
-	Timeout         string              `json:"timeout,omitempty"`
-	LogTail         int                 `json:"logTail,omitempty"`
-	MaxLogBytes     int                 `json:"maxLogBytes,omitempty"`
-	DefaultOutput   string              `json:"defaultOutput,omitempty"`
-	Redact          bool                `json:"redact"`
-	Paranoid        bool                `json:"paranoid,omitempty"`
-	ApplyDryRun     bool                `json:"applyRequiresDryRun"`
-	CustomAnalyzers []string            `json:"customAnalyzers,omitempty"`
-	ActiveProfile   string              `json:"activeProfile,omitempty"`
-	Profiles        map[string]Settings `json:"profiles,omitempty"`
-	Contexts        map[string]Settings `json:"contexts,omitempty"`
-	CustomProfiles  map[string]string   `json:"customProfiles,omitempty"`
+	SchemaVersion          int                 `json:"schemaVersion"`
+	AIProvider             string              `json:"aiProvider,omitempty"`
+	AIBaseURL              string              `json:"aiBaseURL,omitempty"`
+	AIModel                string              `json:"aiModel,omitempty"`
+	AIAPIKey               string              `json:"aiApiKey,omitempty"`
+	Profile                string              `json:"profile,omitempty"`
+	CacheEnabled           bool                `json:"cacheEnabled"`
+	Timeout                string              `json:"timeout,omitempty"`
+	LogTail                int                 `json:"logTail,omitempty"`
+	MaxLogBytes            int                 `json:"maxLogBytes,omitempty"`
+	DefaultOutput          string              `json:"defaultOutput,omitempty"`
+	Redact                 bool                `json:"redact"`
+	Paranoid               bool                `json:"paranoid,omitempty"`
+	ApplyDryRun            bool                `json:"applyRequiresDryRun"`
+	CustomAnalyzers        []string            `json:"customAnalyzers,omitempty"`
+	AllowedImageRegistries []string            `json:"allowedImageRegistries,omitempty"`
+	MaxPatchMemory         string              `json:"maxPatchMemory,omitempty"`
+	MaxPatchCPU            string              `json:"maxPatchCPU,omitempty"`
+	ActiveProfile          string              `json:"activeProfile,omitempty"`
+	Profiles               map[string]Settings `json:"profiles,omitempty"`
+	Contexts               map[string]Settings `json:"contexts,omitempty"`
+	CustomProfiles         map[string]string   `json:"customProfiles,omitempty"`
 }
 
 type Settings struct {
@@ -136,24 +139,27 @@ func Path() (string, error) {
 
 func Public(cfg Config) map[string]any {
 	return map[string]any{
-		"schemaVersion":   cfg.SchemaVersion,
-		"aiProvider":      cfg.AIProvider,
-		"aiBaseURL":       cfg.AIBaseURL,
-		"aiModel":         cfg.AIModel,
-		"aiApiKeySet":     strings.TrimSpace(cfg.AIAPIKey) != "",
-		"profile":         cfg.Profile,
-		"cacheEnabled":    cfg.CacheEnabled,
-		"timeout":         cfg.Timeout,
-		"logTail":         cfg.LogTail,
-		"maxLogBytes":     cfg.MaxLogBytes,
-		"defaultOutput":   cfg.DefaultOutput,
-		"redact":          cfg.Redact,
-		"paranoid":        cfg.Paranoid,
-		"applyDryRun":     cfg.ApplyDryRun,
-		"customAnalyzers": cfg.CustomAnalyzers,
-		"activeProfile":   cfg.ActiveProfile,
-		"profiles":        profileNames(cfg.Profiles),
-		"contexts":        profileNames(cfg.Contexts),
+		"schemaVersion":          cfg.SchemaVersion,
+		"aiProvider":             cfg.AIProvider,
+		"aiBaseURL":              cfg.AIBaseURL,
+		"aiModel":                cfg.AIModel,
+		"aiApiKeySet":            strings.TrimSpace(cfg.AIAPIKey) != "",
+		"profile":                cfg.Profile,
+		"cacheEnabled":           cfg.CacheEnabled,
+		"timeout":                cfg.Timeout,
+		"logTail":                cfg.LogTail,
+		"maxLogBytes":            cfg.MaxLogBytes,
+		"defaultOutput":          cfg.DefaultOutput,
+		"redact":                 cfg.Redact,
+		"paranoid":               cfg.Paranoid,
+		"applyDryRun":            cfg.ApplyDryRun,
+		"customAnalyzers":        cfg.CustomAnalyzers,
+		"allowedImageRegistries": cfg.AllowedImageRegistries,
+		"maxPatchMemory":         cfg.MaxPatchMemory,
+		"maxPatchCPU":            cfg.MaxPatchCPU,
+		"activeProfile":          cfg.ActiveProfile,
+		"profiles":               profileNames(cfg.Profiles),
+		"contexts":               profileNames(cfg.Contexts),
 	}
 }
 
@@ -208,6 +214,9 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("paranoid", cfg.Paranoid, sourceFor(raw, "paranoid"))
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
+	add("allowedImageRegistries", cfg.AllowedImageRegistries, sourceFor(raw, "allowedImageRegistries"))
+	add("maxPatchMemory", cfg.MaxPatchMemory, sourceFor(raw, "maxPatchMemory"))
+	add("maxPatchCPU", cfg.MaxPatchCPU, sourceFor(raw, "maxPatchCPU"))
 	add("activeProfile", cfg.ActiveProfile, sourceFor(raw, "activeProfile"))
 	return out, nil
 }

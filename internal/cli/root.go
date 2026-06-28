@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/termui"
 	"github.com/fixora/kubectl-fixora/internal/version"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -138,6 +140,10 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "version" {
 		fmt.Fprintf(stdout, "%s %s\n", version.Name, version.Version)
 		return 0
+	}
+	{
+		cfg, _ := config.Load()
+		shadow.SetPatchPolicy(policyFromConfig(cfg))
 	}
 	if args[0] == "auth" {
 		return runAuth(args[1:], stdout, stderr)
@@ -2992,4 +2998,40 @@ func failNext(w io.Writer, msg, next string) {
 	if strings.TrimSpace(next) != "" {
 		fmt.Fprintf(w, "Next: %s\n", next)
 	}
+}
+
+// policyFromConfig merges config overrides onto the safe default patch policy.
+// A non-empty allowlist replaces the defaults; an unparseable quantity keeps
+// the default for that dimension (never disables the ceiling).
+func policyFromConfig(cfg config.Config) shadow.PatchPolicy {
+	policy := shadow.DefaultPatchPolicy()
+	if allowed := validRegistryPatterns(cfg.AllowedImageRegistries); len(allowed) > 0 {
+		policy.AllowedRegistries = allowed
+	}
+	if cfg.MaxPatchMemory != "" {
+		if q, err := resource.ParseQuantity(cfg.MaxPatchMemory); err == nil && q.Sign() > 0 {
+			policy.MaxMemoryBytes = q.Value()
+		}
+	}
+	if cfg.MaxPatchCPU != "" {
+		if q, err := resource.ParseQuantity(cfg.MaxPatchCPU); err == nil && q.Sign() > 0 {
+			policy.MaxCPUMillicores = q.MilliValue()
+		}
+	}
+	return policy
+}
+
+func validRegistryPatterns(values []string) []string {
+	out := []string{}
+	for _, value := range values {
+		pattern := strings.ToLower(strings.TrimSpace(value))
+		if pattern == "" || strings.Contains(pattern, "/") {
+			continue
+		}
+		if _, err := path.Match(pattern, "registry.example.com"); err != nil {
+			continue
+		}
+		out = append(out, pattern)
+	}
+	return out
 }
