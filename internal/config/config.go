@@ -139,24 +139,27 @@ func Path() (string, error) {
 
 func Public(cfg Config) map[string]any {
 	return map[string]any{
-		"schemaVersion":   cfg.SchemaVersion,
-		"aiProvider":      cfg.AIProvider,
-		"aiBaseURL":       cfg.AIBaseURL,
-		"aiModel":         cfg.AIModel,
-		"aiApiKeySet":     strings.TrimSpace(cfg.AIAPIKey) != "",
-		"profile":         cfg.Profile,
-		"cacheEnabled":    cfg.CacheEnabled,
-		"timeout":         cfg.Timeout,
-		"logTail":         cfg.LogTail,
-		"maxLogBytes":     cfg.MaxLogBytes,
-		"defaultOutput":   cfg.DefaultOutput,
-		"redact":          cfg.Redact,
-		"paranoid":        cfg.Paranoid,
-		"applyDryRun":     cfg.ApplyDryRun,
-		"customAnalyzers": cfg.CustomAnalyzers,
-		"activeProfile":   cfg.ActiveProfile,
-		"profiles":        profileNames(cfg.Profiles),
-		"contexts":        profileNames(cfg.Contexts),
+		"schemaVersion":          cfg.SchemaVersion,
+		"aiProvider":             cfg.AIProvider,
+		"aiBaseURL":              cfg.AIBaseURL,
+		"aiModel":                cfg.AIModel,
+		"aiApiKeySet":            strings.TrimSpace(cfg.AIAPIKey) != "",
+		"profile":                cfg.Profile,
+		"cacheEnabled":           cfg.CacheEnabled,
+		"timeout":                cfg.Timeout,
+		"logTail":                cfg.LogTail,
+		"maxLogBytes":            cfg.MaxLogBytes,
+		"defaultOutput":          cfg.DefaultOutput,
+		"redact":                 cfg.Redact,
+		"paranoid":               cfg.Paranoid,
+		"applyDryRun":            cfg.ApplyDryRun,
+		"customAnalyzers":        cfg.CustomAnalyzers,
+		"allowedImageRegistries": cfg.AllowedImageRegistries,
+		"maxPatchMemory":         cfg.MaxPatchMemory,
+		"maxPatchCPU":            cfg.MaxPatchCPU,
+		"activeProfile":          cfg.ActiveProfile,
+		"profiles":               profileNames(cfg.Profiles),
+		"contexts":               profileNames(cfg.Contexts),
 	}
 }
 
@@ -211,6 +214,9 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("paranoid", cfg.Paranoid, sourceFor(raw, "paranoid"))
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
+	add("allowedImageRegistries", cfg.AllowedImageRegistries, sourceFor(raw, "allowedImageRegistries"))
+	add("maxPatchMemory", cfg.MaxPatchMemory, sourceFor(raw, "maxPatchMemory"))
+	add("maxPatchCPU", cfg.MaxPatchCPU, sourceFor(raw, "maxPatchCPU"))
 	add("activeProfile", cfg.ActiveProfile, sourceFor(raw, "activeProfile"))
 	return out, nil
 }

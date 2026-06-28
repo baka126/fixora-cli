@@ -52,6 +52,19 @@ func TestResourceCeilingUnparseableRejected(t *testing.T) {
 	}
 }
 
+func TestResourceCeilingNegativeQuantitiesRejected(t *testing.T) {
+	rev := resourcesPatch("app", map[string]any{"memory": "-500Mi", "cpu": "-1"}, nil)
+	reasons := validateResourceCeiling(rev, DefaultPatchPolicy())
+	if len(reasons) != 2 {
+		t.Fatalf("expected memory and cpu negative rejections, got %v", reasons)
+	}
+	for _, r := range reasons {
+		if !strings.Contains(r, "must be non-negative") {
+			t.Fatalf("expected non-negative rejection, got %q", r)
+		}
+	}
+}
+
 func TestResourceCeilingUnlimitedWhenZero(t *testing.T) {
 	rev := resourcesPatch("app", map[string]any{"memory": "900Gi", "cpu": "999"}, nil)
 	policy := PatchPolicy{MaxMemoryBytes: 0, MaxCPUMillicores: 0}

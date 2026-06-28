@@ -393,6 +393,10 @@ func validateResourceCeiling(revised map[string]any, policy PatchPolicy) []strin
 						reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.%s %q is not a valid quantity", section, name, kind, dim, raw))
 						continue
 					}
+					if q.Sign() < 0 {
+						reasons = append(reasons, fmt.Sprintf("%s.%s resources.%s.%s %s must be non-negative", section, name, kind, dim, raw))
+						continue
+					}
 					switch dim {
 					case "memory":
 						if policy.MaxMemoryBytes > 0 && q.Value() > policy.MaxMemoryBytes {

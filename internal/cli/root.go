@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -3004,18 +3005,33 @@ func failNext(w io.Writer, msg, next string) {
 // the default for that dimension (never disables the ceiling).
 func policyFromConfig(cfg config.Config) shadow.PatchPolicy {
 	policy := shadow.DefaultPatchPolicy()
-	if len(cfg.AllowedImageRegistries) > 0 {
-		policy.AllowedRegistries = append([]string{}, cfg.AllowedImageRegistries...)
+	if allowed := validRegistryPatterns(cfg.AllowedImageRegistries); len(allowed) > 0 {
+		policy.AllowedRegistries = allowed
 	}
 	if cfg.MaxPatchMemory != "" {
-		if q, err := resource.ParseQuantity(cfg.MaxPatchMemory); err == nil {
+		if q, err := resource.ParseQuantity(cfg.MaxPatchMemory); err == nil && q.Sign() > 0 {
 			policy.MaxMemoryBytes = q.Value()
 		}
 	}
 	if cfg.MaxPatchCPU != "" {
-		if q, err := resource.ParseQuantity(cfg.MaxPatchCPU); err == nil {
+		if q, err := resource.ParseQuantity(cfg.MaxPatchCPU); err == nil && q.Sign() > 0 {
 			policy.MaxCPUMillicores = q.MilliValue()
 		}
 	}
 	return policy
+}
+
+func validRegistryPatterns(values []string) []string {
+	out := []string{}
+	for _, value := range values {
+		pattern := strings.ToLower(strings.TrimSpace(value))
+		if pattern == "" || strings.Contains(pattern, "/") {
+			continue
+		}
+		if _, err := path.Match(pattern, "registry.example.com"); err != nil {
+			continue
+		}
+		out = append(out, pattern)
+	}
+	return out
 }

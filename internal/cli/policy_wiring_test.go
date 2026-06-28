@@ -47,11 +47,41 @@ func TestPolicyFromConfigOverrides(t *testing.T) {
 	}
 }
 
+func TestPolicyFromConfigFiltersMalformedRegistries(t *testing.T) {
+	p := policyFromConfig(config.Config{
+		AllowedImageRegistries: []string{"", "bad[", "REGISTRY.EXAMPLE.COM", "has/path"},
+	})
+	if len(p.AllowedRegistries) != 1 || p.AllowedRegistries[0] != "registry.example.com" {
+		t.Fatalf("expected only the usable registry pattern, got %+v", p.AllowedRegistries)
+	}
+}
+
+func TestPolicyFromConfigMalformedRegistriesKeepDefault(t *testing.T) {
+	def := shadowDefault()
+	p := policyFromConfig(config.Config{
+		AllowedImageRegistries: []string{"", "bad[", "has/path"},
+	})
+	if len(p.AllowedRegistries) != len(def.AllowedRegistries) {
+		t.Fatalf("all malformed registry patterns must keep defaults, got %+v", p.AllowedRegistries)
+	}
+}
+
 func TestPolicyFromConfigBadQuantityKeepsDefault(t *testing.T) {
 	def := shadowDefault()
 	p := policyFromConfig(config.Config{MaxPatchMemory: "garbage"})
 	if p.MaxMemoryBytes != def.MaxMemoryBytes {
 		t.Fatalf("bad quantity must keep default, got %d", p.MaxMemoryBytes)
+	}
+}
+
+func TestPolicyFromConfigNonPositiveQuantityKeepsDefault(t *testing.T) {
+	def := shadowDefault()
+	p := policyFromConfig(config.Config{MaxPatchMemory: "-1Gi", MaxPatchCPU: "0"})
+	if p.MaxMemoryBytes != def.MaxMemoryBytes {
+		t.Fatalf("negative memory ceiling must keep default, got %d", p.MaxMemoryBytes)
+	}
+	if p.MaxCPUMillicores != def.MaxCPUMillicores {
+		t.Fatalf("zero cpu ceiling must keep default, got %d", p.MaxCPUMillicores)
 	}
 }
 
