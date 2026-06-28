@@ -415,6 +415,45 @@ func TestExecFormatFindingIDMatchesStatusAndCachesNodes(t *testing.T) {
 	}
 }
 
+func TestFindingRecurrenceEvidenceFromLogs(t *testing.T) {
+	pods := []kube.Pod{{
+		Metadata: kube.ObjectMeta{Name: "api-0", Namespace: "prod"},
+		Spec:     kube.PodSpec{NodeName: "node-a"},
+		Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+			Name:  "api",
+			State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+		}}},
+	}}
+	reader := fakeReader{
+		pods:    kube.PodList{Items: pods},
+		logText: "panic: runtime error: invalid memory address",
+	}
+	report := New(reader, Options{Namespace: "prod", IncludeLogs: true}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(report.Findings))
+	}
+	f := report.Findings[0]
+	if f.Status != "ApplicationPanic" {
+		t.Fatalf("status = %q, want ApplicationPanic", f.Status)
+	}
+	if f.ID != f.Namespace+"/"+f.PodName+"/"+f.Status {
+		t.Fatalf("finding ID %q not aligned with status", f.ID)
+	}
+	var found bool
+	for _, e := range f.Evidence {
+		if e.Label == "Log recurrence" {
+			found = true
+			// fakeReader returns the same text for current and previous, so it recurs.
+			if !strings.Contains(e.Value, "persists across restarts") {
+				t.Fatalf("recurrence evidence = %q, want persists-across-restarts", e.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a Log recurrence evidence row")
+	}
+}
+
 func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
 	// No endpointslices key present (GetResourceItems returns nil,nil); the
 	// analyzer must consult legacy Endpoints rather than fabricate NoEndpoints.
