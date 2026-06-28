@@ -931,7 +931,7 @@ type rolloutGate interface {
 // interactive confirmation.
 func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, finding analyzer.Finding, plan fix.Plan, timeout time.Duration) int {
 	var outcome ops.RolloutOutcome
-	switch strings.ToLower(finding.ResourceKind) {
+	switch strings.ToLower(strings.TrimSpace(finding.ResourceKind)) {
 	case "job", "cronjob":
 		outcome = ops.VerifyCompletion(ctx, k, finding, plan, timeout)
 	default:

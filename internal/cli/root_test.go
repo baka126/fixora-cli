@@ -1010,3 +1010,16 @@ func TestGateRolloutCronJobHealthyReturnsZero(t *testing.T) {
 		t.Fatalf("healthy cronjob must not run remediation, got %#v", g.runCalls)
 	}
 }
+
+func TestGateRolloutTrimsCompletionKind(t *testing.T) {
+	g := &fakeGate{cron: kube.CronJobState{Schedule: "0 * * * *", LastSuccessful: "2026-06-27T00:00:00Z"}}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: " CronJob ", ResourceName: "nightly", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, fix.Plan{}, time.Minute)
+	if code != 0 {
+		t.Fatalf("trimmed cronjob kind must route to completion verifier, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "CronJob/nightly accepted") {
+		t.Fatalf("expected completion verifier output, got %q", errb.String())
+	}
+}

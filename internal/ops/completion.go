@@ -37,7 +37,7 @@ func VerifyCompletion(ctx context.Context, checker CompletionChecker, finding an
 	name := strings.TrimSpace(finding.ResourceName)
 	ns := strings.TrimSpace(finding.Namespace)
 	if name == "" {
-		return RolloutOutcome{Class: RolloutSkipped, Summary: "completion verification needs a resource name; verify manually"}
+		return RolloutOutcome{Class: RolloutInvalid, Summary: "could not verify completion: missing resource name"}
 	}
 	switch kind {
 	case "job":
@@ -61,7 +61,7 @@ func verifyJob(ctx context.Context, checker CompletionChecker, finding analyzer.
 		return RolloutOutcome{Class: CompletionPending, Summary: "Job/" + name + " is still running after the timeout; not yet complete — check later (" + state.Detail + ")"}
 	}
 	outcome := RolloutOutcome{Class: CompletionFailed, Summary: "Job/" + name + " failed before completing (" + state.Detail + ")"}
-	enrichCompletionFailure(ctx, checker, ns, name, state.Detail, &outcome)
+	enrichCompletionFailure(ctx, checker, ns, "Job", name, state.Detail, &outcome)
 	outcome.Rollback = completionRemediation(finding)
 	return outcome
 }
@@ -76,7 +76,7 @@ func verifyCronJob(ctx context.Context, checker CompletionChecker, finding analy
 	}
 	if state.RecentJobFailed {
 		outcome := RolloutOutcome{Class: CronJobFailing, Summary: "CronJob/" + name + " is currently producing failed runs (" + state.Detail + "); note: validate-only — this run may predate the fix"}
-		enrichCompletionFailure(ctx, checker, ns, name, state.Detail, &outcome)
+		enrichCompletionFailure(ctx, checker, ns, "Job", state.RecentJobName, state.Detail, &outcome)
 		outcome.Rollback = completionRemediation(finding)
 		return outcome
 	}
@@ -88,15 +88,26 @@ func verifyCronJob(ctx context.Context, checker CompletionChecker, finding analy
 	return RolloutOutcome{Class: CronJobHealthy, Summary: summary}
 }
 
-func enrichCompletionFailure(ctx context.Context, checker CompletionChecker, ns, name, detail string, outcome *RolloutOutcome) {
+func enrichCompletionFailure(ctx context.Context, checker CompletionChecker, ns, kind, name, detail string, outcome *RolloutOutcome) {
 	if events, evErr := checker.GetEvents(ctx, ns, ""); evErr == nil {
 		for _, ev := range events {
-			if ev.InvolvedObject.Name == name && (ns == "" || ev.InvolvedObject.Namespace == ns) {
+			if completionEventMatches(ev, kind, name, ns) {
 				outcome.Events = append(outcome.Events, ev.Type+" "+ev.Reason+": "+ev.Message)
 			}
 		}
 	}
 	outcome.CauseHints = rolloutCauseHints(append([]string{detail}, outcome.Events...))
+}
+
+func completionEventMatches(ev kube.Event, kind, name, namespace string) bool {
+	involved := ev.InvolvedObject
+	if !strings.EqualFold(strings.TrimSpace(involved.Kind), strings.TrimSpace(kind)) {
+		return false
+	}
+	if strings.TrimSpace(involved.Name) != name {
+		return false
+	}
+	return namespace == "" || strings.TrimSpace(involved.Namespace) == namespace
 }
 
 // completionRemediation builds the consent-gated, kind-specific "stop the

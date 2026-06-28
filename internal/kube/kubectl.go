@@ -242,6 +242,7 @@ type jobJSON struct {
 type ownerRefJSON struct {
 	Kind string `json:"kind"`
 	Name string `json:"name"`
+	UID  string `json:"uid"`
 }
 
 type jobListItemJSON struct {
@@ -258,6 +259,9 @@ type jobListJSON struct {
 }
 
 type cronJobJSON struct {
+	Metadata struct {
+		UID string `json:"uid"`
+	} `json:"metadata"`
 	Spec struct {
 		Schedule string `json:"schedule"`
 		Suspend  *bool  `json:"suspend"`
@@ -304,20 +308,28 @@ func (k Kubectl) JobStatus(ctx context.Context, name, namespace string, timeout 
 	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var last JobState
+	observed := false
 	for {
 		var j jobJSON
 		if err := k.GetJSON(pollCtx, &j, getArgs("get", "job", name, namespace)...); err != nil {
-			if pollCtx.Err() != nil {
+			if pollCtx.Err() == context.DeadlineExceeded && observed {
 				return last, nil
+			}
+			if pollCtx.Err() != nil {
+				return JobState{}, pollCtx.Err()
 			}
 			return JobState{}, err
 		}
 		last = classifyJobStatus(j.Status)
+		observed = true
 		if last.Complete || last.Failed {
 			return last, nil
 		}
 		if sleepErr := sleepContext(pollCtx, 2*time.Second); sleepErr != nil {
-			return last, nil // timeout/cancel: report the last pending state
+			if pollCtx.Err() == context.DeadlineExceeded && observed {
+				return last, nil
+			}
+			return JobState{}, sleepErr
 		}
 	}
 }
@@ -334,18 +346,22 @@ func (k Kubectl) CronJobStatus(ctx context.Context, name, namespace string) (Cro
 		Schedule:       cj.Spec.Schedule,
 		LastSuccessful: cj.Status.LastSuccessfulTime,
 	}
-	failed, detail, err := k.mostRecentOwnedJobFailed(ctx, name, namespace)
+	if state.Suspended {
+		return state, nil
+	}
+	failed, jobName, detail, err := k.mostRecentOwnedJobFailed(ctx, name, cj.Metadata.UID, namespace)
 	if err != nil {
 		// A failed read must propagate, not be demoted to "no recent failure" —
 		// the caller maps the error to CronJobUnknown rather than CronJobHealthy.
 		return CronJobState{}, err
 	}
 	state.RecentJobFailed = failed
+	state.RecentJobName = jobName
 	state.Detail = detail
 	return state, nil
 }
 
-func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespace string) (bool, string, error) {
+func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, cronUID, namespace string) (bool, string, string, error) {
 	args := []string{"get", "jobs"}
 	if namespace != "" {
 		args = append(args, "-n", namespace)
@@ -353,20 +369,13 @@ func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespa
 	args = append(args, "-o", "json")
 	var list jobListJSON
 	if err := k.GetJSON(ctx, &list, args...); err != nil {
-		return false, "", err
+		return false, "", "", err
 	}
 	newestTime := ""
 	newest := jobListItemJSON{}
 	found := false
 	for _, item := range list.Items {
-		owned := false
-		for _, o := range item.Metadata.OwnerReferences {
-			if o.Kind == "CronJob" && o.Name == cronName {
-				owned = true
-				break
-			}
-		}
-		if !owned {
+		if !cronJobOwnsJob(item, cronName, cronUID) {
 			continue
 		}
 		// RFC3339/Z timestamps (what the API server emits) sort chronologically
@@ -378,10 +387,22 @@ func (k Kubectl) mostRecentOwnedJobFailed(ctx context.Context, cronName, namespa
 		}
 	}
 	if !found {
-		return false, "no jobs created by this CronJob yet", nil
+		return false, "", "no jobs created by this CronJob yet", nil
 	}
 	st := classifyJobStatus(newest.Status)
-	return st.Failed, "most recent job " + newest.Metadata.Name + ": " + st.Detail, nil
+	return st.Failed, newest.Metadata.Name, "most recent job " + newest.Metadata.Name + ": " + st.Detail, nil
+}
+
+func cronJobOwnsJob(item jobListItemJSON, cronName, cronUID string) bool {
+	if strings.TrimSpace(cronUID) == "" {
+		return false
+	}
+	for _, o := range item.Metadata.OwnerReferences {
+		if o.Kind == "CronJob" && o.Name == cronName && o.UID == cronUID {
+			return true
+		}
+	}
+	return false
 }
 
 func (k Kubectl) Diff(ctx context.Context, file string) (string, error) {

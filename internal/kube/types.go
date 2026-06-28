@@ -133,6 +133,7 @@ type CronJobState struct {
 	Schedule        string
 	LastSuccessful  string
 	RecentJobFailed bool
+	RecentJobName   string
 	Detail          string
 }
 

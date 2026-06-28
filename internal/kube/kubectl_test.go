@@ -1,8 +1,10 @@
 package kube
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestClassifyRolloutResult(t *testing.T) {
@@ -51,5 +53,25 @@ func TestClassifyJobStatus(t *testing.T) {
 	})
 	if pending.Complete || pending.Failed {
 		t.Fatalf("Complete=False must remain pending, got %#v", pending)
+	}
+}
+
+func TestCronJobOwnsJobRequiresUID(t *testing.T) {
+	item := jobListItemJSON{}
+	item.Metadata.OwnerReferences = []ownerRefJSON{{Kind: "CronJob", Name: "nightly", UID: "old-uid"}}
+	if cronJobOwnsJob(item, "nightly", "new-uid") {
+		t.Fatal("job from recreated CronJob with stale UID must not match")
+	}
+	if !cronJobOwnsJob(item, "nightly", "old-uid") {
+		t.Fatal("matching CronJob UID must match the owned Job")
+	}
+}
+
+func TestJobStatusCanceledBeforeObservationReturnsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (Kubectl{}).JobStatus(ctx, "migrate", "prod", time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("unobserved cancellation must propagate, got %v", err)
 	}
 }
