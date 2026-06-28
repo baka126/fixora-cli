@@ -3,6 +3,8 @@ package analyzer
 import (
 	"fmt"
 	"strings"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
@@ -14,6 +16,7 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	pods, _ := ctx.GetPods() // used only for readiness-gate refinement; tolerate errors
 	out := []Finding{}
 	for _, service := range services {
 		spec := nestedMap(service, "spec")
@@ -28,6 +31,31 @@ func (a Analyzer) analyzeServiceEndpoints(ctx *ScanContext) ([]Finding, error) {
 		counts := endpointCounts[keyFor(namespace, name)]
 		ready, notReady := counts.Ready, counts.NotReady
 		if !counts.Seen || ready == 0 {
+			if condType, podName, blocked := readinessGateBlock(pods, namespace, selector); blocked {
+				out = append(out, Finding{
+					ID:           keyFor(namespace, "Service/"+name+"/EndpointsBlockedByReadinessGate"),
+					Namespace:    namespace,
+					ResourceKind: "Service",
+					ResourceName: name,
+					Status:       "EndpointsBlockedByReadinessGate",
+					Severity:     "high",
+					Category:     "networking",
+					Summary:      "Service has no ready endpoints because backing pods are blocked by an unsatisfied readiness gate.",
+					Evidence: []Evidence{
+						{Label: "Readiness gate", Value: condType},
+						{Label: "Example pod", Value: podName},
+						{Label: "Selector", Value: compactStringMap(selector)},
+					},
+					GitOps: gitOpsForObject(service),
+					Recommendations: []Recommendation{{
+						Title:         "Resolve the readiness gate condition",
+						Description:   "The backing pods pass their own probes but are held out of the Service because an external controller has not set the readiness-gate condition to True. Investigate the controller that owns this condition. Do NOT modify the readiness probe or Service selector — neither is the cause.",
+						PatchType:     "readiness",
+						SafeByDefault: false,
+					}},
+				})
+				continue
+			}
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Service/"+name+"/NoEndpoints"),
 				Namespace:    namespace,
@@ -144,4 +172,49 @@ func endpointReady(endpoint map[string]any) bool {
 		return true
 	}
 	return boolValue(conditions["ready"])
+}
+
+// readinessGateBlock returns a non-empty (conditionType, podName, true) when at
+// least one pod selected by selector in namespace is held out of endpoints
+// solely by an unsatisfied readiness gate: it declares a readinessGate whose
+// matching status condition is not True, while all its containers report ready.
+func readinessGateBlock(pods kube.PodList, namespace string, selector map[string]string) (conditionType, podName string, blocked bool) {
+	for _, pod := range pods.Items {
+		if pod.Metadata.Namespace != namespace || !labelsMatch(selector, pod.Metadata.Labels) {
+			continue
+		}
+		if len(pod.Spec.ReadinessGates) == 0 || !allContainersReady(pod) {
+			continue
+		}
+		for _, gate := range pod.Spec.ReadinessGates {
+			if gate.ConditionType == "" {
+				continue
+			}
+			if !conditionTrue(pod.Status.Conditions, gate.ConditionType) {
+				return gate.ConditionType, pod.Metadata.Name, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func allContainersReady(pod kube.Pod) bool {
+	if len(pod.Status.ContainerStatuses) == 0 {
+		return false
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			return false
+		}
+	}
+	return true
+}
+
+func conditionTrue(conditions []kube.Condition, condType string) bool {
+	for _, c := range conditions {
+		if c.Type == condType {
+			return strings.EqualFold(c.Status, "True")
+		}
+	}
+	return false // an absent condition is not satisfied
 }
