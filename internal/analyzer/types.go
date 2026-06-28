@@ -175,6 +175,7 @@ type Finding struct {
 	RecentChanges     []string         `json:"recentChanges,omitempty"`
 	Recommendations   []Recommendation `json:"recommendations"`
 	Logs              []LogSnippet     `json:"logs,omitempty"`
+	Recovered         bool             `json:"recovered,omitempty"`
 	AI                *AIResult        `json:"ai,omitempty"`
 }
 

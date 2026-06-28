@@ -525,7 +525,29 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 	// can change f.Status after the ID was first built.
 	f.ID = pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + f.Status
 
+	// Transient-recovery guard: a pod that is currently Running with all
+	// containers Ready has already recovered; its finding came from a historical
+	// trigger (e.g. OOMKilled from LastState). Keep the diagnosis but lower its
+	// urgency — the planner blocks auto-apply for recovered findings.
+	if pod.Status.Phase == "Running" && allContainersReady(pod) {
+		f.Recovered = true
+		f.Severity = "low"
+		f.Evidence = append(f.Evidence, Evidence{
+			Label: "Observed recovered",
+			Value: fmt.Sprintf("all containers Ready; restarts=%d — the pod is currently healthy. Confirm the cause will recur before applying a fix.", totalRestarts(pod)),
+		})
+	}
+
 	return f, true
+}
+
+// totalRestarts sums restartCount across init and app container statuses.
+func totalRestarts(pod kube.Pod) int {
+	total := 0
+	for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+		total += cs.RestartCount
+	}
+	return total
 }
 
 // nodeList returns the cluster nodes, using the per-scan cache when a
