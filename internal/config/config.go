@@ -33,6 +33,7 @@ type Config struct {
 	Paranoid               bool                `json:"paranoid,omitempty"`
 	ApplyDryRun            bool                `json:"applyRequiresDryRun"`
 	CustomAnalyzers        []string            `json:"customAnalyzers,omitempty"`
+	CheckCertExpiry        bool                `json:"checkCertExpiry,omitempty"`
 	AllowedImageRegistries []string            `json:"allowedImageRegistries,omitempty"`
 	MaxPatchMemory         string              `json:"maxPatchMemory,omitempty"`
 	MaxPatchCPU            string              `json:"maxPatchCPU,omitempty"`
