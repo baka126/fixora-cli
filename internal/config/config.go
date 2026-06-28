@@ -18,25 +18,28 @@ import (
 const SchemaVersion = 1
 
 type Config struct {
-	SchemaVersion   int                 `json:"schemaVersion"`
-	AIProvider      string              `json:"aiProvider,omitempty"`
-	AIBaseURL       string              `json:"aiBaseURL,omitempty"`
-	AIModel         string              `json:"aiModel,omitempty"`
-	AIAPIKey        string              `json:"aiApiKey,omitempty"`
-	Profile         string              `json:"profile,omitempty"`
-	CacheEnabled    bool                `json:"cacheEnabled"`
-	Timeout         string              `json:"timeout,omitempty"`
-	LogTail         int                 `json:"logTail,omitempty"`
-	MaxLogBytes     int                 `json:"maxLogBytes,omitempty"`
-	DefaultOutput   string              `json:"defaultOutput,omitempty"`
-	Redact          bool                `json:"redact"`
-	Paranoid        bool                `json:"paranoid,omitempty"`
-	ApplyDryRun     bool                `json:"applyRequiresDryRun"`
-	CustomAnalyzers []string            `json:"customAnalyzers,omitempty"`
-	ActiveProfile   string              `json:"activeProfile,omitempty"`
-	Profiles        map[string]Settings `json:"profiles,omitempty"`
-	Contexts        map[string]Settings `json:"contexts,omitempty"`
-	CustomProfiles  map[string]string   `json:"customProfiles,omitempty"`
+	SchemaVersion          int                 `json:"schemaVersion"`
+	AIProvider             string              `json:"aiProvider,omitempty"`
+	AIBaseURL              string              `json:"aiBaseURL,omitempty"`
+	AIModel                string              `json:"aiModel,omitempty"`
+	AIAPIKey               string              `json:"aiApiKey,omitempty"`
+	Profile                string              `json:"profile,omitempty"`
+	CacheEnabled           bool                `json:"cacheEnabled"`
+	Timeout                string              `json:"timeout,omitempty"`
+	LogTail                int                 `json:"logTail,omitempty"`
+	MaxLogBytes            int                 `json:"maxLogBytes,omitempty"`
+	DefaultOutput          string              `json:"defaultOutput,omitempty"`
+	Redact                 bool                `json:"redact"`
+	Paranoid               bool                `json:"paranoid,omitempty"`
+	ApplyDryRun            bool                `json:"applyRequiresDryRun"`
+	CustomAnalyzers        []string            `json:"customAnalyzers,omitempty"`
+	AllowedImageRegistries []string            `json:"allowedImageRegistries,omitempty"`
+	MaxPatchMemory         string              `json:"maxPatchMemory,omitempty"`
+	MaxPatchCPU            string              `json:"maxPatchCPU,omitempty"`
+	ActiveProfile          string              `json:"activeProfile,omitempty"`
+	Profiles               map[string]Settings `json:"profiles,omitempty"`
+	Contexts               map[string]Settings `json:"contexts,omitempty"`
+	CustomProfiles         map[string]string   `json:"customProfiles,omitempty"`
 }
 
 type Settings struct {
