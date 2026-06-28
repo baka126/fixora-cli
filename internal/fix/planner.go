@@ -299,6 +299,9 @@ func (p *Plan) refreshApplyEligibility(forceRisky bool) {
 		if !p.Safe && !forceRisky {
 			p.BlockedReasons = appendUnique(p.BlockedReasons, "risky fix requires --force-risky")
 		}
+		if p.Recovered && !forceRisky {
+			p.BlockedReasons = appendUnique(p.BlockedReasons, "workload already recovered; rerun with force-risky to override")
+		}
 	}
 }
 

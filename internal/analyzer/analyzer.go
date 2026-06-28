@@ -544,7 +544,10 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 // totalRestarts sums restartCount across init and app container statuses.
 func totalRestarts(pod kube.Pod) int {
 	total := 0
-	for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+	for _, cs := range pod.Status.InitStatuses {
+		total += cs.RestartCount
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
 		total += cs.RestartCount
 	}
 	return total

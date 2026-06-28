@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -29,6 +30,42 @@ func TestRecoveredFindingNotApplyEligibleEvenWhenConcrete(t *testing.T) {
 	plan = Concretize(plan, ConcreteOptions{Container: "api", Image: "ghcr.io/acme/api:v1.2.3"})
 	if plan.ApplyEligible {
 		t.Fatalf("recovered plan must not be apply-eligible after Concretize: %#v", plan)
+	}
+	// Fix #1: after Concretize, the recovered diagnostic reason must be present.
+	if len(plan.BlockedReasons) == 0 {
+		t.Fatal("expected BlockedReasons to be non-empty after Concretize (recovered gate diagnostic)")
+	}
+	found := false
+	for _, r := range plan.BlockedReasons {
+		if strings.Contains(r, "recovered") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a recovered-related BlockedReason after Concretize; got: %v", plan.BlockedReasons)
+	}
+}
+
+func TestRecoveredFindingBlockedThroughValidatedAIPatch(t *testing.T) {
+	plan := BuildPlan(recoveredImageFinding())
+	// WithValidatedAIPatch sets Safe/CanApply/confidence, clears BlockedReasons —
+	// but the recovered gate must survive it.
+	validPatch := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+spec:
+  template:
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/acme/api:v1.2.3
+`
+	plan = WithValidatedAIPatch(plan, validPatch, 95)
+	if plan.ApplyEligible {
+		t.Fatalf("recovered plan must not be apply-eligible even after WithValidatedAIPatch: %#v", plan)
 	}
 }
 
