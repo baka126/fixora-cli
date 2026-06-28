@@ -494,35 +494,35 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
-	// Refine diagnostics based on logs
-	var logText string
+	// Refine diagnostics from logs via the deterministic signal classifier.
+	// Current logs are authoritative; previous logs drive the recurrence flag.
+	var current, previous string
 	for _, l := range f.Logs {
-		logText += l.Text + "\n"
+		switch l.Source {
+		case "current":
+			current += l.Text + "\n"
+		case "previous":
+			previous += l.Text + "\n"
+		}
 	}
-	if strings.Contains(logText, "exec format error") {
-		f.Status = "ExecFormatError"
-		f.Summary = "Container failed to execute due to an architecture mismatch (exec format error)."
-		f.Category = "runtime"
-		f.Recommendations = []Recommendation{{
-			Title:         "Deploy matching image architecture",
-			Description:   "The container image architecture does not match the CPU architecture of the node. Rebuild the image for this platform (e.g., using docker buildx for linux/arm64 or linux/amd64) or schedule the pod on a node with a matching CPU architecture.",
-			PatchType:     "fix-architecture",
-			SafeByDefault: true,
-		}}
-		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
-	} else if strings.Contains(logText, "Permission denied") || strings.Contains(logText, "permission denied") {
-		f.Status = "PermissionDenied"
-		f.Summary = "Container execution failed due to insufficient file or system permissions."
-		f.Category = "security"
-		f.Recommendations = []Recommendation{{
-			Title:         "Adjust securityContext or file permissions",
-			Description:   "Check runAsUser, fsGroup, readOnlyRootFilesystem, and volume/mount directory permissions.",
-			PatchType:     "security",
-			SafeByDefault: false,
-		}}
+	if sig, match, ok := classifyLogSignal(current, previous); ok {
+		f.Status = sig.status
+		f.Summary = sig.summary
+		f.Category = sig.category
+		f.Recommendations = []Recommendation{sig.rec}
+		if sig.status == "ExecFormatError" {
+			a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
+		}
+		recurrence := "matched in current logs only — new since the last restart"
+		if match.Recurring {
+			recurrence = "matched in both current and previous logs — persists across restarts (not transient)"
+		} else if match.Previous {
+			recurrence = "matched in previous logs only — last failed run evidence; current logs did not repeat it"
+		}
+		f.Evidence = append(f.Evidence, Evidence{Label: "Log recurrence", Value: recurrence})
 	}
-	// Keep the identity aligned with the final status: the log-refinement
-	// branches above can change f.Status after the ID was first built.
+	// Keep the identity aligned with the final status: the log-refinement above
+	// can change f.Status after the ID was first built.
 	f.ID = pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + f.Status
 
 	return f, true
