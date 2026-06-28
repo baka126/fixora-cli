@@ -22,11 +22,12 @@ const labelSession = "fixora.io/session"
 const annotationExpires = "fixora.io/expires-at"
 
 type clonePlan struct {
-	Original       *corev1.Pod
-	UnpatchedClone *corev1.Pod
-	Clone          *corev1.Pod
-	Policy         *networkingv1.NetworkPolicy
-	Warnings       []string
+	Original        *corev1.Pod
+	UnpatchedClone  *corev1.Pod
+	Clone           *corev1.Pod
+	Policy          *networkingv1.NetworkPolicy
+	Warnings        []string
+	NamespaceLabels map[string]string
 }
 
 func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session string) (clonePlan, error) {
@@ -39,8 +40,9 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	}
 	clone := sanitizePod(original, session, req.Timeout)
 	clone.Name = cloneName(original.Name, session)
+	nsLabels := namespaceLabels(ctx, c, req.Namespace)
 	warnings := cloneWarnings(req.Egress)
-	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource)...)
+	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource, nsLabels)...)
 	if strings.EqualFold(req.Plan.Strategy, "fix-architecture") {
 		platformSource := original
 		if platformSource.Spec.NodeName == "" && strings.TrimSpace(req.Finding.PodName) != "" {
@@ -60,7 +62,20 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 		return clonePlan{}, err
 	}
 	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
-	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings}, nil
+	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceLabels: nsLabels}, nil
+}
+
+// namespaceLabels reads the source namespace labels for mesh-injection
+// detection; a read failure is non-fatal (no labels → no mesh warning).
+func namespaceLabels(ctx context.Context, c *kube.TypedClient, namespace string) map[string]string {
+	if c == nil || c.Clientset == nil || namespace == "" {
+		return nil
+	}
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return nil
+	}
+	return ns.Labels
 }
 
 func podTemplateForResource(ctx context.Context, c *kube.TypedClient, namespace, resource, podHint string) (*corev1.Pod, error) {
@@ -314,7 +329,7 @@ func hasServiceAccountToken(volume corev1.Volume) bool {
 	return false
 }
 
-func cloneFidelityWarnings(original *corev1.Pod, resource string) []string {
+func cloneFidelityWarnings(original *corev1.Pod, resource string, namespaceLabels map[string]string) []string {
 	var warnings []string
 	kind, _ := splitResource(resource)
 	if !strings.EqualFold(kind, "pod") && !strings.EqualFold(kind, "pods") {
@@ -329,7 +344,90 @@ func cloneFidelityWarnings(original *corev1.Pod, resource string) []string {
 	if strings.EqualFold(kind, "statefulset") || strings.EqualFold(kind, "sts") {
 		warnings = append(warnings, "StatefulSet shadow verification does not prove ordinal identity, ordered rollout, or persistent storage behavior")
 	}
+	if sourceUsesMesh(original, namespaceLabels) {
+		warnings = append(warnings, "production injects a service-mesh sidecar; the shadow runs without it — readiness/mTLS may differ")
+	}
+	if isJobKind(kind) {
+		warnings = append(warnings, "shadow verification executes the Job/CronJob workload; a rerun may not be idempotent (it can repeat side effects such as writes, emails, or external calls)")
+	}
 	return warnings
+}
+
+func isJobKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "job", "jobs", "cronjob", "cronjobs", "cj":
+		return true
+	default:
+		return false
+	}
+}
+
+// sourceUsesMesh reports whether production would inject a service-mesh sidecar
+// (Istio or Linkerd) that the stripped shadow clone runs without.
+func sourceUsesMesh(original *corev1.Pod, namespaceLabels map[string]string) bool {
+	if strings.EqualFold(namespaceLabels["istio-injection"], "enabled") ||
+		strings.EqualFold(namespaceLabels["linkerd.io/inject"], "enabled") {
+		return true
+	}
+	if original == nil {
+		return false
+	}
+	a := original.Annotations
+	if strings.EqualFold(a["sidecar.istio.io/inject"], "true") ||
+		strings.EqualFold(a["linkerd.io/inject"], "enabled") {
+		return true
+	}
+	return false
+}
+
+// partialPassCaveats lists production surfaces a passing shadow did not actually
+// exercise. It only lowers stated confidence; it never feeds the apply gate.
+func partialPassCaveats(original *corev1.Pod, namespaceLabels map[string]string) []string {
+	var caveats []string
+	if original == nil {
+		return caveats
+	}
+	if sourceReferencesSecrets(original) {
+		caveats = append(caveats, "source references Secret values that the shadow did not exercise; secret-dependent code paths were not verified")
+	}
+	if sourceReferencesPVC(original) {
+		caveats = append(caveats, "source mounts a persistent volume claim that the shadow did not exercise; storage behavior was not verified")
+	}
+	if sourceUsesMesh(original, namespaceLabels) {
+		caveats = append(caveats, "production injects a service-mesh sidecar that the shadow did not run; mTLS and mesh-mediated traffic were not verified")
+	}
+	return caveats
+}
+
+func sourceReferencesSecrets(pod *corev1.Pod) bool {
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Secret != nil || hasProjectedSecret(volume) {
+			return true
+		}
+	}
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, source := range container.EnvFrom {
+			if source.SecretRef != nil {
+				return true
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sourceReferencesPVC(pod *corev1.Pod) bool {
+	for _, volume := range pod.Spec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func pinCloneToOriginalPlatform(ctx context.Context, c *kube.TypedClient, original, clone *corev1.Pod) (string, error) {

@@ -12,6 +12,7 @@ const (
 	FailureClassSecondaryFailure     = "secondary-failure-after-original-fix"
 	FailureClassExpectedWorkload     = "expected-workload-failure"
 	FailureClassCandidateRegression  = "candidate-regression"
+	FailureClassProbeMisconfig       = "probe-misconfiguration"
 	FailureClassTimeout              = "verification-timeout"
 	FailureClassUnknown              = "unknown"
 )
@@ -97,12 +98,54 @@ func DiagnoseFailureForPatch(result Result, finding analyzer.Finding, plan fix.P
 		return diagnosis
 	}
 
+	// Readiness never passed but the shadow surfaced no recognized error signal
+	// in its logs/events: the workload is running yet the probe never reported
+	// ready. That points at a probe misconfiguration, not a candidate regression.
+	if shadowReason == "" && !hasRecognizedErrorSignal(shadowText) {
+		diagnosis.Class = FailureClassProbeMisconfig
+		diagnosis.Summary = "The shadow ran without a recognized error but never passed its readiness probe; this looks like a probe misconfiguration."
+		diagnosis.Details = append(diagnosis.Details,
+			"Check the readiness/liveness probe path, port, scheme, initialDelaySeconds, and timeoutSeconds against what the container actually serves.",
+			"Delivery stays blocked: shadow could not prove readiness, so the candidate is not verified.")
+		return diagnosis
+	}
+
 	if shadowReason != "" {
 		diagnosis.Class = FailureClassCandidateRegression
 		diagnosis.Summary = "The shadow clone failed with " + displayReason(shadowReason) + "."
 		diagnosis.Details = append(diagnosis.Details, "Review shadow logs/events and generate a revised patch before delivery.")
 	}
 	return diagnosis
+}
+
+// hasRecognizedErrorSignal reports whether folded shadow text contains any
+// known crash/error fingerprint.
+//
+// ponytail: the authoritative classifier analyzer.classifyLogSignal is
+// unexported, so importing it here would require widening that package's API
+// for one boolean. We replicate the minimal "any recognized error signal?"
+// check against the same fingerprints instead.
+func hasRecognizedErrorSignal(folded string) bool {
+	signals := []string{
+		"exec format error",
+		"permission denied",
+		"no space left on device", "disk quota exceeded",
+		"no such host", "could not resolve host", "temporary failure in name resolution", "server misbehaving",
+		"tls: handshake failure", "x509:", "certificate signed by unknown authority", "certificate has expired",
+		"authentication failed", "invalid credentials", "password authentication failed", "401 unauthorized", "access denied",
+		"could not connect to server", "econnrefused", "connection refused",
+		"context deadline exceeded", "i/o timeout", "request timed out",
+		"yaml: line", "json: cannot unmarshal", "failed to parse config", "invalid configuration", "toml:",
+		"environment variable", "missing required env", "missing env var",
+		"panic:", "goroutine ", "traceback (most recent call last)", "fatal error:", "segmentation fault", "unhandled exception", "referenceerror:", "nameerror:",
+		"oomkilled", "crashloopbackoff", "imagepullbackoff", "errimagepull", "createcontainerconfigerror", "back-off",
+	}
+	for _, s := range signals {
+		if strings.Contains(folded, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalAttempt(result Result) (Attempt, bool) {
