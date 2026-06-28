@@ -260,6 +260,10 @@ func (a Analyzer) tlsCertExpiryFindings(ctx *ScanContext, ingress map[string]any
 		summary = "Ingress TLS certificate has expired."
 	}
 	days := int(time.Until(notAfter).Hours() / 24)
+	expiryLabel, expiryValue := "Days remaining", strconv.Itoa(days)
+	if days < 0 {
+		expiryLabel, expiryValue = "Expired", strconv.Itoa(-days)+" days ago"
+	}
 	return []Finding{{
 		ID:           keyFor(namespace, "Ingress/"+ingressName+"/"+status+"/"+secretName),
 		Namespace:    namespace,
@@ -272,7 +276,7 @@ func (a Analyzer) tlsCertExpiryFindings(ctx *ScanContext, ingress map[string]any
 		Evidence: []Evidence{
 			{Label: "TLS secret", Value: secretName},
 			{Label: "Not after", Value: notAfter.UTC().Format(time.RFC3339)},
-			{Label: "Days remaining", Value: strconv.Itoa(days)},
+			{Label: expiryLabel, Value: expiryValue},
 			{Label: "Subject", Value: cn},
 		},
 		GitOps: gitOpsForObject(ingress),
