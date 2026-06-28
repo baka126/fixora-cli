@@ -111,3 +111,13 @@ func TestLogSignalStatusesDoNotCollideWithPlannerKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyLogSignalPlainConnectionRefusedIsNotDatabase(t *testing.T) {
+	// A bare "connection refused" with no DB engine token must NOT classify as
+	// DatabaseUnreachable. This locks the deliberate decision that keeps the
+	// status clear of BuildPlan's ConnectionRefused switch key.
+	sig, _, ok := classifyLogSignal("dial tcp 10.0.0.5:9000: connect: connection refused", "")
+	if ok && sig.status == "DatabaseUnreachable" {
+		t.Fatalf("plain connection refused must not classify as DatabaseUnreachable; got %q", sig.status)
+	}
+}
