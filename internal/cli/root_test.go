@@ -815,6 +815,10 @@ type fakeGate struct {
 	statErr  error
 	events   []kube.Event
 	runCalls [][]string
+	job      kube.JobState
+	jobErr   error
+	cron     kube.CronJobState
+	cronErr  error
 }
 
 func (f *fakeGate) RolloutStatus(_ context.Context, _, _, _ string, _ time.Duration) (bool, string, error) {
@@ -826,6 +830,14 @@ func (f *fakeGate) GetEvents(_ context.Context, _, _ string) ([]kube.Event, erro
 func (f *fakeGate) Run(_ context.Context, args ...string) ([]byte, error) {
 	f.runCalls = append(f.runCalls, args)
 	return nil, nil
+}
+
+// Completion fields + methods for fakeGate (Job/CronJob gate tests).
+func (f *fakeGate) JobStatus(_ context.Context, _, _ string, _ time.Duration) (kube.JobState, error) {
+	return f.job, f.jobErr
+}
+func (f *fakeGate) CronJobStatus(_ context.Context, _, _ string) (kube.CronJobState, error) {
+	return f.cron, f.cronErr
 }
 
 func gateFinding() analyzer.Finding {
@@ -916,5 +928,98 @@ func TestGateRolloutYesModeReportsWithoutRunning(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "kubectl rollout undo deployment/api") {
 		t.Fatalf("--yes must print the rollback command, got %q", errb.String())
+	}
+}
+
+func jobGateFinding() analyzer.Finding {
+	return analyzer.Finding{ResourceKind: "Job", ResourceName: "migrate", Namespace: "prod"}
+}
+
+func TestGateRolloutJobCompleteReturnsZero(t *testing.T) {
+	g := &fakeGate{job: kube.JobState{Complete: true}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, jobGateFinding(), fix.Plan{}, time.Minute)
+	if code != 0 {
+		t.Fatalf("completed job must return 0, got %d", code)
+	}
+	if len(g.runCalls) != 0 {
+		t.Fatalf("completed job must not run remediation, got %#v", g.runCalls)
+	}
+}
+
+func TestGateRolloutJobFailedRunsDeleteOnConsent(t *testing.T) {
+	g := &fakeGate{job: kube.JobState{Failed: true, Detail: "succeeded 0, failed 6, active 0"}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader("y\n"), false, g, jobGateFinding(), fix.Plan{}, time.Minute)
+	if code == 0 {
+		t.Fatal("failed job must return non-zero")
+	}
+	if len(g.runCalls) != 1 || g.runCalls[0][0] != "delete" {
+		t.Fatalf("consented remediation must run kubectl delete, got %#v", g.runCalls)
+	}
+}
+
+func TestGateRolloutJobFailedYesModeReportsWithoutRunning(t *testing.T) {
+	g := &fakeGate{job: kube.JobState{Failed: true}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), true, g, jobGateFinding(), fix.Plan{}, time.Minute)
+	if code == 0 {
+		t.Fatal("failed job must return non-zero in --yes mode")
+	}
+	if len(g.runCalls) != 0 {
+		t.Fatalf("--yes must not auto-remediate, got %#v", g.runCalls)
+	}
+	if !strings.Contains(errb.String(), "kubectl delete job/migrate") {
+		t.Fatalf("--yes must print the remediation command, got %q", errb.String())
+	}
+}
+
+func TestGateRolloutJobPendingReturnsZero(t *testing.T) {
+	g := &fakeGate{job: kube.JobState{}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, jobGateFinding(), fix.Plan{}, time.Minute)
+	if code != 0 {
+		t.Fatalf("still-running job must be non-blocking (0), got %d", code)
+	}
+}
+
+func cronGateFinding() analyzer.Finding {
+	return analyzer.Finding{ResourceKind: "CronJob", ResourceName: "nightly", Namespace: "prod"}
+}
+
+func TestGateRolloutCronJobFailingRunsSuspendOnConsent(t *testing.T) {
+	g := &fakeGate{cron: kube.CronJobState{Schedule: "0 * * * *", RecentJobFailed: true, Detail: "most recent job nightly-1: succeeded 0, failed 1, active 0"}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader("y\n"), false, g, cronGateFinding(), fix.Plan{}, time.Minute)
+	if code == 0 {
+		t.Fatal("failing cronjob must return non-zero")
+	}
+	if len(g.runCalls) != 1 || g.runCalls[0][0] != "patch" {
+		t.Fatalf("consented remediation must run kubectl patch suspend, got %#v", g.runCalls)
+	}
+}
+
+func TestGateRolloutCronJobHealthyReturnsZero(t *testing.T) {
+	g := &fakeGate{cron: kube.CronJobState{Schedule: "0 * * * *", LastSuccessful: "2026-06-27T00:00:00Z"}}
+	var out, errb bytes.Buffer
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, cronGateFinding(), fix.Plan{}, time.Minute)
+	if code != 0 {
+		t.Fatalf("healthy cronjob must return 0, got %d", code)
+	}
+	if len(g.runCalls) != 0 {
+		t.Fatalf("healthy cronjob must not run remediation, got %#v", g.runCalls)
+	}
+}
+
+func TestGateRolloutTrimsCompletionKind(t *testing.T) {
+	g := &fakeGate{cron: kube.CronJobState{Schedule: "0 * * * *", LastSuccessful: "2026-06-27T00:00:00Z"}}
+	var out, errb bytes.Buffer
+	finding := analyzer.Finding{ResourceKind: " CronJob ", ResourceName: "nightly", Namespace: "prod"}
+	code := gateRollout(context.Background(), &out, &errb, strings.NewReader(""), false, g, finding, fix.Plan{}, time.Minute)
+	if code != 0 {
+		t.Fatalf("trimmed cronjob kind must route to completion verifier, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "CronJob/nightly accepted") {
+		t.Fatalf("expected completion verifier output, got %q", errb.String())
 	}
 }

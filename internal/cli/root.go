@@ -922,6 +922,7 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 
 type rolloutGate interface {
 	ops.RolloutChecker
+	ops.CompletionChecker
 	Run(ctx context.Context, args ...string) ([]byte, error)
 }
 
@@ -929,12 +930,20 @@ type rolloutGate interface {
 // the resource-aware rollback. It never auto-rolls-back without explicit
 // interactive confirmation.
 func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, finding analyzer.Finding, plan fix.Plan, timeout time.Duration) int {
-	outcome := ops.VerifyRollout(ctx, k, finding, plan, timeout)
+	var outcome ops.RolloutOutcome
+	switch strings.ToLower(strings.TrimSpace(finding.ResourceKind)) {
+	case "job", "cronjob":
+		outcome = ops.VerifyCompletion(ctx, k, finding, plan, timeout)
+	default:
+		outcome = ops.VerifyRollout(ctx, k, finding, plan, timeout)
+	}
 	switch outcome.Class {
-	case ops.RolloutHealthy:
+	case ops.RolloutHealthy, ops.CompletionSucceeded, ops.CronJobHealthy:
 		fmt.Fprintf(stderr, "rollout healthy: %s\n", outcome.Summary)
 		return 0
-	case ops.RolloutSkipped, ops.RolloutUnknown:
+	case ops.RolloutSkipped, ops.RolloutUnknown,
+		ops.CompletionPending, ops.CompletionUnknown,
+		ops.CronJobSuspended, ops.CronJobUnknown:
 		fmt.Fprintf(stderr, "warning: %s\n", outcome.Summary)
 		return 0
 	}
@@ -944,6 +953,9 @@ func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, as
 	}
 	for _, hint := range outcome.CauseHints {
 		fmt.Fprintf(stderr, "  hint: %s\n", hint)
+	}
+	for _, w := range outcome.Rollback.Warnings {
+		fmt.Fprintf(stderr, "  note: %s\n", w)
 	}
 	cmd := strings.TrimSpace(outcome.Rollback.Command)
 	if cmd == "" {
