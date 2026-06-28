@@ -505,7 +505,7 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 			previous += l.Text + "\n"
 		}
 	}
-	if sig, recurring, ok := classifyLogSignal(current, previous); ok {
+	if sig, match, ok := classifyLogSignal(current, previous); ok {
 		f.Status = sig.status
 		f.Summary = sig.summary
 		f.Category = sig.category
@@ -514,8 +514,10 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 			a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
 		}
 		recurrence := "matched in current logs only — new since the last restart"
-		if recurring {
+		if match.Recurring {
 			recurrence = "matched in both current and previous logs — persists across restarts (not transient)"
+		} else if match.Previous {
+			recurrence = "matched in previous logs only — last failed run evidence; current logs did not repeat it"
 		}
 		f.Evidence = append(f.Evidence, Evidence{Label: "Log recurrence", Value: recurrence})
 	}

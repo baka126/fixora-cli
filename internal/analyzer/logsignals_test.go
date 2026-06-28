@@ -59,26 +59,26 @@ func TestClassifyLogSignalBarePanic(t *testing.T) {
 func TestClassifyLogSignalRecurrence(t *testing.T) {
 	cur := "panic: nil pointer dereference"
 	prev := "panic: nil pointer dereference"
-	_, recurring, ok := classifyLogSignal(cur, prev)
-	if !ok || !recurring {
-		t.Fatalf("same signal in both logs must be recurring; recurring=%v ok=%v", recurring, ok)
+	_, match, ok := classifyLogSignal(cur, prev)
+	if !ok || !match.Recurring || !match.Current || !match.Previous {
+		t.Fatalf("same signal in both logs must be recurring current+previous; match=%#v ok=%v", match, ok)
 	}
 }
 
 func TestClassifyLogSignalRegressionNotRecurring(t *testing.T) {
-	_, recurring, ok := classifyLogSignal("could not connect to server", "")
-	if !ok || recurring {
-		t.Fatalf("signal only in current must not be recurring; recurring=%v ok=%v", recurring, ok)
+	_, match, ok := classifyLogSignal("could not connect to server", "")
+	if !ok || match.Recurring || !match.Current || match.Previous {
+		t.Fatalf("signal only in current must not be recurring; match=%#v ok=%v", match, ok)
 	}
 }
 
 func TestClassifyLogSignalFallsBackToPrevious(t *testing.T) {
-	sig, recurring, ok := classifyLogSignal("", "x509: certificate has expired")
+	sig, match, ok := classifyLogSignal("", "x509: certificate has expired")
 	if !ok || sig.status != "TLSHandshakeError" {
 		t.Fatalf("must fall back to previous logs; got %q ok=%v", sig.status, ok)
 	}
-	if recurring {
-		t.Fatalf("fallback-from-previous must not be flagged recurring")
+	if match.Recurring || match.Current || !match.Previous {
+		t.Fatalf("fallback-from-previous must be previous-only, got %#v", match)
 	}
 }
 
@@ -119,5 +119,22 @@ func TestClassifyLogSignalPlainConnectionRefusedIsNotDatabase(t *testing.T) {
 	sig, _, ok := classifyLogSignal("dial tcp 10.0.0.5:9000: connect: connection refused", "")
 	if ok && sig.status == "DatabaseUnreachable" {
 		t.Fatalf("plain connection refused must not classify as DatabaseUnreachable; got %q", sig.status)
+	}
+}
+
+func TestClassifyLogSignalReferenceErrorIsApplicationPanicNotMissingEnv(t *testing.T) {
+	sig, _, ok := classifyLogSignal("ReferenceError: foo is not defined", "")
+	if !ok {
+		t.Fatal("expected ReferenceError to classify as an application fault")
+	}
+	if sig.status != "ApplicationPanic" {
+		t.Fatalf("ReferenceError must not classify as MissingEnvVar; got %q", sig.status)
+	}
+}
+
+func TestClassifyLogSignalEnvUndefinedNeedsEnvContext(t *testing.T) {
+	sig, _, ok := classifyLogSignal("environment variable DB_HOST is not defined", "")
+	if !ok || sig.status != "MissingEnvVar" {
+		t.Fatalf("env-specific undefined message must classify as MissingEnvVar; got %q ok=%v", sig.status, ok)
 	}
 }

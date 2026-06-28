@@ -25,6 +25,12 @@ type logSignal struct {
 	rec      Recommendation
 }
 
+type logSignalMatch struct {
+	Current   bool
+	Previous  bool
+	Recurring bool
+}
+
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {
@@ -170,7 +176,9 @@ var logSignals = []logSignal{
 		category: "config",
 		class:    classAdvise,
 		match: func(s string) bool {
-			return containsAll(s, "environment variable", "not set") || containsAny(s, "missing required env", "is not defined")
+			return containsAll(s, "environment variable", "not set") ||
+				containsAny(s, "missing required env", "missing env var") ||
+				(strings.Contains(s, "is not defined") && containsAny(s, "environment variable", "env var", "process.env"))
 		},
 		rec: Recommendation{
 			Title:       "Supply the missing environment variable",
@@ -183,7 +191,7 @@ var logSignals = []logSignal{
 		category: "runtime",
 		class:    classNoMutate,
 		match: func(s string) bool {
-			return containsAny(s, "panic:", "goroutine ", "traceback (most recent call last)", "fatal error:", "segmentation fault", "unhandled exception")
+			return containsAny(s, "panic:", "goroutine ", "traceback (most recent call last)", "fatal error:", "segmentation fault", "unhandled exception", "referenceerror:", "nameerror:")
 		},
 		rec: Recommendation{
 			Title:       "Fix the application code",
@@ -204,18 +212,18 @@ func firstSignal(folded string) (logSignal, bool) {
 }
 
 // classifyLogSignal classifies current logs first (authoritative, most recent),
-// falling back to previous logs only if current matched nothing. recurring is
-// true only when the same status matches in BOTH current and previous logs.
-// ok is false when neither log matched any signal.
-func classifyLogSignal(current, previous string) (logSignal, bool, bool) {
+// falling back to previous logs only if current matched nothing. The match
+// origin stays explicit so callers can distinguish current-only, previous-only,
+// and recurring evidence.
+func classifyLogSignal(current, previous string) (logSignal, logSignalMatch, bool) {
 	curSig, curOK := firstSignal(strings.ToLower(current))
 	if !curOK {
 		if prevSig, prevOK := firstSignal(strings.ToLower(previous)); prevOK {
-			return prevSig, false, true
+			return prevSig, logSignalMatch{Previous: true}, true
 		}
-		return logSignal{}, false, false
+		return logSignal{}, logSignalMatch{}, false
 	}
 	prevSig, prevOK := firstSignal(strings.ToLower(previous))
 	recurring := prevOK && prevSig.status == curSig.status
-	return curSig, recurring, true
+	return curSig, logSignalMatch{Current: true, Previous: recurring, Recurring: recurring}, true
 }
