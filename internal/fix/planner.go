@@ -28,6 +28,7 @@ type Plan struct {
 	Guardrails       []string `json:"guardrails,omitempty"`
 	PatchTemplate    string   `json:"patchTemplate"`
 	RollbackCommand  string   `json:"rollbackCommand,omitempty"`
+	Recovered        bool     `json:"recovered,omitempty"`
 }
 
 type Patch struct {
@@ -80,6 +81,13 @@ func BuildPlan(finding analyzer.Finding) Plan {
 	if finding.GitOps.TargetAdvice != "" {
 		plan.Steps = append(plan.Steps, finding.GitOps.TargetAdvice)
 		plan.BlockedReasons = append(plan.BlockedReasons, "GitOps-managed workload requires source-level patching.")
+	}
+	if finding.Recovered {
+		plan.Recovered = true
+		plan.BlockedReasons = append(plan.BlockedReasons,
+			"Workload has already recovered (all containers Ready); confirm the cause will recur before applying.")
+		plan.Warnings = append(plan.Warnings,
+			"Observed recovered: the pod is currently healthy. The underlying cause may recur — review before applying.")
 	}
 	plan.Guardrails = append(plan.Guardrails, "identity-check-required", "source-patch-preferred", "secret-values-blocked")
 	switch {
@@ -283,7 +291,7 @@ func validateConcretePatch(plan Plan) ([]string, []string) {
 }
 
 func (p *Plan) refreshApplyEligibility(forceRisky bool) {
-	p.ApplyEligible = p.CanApply && p.Confidence >= 90 && len(p.BlockedReasons) == 0 && (p.Safe || forceRisky)
+	p.ApplyEligible = p.CanApply && p.Confidence >= 90 && len(p.BlockedReasons) == 0 && (p.Safe || forceRisky) && (!p.Recovered || forceRisky)
 	if p.CanApply && !p.ApplyEligible {
 		if p.Confidence < 90 {
 			p.BlockedReasons = appendUnique(p.BlockedReasons, "confidence below production apply threshold 90")
