@@ -1,5 +1,10 @@
 package analyzer
 
+import (
+	"fmt"
+	"strconv"
+)
+
 func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 	ingresses, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "ingresses")
 	if err != nil {
@@ -10,8 +15,10 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 		return nil, err
 	}
 	serviceSet := map[string]bool{}
+	serviceByKey := map[string]map[string]any{}
 	for _, service := range services {
 		serviceSet[objectKey(service)] = true
+		serviceByKey[objectKey(service)] = service
 	}
 	out := []Finding{}
 	for _, ingress := range ingresses {
@@ -60,6 +67,47 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 				}},
 			})
 		}
+		for _, ref := range ingressBackendRefs(spec) {
+			service, ok := serviceByKey[keyFor(namespace, ref.Service)]
+			if !ok {
+				continue // a missing Service is already reported by the existence loop
+			}
+			numbers, names := serviceExposedPorts(service)
+			var requested string
+			mismatch := false
+			if ref.PortName != "" {
+				requested = ref.PortName + " (named)"
+				mismatch = !names[ref.PortName]
+			} else if ref.PortNumber != 0 {
+				requested = fmt.Sprint(ref.PortNumber)
+				mismatch = !numbers[ref.PortNumber]
+			}
+			if !mismatch {
+				continue
+			}
+			out = append(out, Finding{
+				ID:           keyFor(namespace, "Ingress/"+name+"/IngressPortMismatch/"+ref.Service+"/"+requested),
+				Namespace:    namespace,
+				ResourceKind: "Ingress",
+				ResourceName: name,
+				Status:       "IngressPortMismatch",
+				Severity:     "high",
+				Category:     "networking",
+				Summary:      "Ingress references a Service port the Service does not expose.",
+				Evidence: []Evidence{
+					{Label: "Backend service", Value: ref.Service},
+					{Label: "Requested port", Value: requested},
+					{Label: "Service exposed ports", Value: portsLabel(numbers, names)},
+				},
+				GitOps: gitOpsForObject(ingress),
+				Recommendations: []Recommendation{{
+					Title:         "Retarget the Ingress backend port",
+					Description:   "The Ingress backend references a port the Service does not expose. Update the Ingress backend port or the Service port at the source manifest after confirming the intended target.",
+					PatchType:     "ingress",
+					SafeByDefault: false,
+				}},
+			})
+		}
 		for _, secretName := range ingressTLSSecretNames(spec) {
 			state := a.objectNameState(ctx, namespace, "secret", secretName)
 			if secretName == "" || state.Exists {
@@ -92,4 +140,69 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+type ingressBackendRef struct {
+	Service    string
+	PortNumber int
+	PortName   string
+}
+
+// ingressBackendRefs extracts (service, port) references from an Ingress spec,
+// covering networking/v1 (backend.service.port.number|name) and the legacy
+// extensions/v1beta1 backend.servicePort.
+func ingressBackendRefs(spec map[string]any) []ingressBackendRef {
+	var out []ingressBackendRef
+	add := func(backend map[string]any) {
+		name := backendServiceName(backend)
+		if name == "" {
+			return
+		}
+		ref := ingressBackendRef{Service: name}
+		port := nestedMap(nestedMap(backend, "service"), "port")
+		if num := port["number"]; num != nil {
+			ref.PortNumber = intValue(num)
+		}
+		ref.PortName = strValue(port["name"])
+		if ref.PortNumber == 0 && ref.PortName == "" {
+			if sp := backend["servicePort"]; sp != nil {
+				if s, isStr := sp.(string); isStr {
+					if n, convErr := strconv.Atoi(s); convErr == nil {
+						ref.PortNumber = n
+					} else {
+						ref.PortName = s
+					}
+				} else {
+					ref.PortNumber = intValue(sp)
+				}
+			}
+		}
+		out = append(out, ref)
+	}
+	add(nestedMap(spec, "defaultBackend"))
+	for _, rule := range nestedSlice(spec, "rules") {
+		ruleMap, _ := rule.(map[string]any)
+		http := nestedMap(ruleMap, "http")
+		for _, path := range nestedSlice(http, "paths") {
+			pathMap, _ := path.(map[string]any)
+			add(nestedMap(pathMap, "backend"))
+		}
+	}
+	return out
+}
+
+// serviceExposedPorts returns the numeric and named ports a Service exposes.
+func serviceExposedPorts(service map[string]any) (numbers map[int]bool, names map[string]bool) {
+	numbers = map[int]bool{}
+	names = map[string]bool{}
+	for _, p := range nestedSlice(nestedMap(service, "spec"), "ports") {
+		pm, _ := p.(map[string]any)
+		if n := intValue(pm["port"]); n != 0 {
+			numbers[n] = true
+		}
+		if name := strValue(pm["name"]); name != "" {
+			names[name] = true
+		}
+	}
+	return numbers, names
 }
