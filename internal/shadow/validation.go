@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/yaml"
+
+	"github.com/fixora/kubectl-fixora/internal/image"
 )
 
 func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
@@ -228,6 +230,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 	switch strategy {
 	case "image", "fix-architecture":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "image": true}, strategy)...)
+		reasons = append(reasons, validateImageRegistries(origSpec, revSpec, activePatchPolicy())...)
 	case "resources":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "resources": true}, strategy)...)
 	case "env":
@@ -343,4 +346,41 @@ func truthy(value any) bool {
 func stringValue(value any) string {
 	s, _ := value.(string)
 	return s
+}
+
+// validateImageRegistries rejects revised container images whose registry host
+// is not allowed. The allowed set is the policy allowlist plus every registry
+// host already present in the original patch (operator-sanctioned).
+func validateImageRegistries(original, revised map[string]any, policy PatchPolicy) []string {
+	allowed := append([]string{}, policy.AllowedRegistries...)
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(original[section]) {
+			img := stringValue(c["image"])
+			if img == "" || strings.Contains(img, "TODO_") {
+				continue
+			}
+			if host, err := image.Registry(img); err == nil {
+				allowed = append(allowed, host)
+			}
+		}
+	}
+	var reasons []string
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(revised[section]) {
+			img := stringValue(c["image"])
+			if img == "" || strings.Contains(img, "TODO_") {
+				continue
+			}
+			name := stringValue(c["name"])
+			host, err := image.Registry(img)
+			if err != nil {
+				reasons = append(reasons, fmt.Sprintf("%s.%s image %q is not a valid reference", section, name, img))
+				continue
+			}
+			if !hostMatchesAny(host, allowed) {
+				reasons = append(reasons, fmt.Sprintf("%s.%s image registry %q is not allowed", section, name, host))
+			}
+		}
+	}
+	return reasons
 }
