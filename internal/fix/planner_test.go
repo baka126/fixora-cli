@@ -123,3 +123,22 @@ func TestWorkloadPatchTemplatesUseControllerPodTemplateShape(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonSetTier3StatusesAreReviewOnly: DaemonSetUnderScheduled and DaemonSetFleetHeterogeneous
+// must fall through to BuildPlan's default branch and remain not apply-eligible.
+func TestDaemonSetTier3StatusesAreReviewOnly(t *testing.T) {
+	for _, status := range []string{"DaemonSetUnderScheduled", "DaemonSetFleetHeterogeneous"} {
+		plan := BuildPlan(analyzer.Finding{
+			Namespace:    "prod",
+			ResourceKind: "DaemonSet",
+			ResourceName: "agent",
+			Status:       status,
+		})
+		if plan.ApplyEligible {
+			t.Fatalf("BuildPlan(%q) must not be apply-eligible (review-only), got %#v", status, plan)
+		}
+		if plan.Strategy == "" {
+			t.Fatalf("BuildPlan(%q) should have a strategy, got empty", status)
+		}
+	}
+}
