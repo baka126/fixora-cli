@@ -446,13 +446,6 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	}
 }
 
-func firstValuesFile(mode Mode) string {
-	if len(mode.ValuesFiles) > 0 {
-		return mode.ValuesFiles[0]
-	}
-	return ""
-}
-
 func appendYAMLDocument(path, patch string) error {
 	existing, err := os.ReadFile(path)
 	if err != nil {
