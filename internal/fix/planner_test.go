@@ -123,3 +123,24 @@ func TestWorkloadPatchTemplatesUseControllerPodTemplateShape(t *testing.T) {
 		}
 	}
 }
+
+// TestTier3StatusesDefaultToBuildPlan verifies that the new tier-3 review-only
+// statuses (JobRetrying, CronJobOverlap) fall through to BuildPlan's default
+// branch and do not accidentally match an existing apply-eligible switch case.
+func TestTier3StatusesDefaultToBuildPlan(t *testing.T) {
+	for _, status := range []string{"JobRetrying", "CronJobOverlap"} {
+		plan := BuildPlan(analyzer.Finding{Status: status, Namespace: "prod", ResourceKind: "Job", ResourceName: "batch"})
+		found := false
+		for _, r := range plan.BlockedReasons {
+			if r == "No deterministic patch strategy matched this status." {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("status %q: expected default-branch block reason, got BlockedReasons=%v", status, plan.BlockedReasons)
+		}
+		if plan.ApplyEligible {
+			t.Fatalf("status %q must not be apply eligible from BuildPlan alone; got %#v", status, plan)
+		}
+	}
+}
