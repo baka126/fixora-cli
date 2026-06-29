@@ -128,7 +128,31 @@ func gitTest(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
+func TestWriteSourcePatchHelmDoesNotMutateValues(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+	valuesPath := filepath.Join(dir, "values.yaml")
+	before, _ := os.ReadFile(valuesPath)
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "prod"}
+	f.GitOps.HelmRelease = "rel"
+	plan := fix.BuildPlan(f)
+	res, err := WriteSourcePatch(dir, "", f, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(valuesPath)
+	if string(before) != string(after) {
+		t.Fatalf("values.yaml must not be mutated by the Helm path")
+	}
+	if res.HelmSource == nil || len(res.HelmSource.ValuesFiles) == 0 {
+		t.Fatalf("expected HelmSource populated, got %+v", res.HelmSource)
+	}
+	if res.Mode != "helm" {
+		t.Fatalf("expected Mode==helm, got %q", res.Mode)
+	}
+}
+
+func TestWriteSourcePatchHelmMode(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: api\nversion: 0.1.0\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -137,6 +161,7 @@ func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	if err := os.WriteFile(values, []byte("image:\n  repository: api\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	before, _ := os.ReadFile(values)
 	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod", Status: "ImagePullBackOff"}
 	plan := fix.BuildPlan(finding)
 
@@ -147,14 +172,17 @@ func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	if result.Mode != "helm" {
 		t.Fatalf("expected helm mode, got %#v", result)
 	}
-	data, err := os.ReadFile(values)
-	if err != nil {
-		t.Fatal(err)
+	// values.yaml must not be mutated
+	after, _ := os.ReadFile(values)
+	if string(before) != string(after) {
+		t.Fatalf("values.yaml must not be mutated by the Helm path, got: %s", string(after))
 	}
-	if !strings.Contains(string(data), "fixoraSuggestedPatch") {
-		t.Fatalf("expected Helm review block, got %s", string(data))
+	// HelmSource must be populated
+	if result.HelmSource == nil {
+		t.Fatalf("expected HelmSource populated, got nil")
 	}
-	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, " "), "advisory only") {
-		t.Fatalf("expected advisory warning, got %#v", result.Warnings)
+	// Warnings must guide operator toward helm template verification
+	if len(result.Warnings) == 0 {
+		t.Fatalf("expected warnings, got none")
 	}
 }

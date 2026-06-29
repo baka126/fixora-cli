@@ -23,11 +23,12 @@ type Mode struct {
 }
 
 type SourcePatch struct {
-	Path     string   `json:"path"`
-	Mode     string   `json:"mode"`
-	Actions  []string `json:"actions"`
-	Warnings []string `json:"warnings,omitempty"`
-	Preview  string   `json:"preview,omitempty"`
+	Path       string              `json:"path"`
+	Mode       string              `json:"mode"`
+	Actions    []string            `json:"actions"`
+	Warnings   []string            `json:"warnings,omitempty"`
+	Preview    string              `json:"preview,omitempty"`
+	HelmSource *HelmSourceLocation `json:"helmSource,omitempty"`
 }
 
 type PullRequest struct {
@@ -354,7 +355,7 @@ func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan f
 	}
 	switch result.Mode {
 	case "helm":
-		return result, appendYAMLBlock(result.Path, "fixoraSuggestedPatch", plan.PatchYAML())
+		return result, nil
 	case "kustomize":
 		patchData := plan.PatchYAML()
 		if len(patchData) > 0 && !strings.HasSuffix(patchData, "\n") {
@@ -392,14 +393,33 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	result := SourcePatch{Mode: mode.Type, Preview: plan.PatchYAML()}
 	switch mode.Type {
 	case "helm":
-		target := firstNonEmpty(outFile, firstValuesFile(mode), filepath.Join(repoPath, "values.yaml"))
+		loc, _ := IdentifyHelmSource(repoPath, finding)
+		result.HelmSource = &loc
+		firstValues := ""
+		if len(loc.ValuesFiles) > 0 {
+			firstValues = loc.ValuesFiles[0]
+		}
+		target := firstNonEmpty(outFile, firstValues, filepath.Join(repoPath, "values.yaml"))
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(repoPath, target)
 		}
 		result.Path = target
-		result.Actions = append(result.Actions, "appended advisory fixoraSuggestedPatch notes to Helm values for operator review")
-		result.Warnings = append(result.Warnings, "Helm output is advisory only: fixoraSuggestedPatch is not chart-native and may not change rendered manifests.")
-		result.Warnings = append(result.Warnings, "Translate this patch into the chart's supported values schema, then verify with helm template and server dry-run before merge.")
+		result.Actions = append(result.Actions, "identified Helm source location for operator review")
+		if loc.Pinpointed {
+			owner := loc.OwningSubchart
+			if owner == "" {
+				owner = loc.Chart
+			}
+			result.Actions = append(result.Actions, "resource rendered by "+owner+"/"+loc.TemplateFile)
+		}
+		if len(loc.ValuesFiles) > 0 {
+			result.Warnings = append(result.Warnings, "candidate values files: "+strings.Join(loc.ValuesFiles, ", "))
+		}
+		result.Warnings = append(result.Warnings, "translate the intended change into the chart's values schema")
+		result.Warnings = append(result.Warnings, "verify with helm template and server dry-run before merge")
+		for _, note := range loc.Notes {
+			result.Warnings = append(result.Warnings, note)
+		}
 		return result, nil
 	case "kustomize":
 		target := firstNonEmpty(outFile, "fixora-patch.yaml")
@@ -445,24 +465,6 @@ func appendYAMLDocument(path, patch string) error {
 	}
 	b.WriteString("\n---\n")
 	b.WriteString(patch)
-	return os.WriteFile(path, []byte(b.String()), 0o600)
-}
-
-func appendYAMLBlock(path, key, patch string) error {
-	existing, _ := os.ReadFile(path)
-	var b strings.Builder
-	b.Write(existing)
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(key)
-	b.WriteString(": |\n")
-	for _, line := range strings.Split(strings.TrimRight(patch, "\n"), "\n") {
-		b.WriteString("  ")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
