@@ -26,10 +26,12 @@ func (a Analyzer) analyzeStatefulSets(ctx *ScanContext) ([]Finding, error) {
 		scNames[name] = true
 	}
 
-	// Index pod readiness by name+namespace for fast lookup.
+	// Index pod readiness and presence by name+namespace for fast lookup.
 	podReady := make(map[string]bool, len(pods.Items))
+	podExists := make(map[string]bool, len(pods.Items))
 	for _, pod := range pods.Items {
 		key := keyFor(pod.Metadata.Namespace, pod.Metadata.Name)
+		podExists[key] = true
 		podReady[key] = allContainersReady(pod)
 	}
 
@@ -73,15 +75,17 @@ func (a Analyzer) analyzeStatefulSets(ctx *ScanContext) ([]Finding, error) {
 		}
 
 		// StatefulSetRolloutBlocked: rolling update stalled because ordinal-0 pod is not ready.
+		// Only applies to OrderedReady policy (the default); Parallel policy does not gate on pod-0.
 		curRev := strValue(status["currentRevision"])
 		updateRev := strValue(status["updateRevision"])
-		if curRev != "" && updateRev != "" && curRev != updateRev {
+		podMgmt := strValue(spec["podManagementPolicy"])
+		if podMgmt == "" {
+			podMgmt = "OrderedReady"
+		}
+		if curRev != "" && updateRev != "" && curRev != updateRev && podMgmt == "OrderedReady" {
 			ordinalZero := name + "-0"
-			if !podReady[keyFor(namespace, ordinalZero)] {
-				podMgmt := strValue(spec["podManagementPolicy"])
-				if podMgmt == "" {
-					podMgmt = "OrderedReady"
-				}
+			pod0Key := keyFor(namespace, ordinalZero)
+			if podExists[pod0Key] && !podReady[pod0Key] {
 				out = append(out, Finding{
 					ID:           keyFor(namespace, "StatefulSet/"+name+"/StatefulSetRolloutBlocked"),
 					Namespace:    namespace,

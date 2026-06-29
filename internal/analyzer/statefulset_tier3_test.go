@@ -98,6 +98,53 @@ func TestStatefulSetRolloutBlockedPod0ReadyNoFinding(t *testing.T) {
 	assertNoFindingForStatus(t, findings, "StatefulSetRolloutBlocked")
 }
 
+func TestStatefulSetRolloutBlockedPod0AbsentNoFinding(t *testing.T) {
+	// pod-0 does not exist yet — revisions differ but the check must NOT fire.
+	// The existing ReplicasMismatch check covers missing pods; this check only
+	// fires when pod-0 is present-but-not-ready.
+	sts := stsFixture("prod", "mysql", map[string]any{
+		"replicas":            float64(3),
+		"podManagementPolicy": "OrderedReady",
+	}, map[string]any{
+		"currentRevision":   "mysql-aaa",
+		"updateRevision":    "mysql-bbb",
+		"availableReplicas": float64(3),
+	})
+	// Pod list has mysql-1 and mysql-2, but NO mysql-0.
+	pods := kube.PodList{Items: []kube.Pod{
+		notReadyPod("mysql-1", "prod"),
+		readyPod("mysql-2", "prod"),
+	}}
+	ctx, a := stsScanCtx(map[string][]map[string]any{"statefulsets": {sts}}, pods)
+	findings, err := a.analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForStatus(t, findings, "StatefulSetRolloutBlocked")
+}
+
+func TestStatefulSetRolloutBlockedParallelPolicyNoFinding(t *testing.T) {
+	// Parallel podManagementPolicy does not gate rollout on ordinal-0; must NOT fire.
+	sts := stsFixture("prod", "mysql", map[string]any{
+		"replicas":            float64(3),
+		"podManagementPolicy": "Parallel",
+	}, map[string]any{
+		"currentRevision":   "mysql-aaa",
+		"updateRevision":    "mysql-bbb",
+		"availableReplicas": float64(3),
+	})
+	pods := kube.PodList{Items: []kube.Pod{
+		notReadyPod("mysql-0", "prod"),
+		readyPod("mysql-1", "prod"),
+	}}
+	ctx, a := stsScanCtx(map[string][]map[string]any{"statefulsets": {sts}}, pods)
+	findings, err := a.analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForStatus(t, findings, "StatefulSetRolloutBlocked")
+}
+
 func TestStatefulSetRolloutBlockedEmptyRevisionSkipped(t *testing.T) {
 	sts := stsFixture("prod", "mysql", map[string]any{"replicas": float64(1)}, map[string]any{
 		"currentRevision":   "",
