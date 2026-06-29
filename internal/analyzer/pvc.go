@@ -15,7 +15,7 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 	events, _ := ctx.GetEvents()
 
 	// Build a set of known StorageClass names (fetched once, tolerate errors).
-	scNames := pvcStorageClassNames(ctx, a.opts.Namespace, a.opts.AllNS)
+	scNames := pvcStorageClassNames(ctx)
 
 	// Build a map from PVC name (namespace/name) → consuming pod name,
 	// so VolumeAttachFailed can find which pod mounts each PVC.
@@ -79,8 +79,10 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 // pvcStorageClassNames returns a set of known StorageClass names.
 // Returns nil if the list cannot be fetched or is empty (caller treats nil as
 // "data unavailable — skip the check").
-func pvcStorageClassNames(ctx *ScanContext, namespace string, allNS bool) map[string]bool {
-	items, err := ctx.GetResourceItems(namespace, allNS, "storageclasses")
+func pvcStorageClassNames(ctx *ScanContext) map[string]bool {
+	// StorageClass is cluster-scoped — fetch cluster-wide regardless of the
+	// scan namespace (matches node.go / storage.go).
+	items, err := ctx.GetResourceItems("", true, "storageclasses")
 	if err != nil || len(items) == 0 {
 		return nil
 	}
