@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -128,13 +129,13 @@ func TestIdentifyHelmSourceEmptyRelease(t *testing.T) {
 	}
 	found := false
 	for _, n := range loc.Notes {
-		if len(n) > 0 {
+		if strings.Contains(n, "release") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatal("expected at least one note for empty release")
+		t.Fatalf("expected an empty-release note mentioning the release, got %v", loc.Notes)
 	}
 }
 
