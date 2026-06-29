@@ -53,9 +53,9 @@ type Result struct {
 	VerifiedPatch     string    `json:"verifiedPatch,omitempty"`
 	FailureClass      string    `json:"failureClass,omitempty"`
 	FailureSummary    string    `json:"failureSummary,omitempty"`
-	// Caveats lists production surfaces a PASS did not actually exercise
-	// (secrets, PVC, mesh). It lowers stated confidence only; it never feeds
-	// the apply gate (fix.Plan.ApplyEligible).
+	// Caveats lists non-blocked production surfaces a PASS did not actually
+	// exercise. It lowers stated confidence only; it never feeds the apply gate
+	// (fix.Plan.ApplyEligible).
 	Caveats []string `json:"caveats,omitempty"`
 }
 

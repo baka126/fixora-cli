@@ -101,7 +101,7 @@ func DiagnoseFailureForPatch(result Result, finding analyzer.Finding, plan fix.P
 	// Readiness never passed but the shadow surfaced no recognized error signal
 	// in its logs/events: the workload is running yet the probe never reported
 	// ready. That points at a probe misconfiguration, not a candidate regression.
-	if shadowReason == "" && !hasRecognizedErrorSignal(shadowText) {
+	if hasTerminal && attemptReachedRunning(terminal) && shadowReason == "" && !hasRecognizedErrorSignal(shadowText) {
 		diagnosis.Class = FailureClassProbeMisconfig
 		diagnosis.Summary = "The shadow ran without a recognized error but never passed its readiness probe; this looks like a probe misconfiguration."
 		diagnosis.Details = append(diagnosis.Details,
@@ -116,6 +116,10 @@ func DiagnoseFailureForPatch(result Result, finding analyzer.Finding, plan fix.P
 		diagnosis.Details = append(diagnosis.Details, "Review shadow logs/events and generate a revised patch before delivery.")
 	}
 	return diagnosis
+}
+
+func attemptReachedRunning(attempt Attempt) bool {
+	return strings.EqualFold(strings.TrimSpace(attempt.Phase), "Running")
 }
 
 // hasRecognizedErrorSignal reports whether folded shadow text contains any

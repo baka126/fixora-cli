@@ -60,7 +60,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready
 		if result.Verified {
-			result.Caveats = appendUnique(result.Caveats, partialPassCaveats(plan.Original, plan.NamespaceLabels)...)
+			result.Caveats = appendUnique(result.Caveats, partialPassCaveats(plan.Original, plan.NamespaceMetadata)...)
 			break
 		}
 		if attempt <= req.Retries {
