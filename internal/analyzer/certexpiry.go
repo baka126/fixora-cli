@@ -52,7 +52,7 @@ func classifyCertExpiry(notAfter, now time.Time) (status, severity string, flag 
 	switch {
 	case notAfter.Before(now):
 		return "TLSCertExpired", "high", true
-	case notAfter.Before(now.Add(certExpiryWarningWindow)):
+	case !notAfter.After(now.Add(certExpiryWarningWindow)):
 		return "TLSCertExpiringSoon", "medium", true
 	default:
 		return "", "", false

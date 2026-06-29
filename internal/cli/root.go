@@ -232,7 +232,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -246,7 +246,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		err := server.Serve(ctx, server.Options{
 			Addr:        addr,
 			Kubectl:     k,
-			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector},
+			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckCertExpiry: opts.checkCertExpiry},
 			Token:       os.Getenv("FIXORA_SERVE_TOKEN"),
 		})
 		if err != nil {

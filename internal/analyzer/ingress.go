@@ -251,7 +251,8 @@ func (a Analyzer) tlsCertExpiryFindings(ctx *ScanContext, ingress map[string]any
 	if err != nil {
 		return unreadable(err.Error())
 	}
-	status, severity, flag := classifyCertExpiry(notAfter, time.Now())
+	now := time.Now()
+	status, severity, flag := classifyCertExpiry(notAfter, now)
 	if !flag {
 		return nil
 	}
@@ -259,10 +260,14 @@ func (a Analyzer) tlsCertExpiryFindings(ctx *ScanContext, ingress map[string]any
 	if status == "TLSCertExpired" {
 		summary = "Ingress TLS certificate has expired."
 	}
-	days := int(time.Until(notAfter).Hours() / 24)
+	days := int(notAfter.Sub(now).Hours() / 24)
 	expiryLabel, expiryValue := "Days remaining", strconv.Itoa(days)
-	if days < 0 {
-		expiryLabel, expiryValue = "Expired", strconv.Itoa(-days)+" days ago"
+	if notAfter.Before(now) {
+		daysExpired := int(now.Sub(notAfter).Hours() / 24)
+		expiryLabel, expiryValue = "Expired", strconv.Itoa(daysExpired)+" days ago"
+		if daysExpired == 0 {
+			expiryValue = "less than 1 day ago"
+		}
 	}
 	return []Finding{{
 		ID:           keyFor(namespace, "Ingress/"+ingressName+"/"+status+"/"+secretName),

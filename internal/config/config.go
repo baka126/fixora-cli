@@ -155,6 +155,7 @@ func Public(cfg Config) map[string]any {
 		"paranoid":               cfg.Paranoid,
 		"applyDryRun":            cfg.ApplyDryRun,
 		"customAnalyzers":        cfg.CustomAnalyzers,
+		"checkCertExpiry":        cfg.CheckCertExpiry,
 		"allowedImageRegistries": cfg.AllowedImageRegistries,
 		"maxPatchMemory":         cfg.MaxPatchMemory,
 		"maxPatchCPU":            cfg.MaxPatchCPU,
@@ -215,6 +216,7 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("paranoid", cfg.Paranoid, sourceFor(raw, "paranoid"))
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
+	add("checkCertExpiry", cfg.CheckCertExpiry, sourceFor(raw, "checkCertExpiry"))
 	add("allowedImageRegistries", cfg.AllowedImageRegistries, sourceFor(raw, "allowedImageRegistries"))
 	add("maxPatchMemory", cfg.MaxPatchMemory, sourceFor(raw, "maxPatchMemory"))
 	add("maxPatchCPU", cfg.MaxPatchCPU, sourceFor(raw, "maxPatchCPU"))

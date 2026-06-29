@@ -83,6 +83,9 @@ func TestClassifyCertExpiry(t *testing.T) {
 	if s, sev, flag := classifyCertExpiry(now.Add(10*24*time.Hour), now); !flag || s != "TLSCertExpiringSoon" || sev != "medium" {
 		t.Fatalf("soon: %q %q %v", s, sev, flag)
 	}
+	if s, sev, flag := classifyCertExpiry(now.Add(certExpiryWarningWindow), now); !flag || s != "TLSCertExpiringSoon" || sev != "medium" {
+		t.Fatalf("boundary: %q %q %v", s, sev, flag)
+	}
 	if _, _, flag := classifyCertExpiry(now.Add(400*24*time.Hour), now); flag {
 		t.Fatal("far-future cert must not be flagged")
 	}

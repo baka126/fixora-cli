@@ -69,6 +69,28 @@ func TestIngressExpiredCertFlagged(t *testing.T) {
 	}
 }
 
+func TestIngressSubDayExpiredCertEvidenceUsesExpiredLabel(t *testing.T) {
+	secret := tlsSecretWithCert(t, time.Now().Add(-time.Hour))
+	ctx, a, _ := certExpiryCtx(t, secret, nil)
+	findings, err := a.analyzeIngressBackends(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := hasStatus(findings, "TLSCertExpired")
+	if f == nil {
+		t.Fatalf("expected TLSCertExpired, got %+v", findings)
+	}
+	for _, ev := range f.Evidence {
+		if ev.Label == "Expired" && ev.Value == "less than 1 day ago" {
+			return
+		}
+		if ev.Label == "Days remaining" {
+			t.Fatalf("expired certificate must not use days-remaining evidence: %+v", f.Evidence)
+		}
+	}
+	t.Fatalf("expected sub-day expired evidence, got %+v", f.Evidence)
+}
+
 func TestIngressValidCertNotFlagged(t *testing.T) {
 	secret := tlsSecretWithCert(t, time.Now().Add(400*24*time.Hour))
 	ctx, a, _ := certExpiryCtx(t, secret, nil)
