@@ -69,6 +69,40 @@ func TestConfigMapInvalidFormatYAML(t *testing.T) {
 	}
 }
 
+func TestConfigMapInvalidFormatIDsIncludeKey(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"configmaps": {
+			configMapFixture("prod", "bad-formats", map[string]any{
+				"app.json": "{bad",
+				"app.yaml": "a: [1, 2",
+			}, nil, nil, nil),
+		},
+		"pods": {},
+	})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeConfigMaps(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	count := 0
+	for _, f := range findings {
+		if f.Status != "ConfigMapInvalidFormat" {
+			continue
+		}
+		count++
+		if ids[f.ID] {
+			t.Fatalf("duplicate invalid-format finding ID %q", f.ID)
+		}
+		ids[f.ID] = true
+		if !strings.Contains(f.ID, "app.json") && !strings.Contains(f.ID, "app.yaml") {
+			t.Fatalf("invalid-format ID must include the offending key, got %q", f.ID)
+		}
+	}
+	if count != 2 {
+		t.Fatalf("expected two invalid-format findings, got %d: %#v", count, findings)
+	}
+}
+
 func TestConfigMapValidFormatNoFinding(t *testing.T) {
 	ctx := scanContextWithItems(map[string][]map[string]any{
 		"configmaps": {
@@ -170,7 +204,7 @@ func TestConfigMapCollisionGuard(t *testing.T) {
 	newStatuses := []string{"ConfigMapInvalidFormat", "ConfigMapShared"}
 	for _, newStatus := range newStatuses {
 		for _, existing := range collisionGuardStatuses {
-			if newStatus == existing {
+			if strings.Contains(newStatus, existing) || strings.Contains(existing, newStatus) {
 				t.Fatalf("new status %q collides with BuildPlan switch key %q", newStatus, existing)
 			}
 		}

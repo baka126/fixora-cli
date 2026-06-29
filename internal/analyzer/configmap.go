@@ -19,6 +19,7 @@ func (a Analyzer) analyzeConfigMaps(ctx *ScanContext) ([]Finding, error) {
 	pods, podErr := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
 	used := configMapUsageByNamespace(pods)
 	owners := configMapOwnersByNamespace(pods)
+	envConsumed := configMapEnvConsumedByNamespace(pods)
 
 	out := []Finding{}
 	for _, cm := range configMaps {
@@ -52,6 +53,7 @@ func (a Analyzer) analyzeConfigMaps(ctx *ScanContext) ([]Finding, error) {
 				f := configMapFinding(cm, "ConfigMapInvalidFormat", "medium",
 					"ConfigMap contains a key with invalid embedded format.",
 					key+": "+parseErr.Error())
+				f.ID = keyFor(namespace, "ConfigMap/"+name+"/ConfigMapInvalidFormat/"+key)
 				f.Recommendations = []Recommendation{{
 					Title:         "Fix or remove the malformed embedded config",
 					Description:   "The key contains unparseable content; applications reading it at runtime will likely error.",
@@ -67,7 +69,7 @@ func (a Analyzer) analyzeConfigMaps(ctx *ScanContext) ([]Finding, error) {
 		ownerSet := owners[key]
 		if len(ownerSet) >= 2 {
 			ownerList := sortedKeys(ownerSet)
-			envConsumed := configMapEnvConsumedByNamespace(pods)[key]
+			envRef := envConsumed[key]
 			f := configMapFinding(cm, "ConfigMapShared", "low",
 				"ConfigMap is referenced by multiple distinct workloads.",
 				fmt.Sprintf("referenced by %d workloads: %s", len(ownerList), strings.Join(ownerList, ", ")))
@@ -77,7 +79,7 @@ func (a Analyzer) analyzeConfigMaps(ctx *ScanContext) ([]Finding, error) {
 				PatchType:     "configmap",
 				SafeByDefault: false,
 			}}
-			if envConsumed {
+			if envRef {
 				for i := range f.Recommendations {
 					f.Recommendations[i].Description += " env-var ConfigMap changes require a pod restart/rollout to take effect."
 				}
