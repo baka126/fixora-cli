@@ -195,6 +195,119 @@ func TestSecretAnalyzerValidPullSecretNoFinding(t *testing.T) {
 	}
 }
 
+// TestSecretAnalyzerMissingSecretKeyRef asserts SecretMissingKey is raised when a
+// pod's secretKeyRef names a Secret that does not exist at all (previously silent).
+func TestSecretAnalyzerMissingSecretKeyRef(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"secrets": {}, // no secrets exist
+		"pods": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api"},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"name": "api",
+						"env": []any{map[string]any{
+							"name": "DB_PASSWORD",
+							"valueFrom": map[string]any{
+								"secretKeyRef": map[string]any{
+									"name": "missing-secret",
+									"key":  "password",
+								},
+							},
+						}},
+					}},
+				},
+			},
+		},
+	})
+	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+	findings, err := a.analyzeSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "SecretMissingKey")
+	for _, f := range findings {
+		if f.Status == "SecretMissingKey" {
+			ev := f.Evidence[0].Value
+			if !strings.Contains(ev, "missing-secret") {
+				t.Fatalf("expected secret name in evidence, got %q", ev)
+			}
+			if strings.Contains(ev, "present keys:") {
+				t.Fatalf("whole-missing evidence must not list present keys, got %q", ev)
+			}
+		}
+	}
+}
+
+// TestSecretAnalyzerEnvFromMissingSecret asserts SecretMissingKey is raised when
+// a pod's envFrom[].secretRef names a Secret that does not exist.
+func TestSecretAnalyzerEnvFromMissingSecret(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"secrets": {}, // no secrets exist
+		"pods": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "worker"},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"name": "worker",
+						"envFrom": []any{map[string]any{
+							"secretRef": map[string]any{"name": "missing-env-secret"},
+						}},
+					}},
+				},
+			},
+		},
+	})
+	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+	findings, err := a.analyzeSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "SecretMissingKey")
+	for _, f := range findings {
+		if f.Status == "SecretMissingKey" {
+			ev := f.Evidence[0].Value
+			if !strings.Contains(ev, "missing-env-secret") {
+				t.Fatalf("expected secret name in evidence, got %q", ev)
+			}
+		}
+	}
+}
+
+// TestSecretAnalyzerVolumeMissingSecret asserts SecretMissingKey is raised when
+// a pod's volumes[].secret.secretName names a Secret that does not exist.
+func TestSecretAnalyzerVolumeMissingSecret(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"secrets": {}, // no secrets exist
+		"pods": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "app"},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{"name": "app"}},
+					"volumes": []any{map[string]any{
+						"name":   "creds-vol",
+						"secret": map[string]any{"secretName": "missing-vol-secret"},
+					}},
+				},
+			},
+		},
+	})
+	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+	findings, err := a.analyzeSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "SecretMissingKey")
+	for _, f := range findings {
+		if f.Status == "SecretMissingKey" {
+			ev := f.Evidence[0].Value
+			if !strings.Contains(ev, "missing-vol-secret") {
+				t.Fatalf("expected secret name in evidence, got %q", ev)
+			}
+		}
+	}
+}
+
 // TestSecretStatusCollisionGuard asserts the three new statuses do not collide
 // with any BuildPlan switch case and that MissingPullSecret does NOT contain
 // "ImagePull" (which would make it apply-eligible in the planner).

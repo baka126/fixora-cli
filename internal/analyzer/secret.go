@@ -78,15 +78,54 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 				sKey := keyFor(podNS, secretName)
 				info, exists := secretsByKey[sKey]
 				if !exists {
-					// Secret itself is missing; imagePullSecret check covers pull secrets.
+					// Secret itself is missing — emit a finding.
+					out = append(out, secretFindingID(podNS, secretName, "SecretMissingKey", "high",
+						podName+"/"+keyName,
+						podName+" references Secret "+secretName+" which was not found",
+						"Fixora reports key presence/schema, never secret values. Create the missing Secret or update the workload reference."))
 					continue
 				}
 				if !info.keys[keyName] {
 					presentKeys := sortedKeys(info.keys)
-					out = append(out, secretFinding(podNS, secretName, "SecretMissingKey", "high",
+					out = append(out, secretFindingID(podNS, secretName, "SecretMissingKey", "high",
+						podName+"/"+keyName,
 						podName+" needs key "+keyName+"; present keys: "+strings.Join(presentKeys, ", "),
 						"Fixora reports key presence/schema, never secret values. Add the missing key to the Secret or update the workload reference."))
 				}
+			}
+
+			// envFrom secretRef checks — whole-secret reference; secret must exist.
+			for _, ef := range nestedSlice(containerMap, "envFrom") {
+				efMap, _ := ef.(map[string]any)
+				ref := nestedMap(efMap, "secretRef")
+				secretName := strValue(ref["name"])
+				if secretName == "" {
+					continue
+				}
+				sKey := keyFor(podNS, secretName)
+				if _, exists := secretsByKey[sKey]; !exists {
+					out = append(out, secretFindingID(podNS, secretName, "SecretMissingKey", "high",
+						podName+"/envFrom",
+						podName+" references Secret "+secretName+" which was not found",
+						"Fixora reports key presence/schema, never secret values. Create the missing Secret or update the workload reference."))
+				}
+			}
+		}
+
+		// volumes[].secret.secretName checks — whole-secret reference; secret must exist.
+		for _, vol := range nestedSlice(spec, "volumes") {
+			volMap, _ := vol.(map[string]any)
+			secretVol := nestedMap(volMap, "secret")
+			secretName := strValue(secretVol["secretName"])
+			if secretName == "" {
+				continue
+			}
+			sKey := keyFor(podNS, secretName)
+			if _, exists := secretsByKey[sKey]; !exists {
+				out = append(out, secretFindingID(podNS, secretName, "SecretMissingKey", "high",
+					podName+"/volume",
+					podName+" references Secret "+secretName+" which was not found",
+					"Fixora reports key presence/schema, never secret values. Create the missing Secret or update the workload reference."))
 			}
 		}
 
@@ -116,9 +155,20 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 	return out, nil
 }
 
+// secretFinding creates a Finding with an ID derived from namespace/Secret/name/status.
 func secretFinding(namespace, name, status, severity, evidence, recommendation string) Finding {
+	return secretFindingID(namespace, name, status, severity, "", evidence, recommendation)
+}
+
+// secretFindingID creates a Finding with a discriminator appended to the ID to
+// prevent collisions when multiple references hit the same secret+status.
+func secretFindingID(namespace, name, status, severity, discriminator, evidence, recommendation string) Finding {
+	id := keyFor(namespace, "Secret/"+name+"/"+status)
+	if discriminator != "" {
+		id = keyFor(namespace, "Secret/"+name+"/"+status+"/"+discriminator)
+	}
 	return Finding{
-		ID:           keyFor(namespace, "Secret/"+name+"/"+status),
+		ID:           id,
 		Namespace:    namespace,
 		ResourceKind: "Secret",
 		ResourceName: name,
