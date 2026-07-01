@@ -1,8 +1,11 @@
 package repo
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
 
 const renderedDocSample = `---
@@ -95,5 +98,64 @@ func TestClassifyPatchSecretRedaction(t *testing.T) {
 	}
 	if v[0].RenderedValue != "" || v[0].IntendedValue != "" {
 		t.Fatalf("Secret verdict must omit values, got %#v", v[0])
+	}
+}
+
+func TestValidateAgainstRenderNoPatch(t *testing.T) {
+	loc := HelmSourceLocation{Pinpointed: true, ChartPath: "/tmp/x", Release: "rel"}
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
+	rv := ValidateAgainstRender(loc, f, "   ")
+	if len(rv.Fields) != 0 || len(rv.Notes) == 0 {
+		t.Fatalf("empty patch must degrade to a note, got %#v", rv)
+	}
+}
+
+func TestValidateAgainstRenderNotPinpointed(t *testing.T) {
+	loc := HelmSourceLocation{Pinpointed: false}
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
+	rv := ValidateAgainstRender(loc, f, "spec:\n  replicas: 3\n")
+	if len(rv.Fields) != 0 || len(rv.Notes) == 0 {
+		t.Fatalf("un-pinpointed loc must degrade to a note, got %#v", rv)
+	}
+}
+
+func TestValidateAgainstRenderDegradesWithoutHelm(t *testing.T) {
+	loc := HelmSourceLocation{Pinpointed: true, ChartPath: "/tmp/x", Release: "rel"}
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
+	t.Setenv("PATH", "")
+	rv := ValidateAgainstRender(loc, f, "spec:\n  replicas: 3\n")
+	if len(rv.Fields) != 0 {
+		t.Fatalf("no fields expected when helm absent, got %#v", rv.Fields)
+	}
+	if len(rv.Notes) == 0 {
+		t.Fatal("expected a degrade note when helm absent")
+	}
+}
+
+func TestValidateAgainstRenderEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not installed")
+	}
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
+	f.GitOps.HelmRelease = "rel"
+	loc, err := IdentifyHelmSource(dir, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loc.Pinpointed {
+		t.Fatalf("fixture should pinpoint; notes: %v", loc.Notes)
+	}
+	// Fixture renders replicas from .Values.replicaCount (=1). Patch to 3.
+	rv := ValidateAgainstRender(loc, f, "spec:\n  replicas: 3\n")
+	var class string
+	for _, v := range rv.Fields {
+		if v.Path == "spec.replicas" {
+			class = v.Class
+		}
+	}
+	if class != "managed-divergent" {
+		t.Fatalf("spec.replicas should be managed-divergent (rendered 1 vs patch 3), got %q; fields=%#v notes=%v", class, rv.Fields, rv.Notes)
 	}
 }

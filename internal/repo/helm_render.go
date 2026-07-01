@@ -3,6 +3,10 @@ package repo
 import (
 	"fmt"
 	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
 
 // FieldVerdict classifies one leaf field of an intended patch against the
@@ -151,4 +155,56 @@ func normalize(v any) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// ValidateAgainstRender renders the chart at loc.ChartPath and classifies each
+// leaf field of patchYAML against the rendered document for finding's
+// kind/name. It never returns an error: every failure path degrades into Notes.
+// The chart is rendered with its default values (not the live release values),
+// so value comparisons are best-effort — that caveat is recorded in Notes
+// whenever a value comparison was actually made.
+func ValidateAgainstRender(loc HelmSourceLocation, finding analyzer.Finding, patchYAML string) RenderValidation {
+	var rv RenderValidation
+
+	if strings.TrimSpace(patchYAML) == "" {
+		rv.Notes = append(rv.Notes, "no intended patch to validate against the rendered chart")
+		return rv
+	}
+	if !loc.Pinpointed {
+		rv.Notes = append(rv.Notes, "chart source not pinpointed; cannot render-validate")
+		return rv
+	}
+
+	var patch map[string]any
+	if err := yaml.Unmarshal([]byte(patchYAML), &patch); err != nil || patch == nil {
+		rv.Notes = append(rv.Notes, "intended patch is not a single YAML map; skipped render validation")
+		return rv
+	}
+
+	rendered, err := renderChart(loc.ChartPath, loc.Release)
+	if err != nil {
+		rv.Notes = append(rv.Notes, "cannot render-validate: "+err.Error())
+		return rv
+	}
+
+	docText, ok := renderedDocFor(rendered, finding.ResourceKind, finding.ResourceName, loc.Release)
+	if !ok {
+		rv.Notes = append(rv.Notes, "no rendered document matched "+finding.ResourceKind+"/"+finding.ResourceName)
+		return rv
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(docText), &doc); err != nil {
+		rv.Notes = append(rv.Notes, "rendered document did not parse as YAML; skipped render validation")
+		return rv
+	}
+
+	rv.Fields = classifyPatch(patch, doc, finding.ResourceKind)
+	for _, f := range rv.Fields {
+		if f.Class != "unmanaged" {
+			rv.Notes = append(rv.Notes, "rendered with the chart's default values, not the live release values; value comparisons are best-effort")
+			break
+		}
+	}
+	return rv
 }
