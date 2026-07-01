@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,6 +106,26 @@ func helmSourceMatches(renderedOutput, kind, name, release string) (sourcePath s
 	return "", false
 }
 
+// renderChart runs `helm template [release] chartPath` and returns the rendered
+// manifest stream. It wraps the two failure modes callers degrade on: helm not
+// on PATH, and a non-zero helm exit (whose combined output carries the reason).
+func renderChart(chartPath, release string) (string, error) {
+	helmPath, err := exec.LookPath("helm")
+	if err != nil {
+		return "", fmt.Errorf("helm not found: %w", err)
+	}
+	args := []string{"template"}
+	if release != "" {
+		args = append(args, release)
+	}
+	args = append(args, chartPath)
+	out, err := exec.Command(helmPath, args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 // IdentifyHelmSource locates where a Helm-managed resource's fix belongs
 // within the chart tree at repoPath. It always returns a valid location —
 // failures during helm templating degrade gracefully via Pinpointed=false
@@ -136,26 +157,13 @@ func IdentifyHelmSource(repoPath string, finding analyzer.Finding) (HelmSourceLo
 	}
 
 	// Step 4: pinpoint via helm template.
-	helmPath, lookErr := exec.LookPath("helm")
-	if lookErr != nil {
-		loc.Notes = append(loc.Notes, "helm not found; cannot pinpoint template")
-		return loc, nil
-	}
-
-	// Pass the release name when known so rendered names match the live resource.
-	args := []string{"template"}
-	if loc.Release != "" {
-		args = append(args, loc.Release)
-	}
-	args = append(args, loc.ChartPath)
-	cmd := exec.Command(helmPath, args...)
-	out, renderErr := cmd.CombinedOutput()
+	out, renderErr := renderChart(loc.ChartPath, loc.Release)
 	if renderErr != nil {
-		loc.Notes = append(loc.Notes, "helm template failed: "+strings.TrimSpace(string(out)))
+		loc.Notes = append(loc.Notes, "cannot pinpoint template: "+renderErr.Error())
 		return loc, nil
 	}
 
-	path, ok := helmSourceMatches(string(out), finding.ResourceKind, finding.ResourceName, loc.Release)
+	path, ok := helmSourceMatches(out, finding.ResourceKind, finding.ResourceName, loc.Release)
 	if !ok {
 		loc.Notes = append(loc.Notes, "no rendered resource matched "+finding.ResourceKind+"/"+finding.ResourceName)
 		return loc, nil

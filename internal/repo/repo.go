@@ -23,12 +23,13 @@ type Mode struct {
 }
 
 type SourcePatch struct {
-	Path       string              `json:"path"`
-	Mode       string              `json:"mode"`
-	Actions    []string            `json:"actions"`
-	Warnings   []string            `json:"warnings,omitempty"`
-	Preview    string              `json:"preview,omitempty"`
-	HelmSource *HelmSourceLocation `json:"helmSource,omitempty"`
+	Path             string              `json:"path"`
+	Mode             string              `json:"mode"`
+	Actions          []string            `json:"actions"`
+	Warnings         []string            `json:"warnings,omitempty"`
+	Preview          string              `json:"preview,omitempty"`
+	HelmSource       *HelmSourceLocation `json:"helmSource,omitempty"`
+	RenderValidation *RenderValidation   `json:"renderValidation,omitempty"`
 }
 
 type PullRequest struct {
@@ -419,6 +420,16 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 		result.Warnings = append(result.Warnings, "verify with helm template and server dry-run before merge")
 		for _, note := range loc.Notes {
 			result.Warnings = append(result.Warnings, note)
+		}
+		if loc.Pinpointed && strings.TrimSpace(plan.PatchYAML()) != "" {
+			rv := ValidateAgainstRender(loc, finding, plan.PatchYAML())
+			result.RenderValidation = &rv
+			for _, fv := range rv.Fields {
+				if fv.Class == "managed-divergent" {
+					result.Warnings = append(result.Warnings, "field "+fv.Path+" is set by the chart template; a direct patch will be reverted on Helm sync — change it in values")
+				}
+			}
+			result.Warnings = append(result.Warnings, rv.Notes...)
 		}
 		return result, nil
 	case "kustomize":
