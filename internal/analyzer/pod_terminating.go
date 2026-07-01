@@ -146,7 +146,7 @@ func readyNodes(ctx *ScanContext) map[string]bool {
 		if name == "" {
 			continue
 		}
-		ready := false
+		ready, hasReady := false, false
 		for _, c := range nestedSlice(nestedMap(n, "status"), "conditions") {
 			cm, ok := c.(map[string]any)
 			if !ok {
@@ -154,9 +154,15 @@ func readyNodes(ctx *ScanContext) map[string]bool {
 			}
 			if strValue(cm["type"]) == "Ready" {
 				ready = strValue(cm["status"]) == "True"
+				hasReady = true
 			}
 		}
-		out[name] = ready
+		// Only record nodes with an explicit Ready condition. A node lacking one
+		// is "unknown", not "unreachable" — leave it absent so terminatingCauses
+		// does not attribute a stuck pod to it (known && !ready stays false).
+		if hasReady {
+			out[name] = ready
+		}
 	}
 	return out
 }

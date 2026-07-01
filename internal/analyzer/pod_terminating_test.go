@@ -203,6 +203,30 @@ func TestAnalyzePodsTerminatingNodeUnreachable(t *testing.T) {
 	}
 }
 
+func TestAnalyzePodsTerminatingNodeNoReadyConditionNotFlagged(t *testing.T) {
+	// A node with no Ready condition is "unknown", not "unreachable" — the
+	// stuck pod must not be attributed to it (but is still flagged as stuck).
+	pod := map[string]any{"metadata": map[string]any{"namespace": "prod", "name": "stuck", "deletionTimestamp": "2000-01-01T00:00:00Z"}, "spec": map[string]any{"nodeName": "node-1"}}
+	node := map[string]any{"metadata": map[string]any{"name": "node-1"}, "status": map[string]any{"conditions": []any{
+		map[string]any{"type": "MemoryPressure", "status": "False"},
+	}}}
+	ctx := podTermScanContext([]map[string]any{pod}, []map[string]any{node}, nil)
+	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "PodStuckTerminating")
+	for _, f := range findings {
+		if f.Status == "PodStuckTerminating" {
+			for _, e := range f.Evidence {
+				if strings.Contains(e.Value, "node-1") {
+					t.Fatalf("node without a Ready condition must not be attributed as unreachable: %#v", f.Evidence)
+				}
+			}
+		}
+	}
+}
+
 func TestPodTerminatingCollisionGuard(t *testing.T) {
 	buildPlanKeys := []string{
 		"ImagePull", "OOMKilled", "CrashLoopBackOff", "CreateContainerConfigError",
