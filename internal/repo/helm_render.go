@@ -175,6 +175,11 @@ func ValidateAgainstRender(loc HelmSourceLocation, finding analyzer.Finding, pat
 		return rv
 	}
 
+	if strings.Contains(patchYAML, "\n---") {
+		rv.Notes = append(rv.Notes, "intended patch is not a single YAML map; skipped render validation")
+		return rv
+	}
+
 	var patch map[string]any
 	if err := yaml.Unmarshal([]byte(patchYAML), &patch); err != nil || patch == nil {
 		rv.Notes = append(rv.Notes, "intended patch is not a single YAML map; skipped render validation")

@@ -102,7 +102,7 @@ func TestClassifyPatchSecretRedaction(t *testing.T) {
 }
 
 func TestValidateAgainstRenderNoPatch(t *testing.T) {
-	loc := HelmSourceLocation{Pinpointed: true, ChartPath: "/tmp/x", Release: "rel"}
+	loc := HelmSourceLocation{Pinpointed: true, ChartPath: t.TempDir(), Release: "rel"}
 	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
 	rv := ValidateAgainstRender(loc, f, "   ")
 	if len(rv.Fields) != 0 || len(rv.Notes) == 0 {
@@ -119,8 +119,17 @@ func TestValidateAgainstRenderNotPinpointed(t *testing.T) {
 	}
 }
 
+func TestValidateAgainstRenderMultiDoc(t *testing.T) {
+	loc := HelmSourceLocation{Pinpointed: true, ChartPath: t.TempDir(), Release: "rel"}
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
+	rv := ValidateAgainstRender(loc, f, "spec:\n  replicas: 3\n---\nkind: Service\n")
+	if len(rv.Fields) != 0 || len(rv.Notes) == 0 {
+		t.Fatalf("multi-document patch must degrade to a note with no fields, got %#v", rv)
+	}
+}
+
 func TestValidateAgainstRenderDegradesWithoutHelm(t *testing.T) {
-	loc := HelmSourceLocation{Pinpointed: true, ChartPath: "/tmp/x", Release: "rel"}
+	loc := HelmSourceLocation{Pinpointed: true, ChartPath: t.TempDir(), Release: "rel"}
 	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp"}
 	t.Setenv("PATH", "")
 	rv := ValidateAgainstRender(loc, f, "spec:\n  replicas: 3\n")
