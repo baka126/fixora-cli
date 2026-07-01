@@ -423,7 +423,6 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 		}
 		if loc.Pinpointed && strings.TrimSpace(plan.PatchYAML()) != "" {
 			rv := ValidateAgainstRender(loc, finding, plan.PatchYAML())
-			result.RenderValidation = &rv
 			for _, fv := range rv.Fields {
 				if fv.Class == "managed-divergent" {
 					result.Warnings = append(result.Warnings, "field "+fv.Path+" is set by the chart template; a direct patch will be reverted on Helm sync — change it in values")

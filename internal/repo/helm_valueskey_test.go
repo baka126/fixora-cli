@@ -130,6 +130,20 @@ func TestSuggestValuesKeysUncertainMultiRef(t *testing.T) {
 	}
 }
 
+func TestSuggestValuesKeysLikelyMultiRefNarrowed(t *testing.T) {
+	chartPath, src, vfs := writeVKChart(t)
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
+	// host line references a (=x) and b (=y); rendered "x" value-matches only a,
+	// so the >1-lineRefs branch narrows to a single "likely" candidate.
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.host", Class: "managed-divergent", RenderedValue: "x", IntendedValue: "q"},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "spec.host")
+	if s.Confidence != "likely" || len(s.Candidates) != 1 || s.Candidates[0] != "a" {
+		t.Fatalf("got %#v", s)
+	}
+}
+
 func TestSuggestValuesKeysLikelyByValueMatch(t *testing.T) {
 	chartPath, src, vfs := writeVKChart(t)
 	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
