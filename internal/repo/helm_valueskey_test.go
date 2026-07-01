@@ -3,6 +3,7 @@ package repo
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,125 @@ func TestValuesFileLookup(t *testing.T) {
 	// a key that resolves to a map (not a scalar) does not resolve
 	if _, ok := valuesFileLookup([]string{vf}, "image"); ok {
 		t.Fatal("map-valued key should not resolve as a scalar")
+	}
+}
+
+// writeVKChart writes a minimal chart used by the SuggestValuesKeys tier tests.
+func writeVKChart(t *testing.T) (chartPath, templateSource string, valuesFiles []string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmpl := "spec:\n" +
+		"  replicas: {{ .Values.replicaCount }}\n" +
+		"  image: {{ .Values.img }}\n" +
+		"  host: {{ .Values.a }}-{{ .Values.b }}\n"
+	if err := os.WriteFile(filepath.Join(dir, "templates", "deployment.yaml"), []byte(tmpl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vf := filepath.Join(dir, "values.yaml")
+	if err := os.WriteFile(vf, []byte("replicaCount: 1\nimg: nginx\na: x\nb: y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir, "myapp/templates/deployment.yaml", []string{vf}
+}
+
+func suggestionFor(sugs []ValuesKeySuggestion, path string) (ValuesKeySuggestion, bool) {
+	for _, s := range sugs {
+		if s.FieldPath == path {
+			return s, true
+		}
+	}
+	return ValuesKeySuggestion{}, false
+}
+
+func TestSuggestValuesKeysPinpointed(t *testing.T) {
+	chartPath, src, vfs := writeVKChart(t)
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.replicas", Class: "managed-divergent", RenderedValue: "1", IntendedValue: "3"},
+	}}
+	s, ok := suggestionFor(SuggestValuesKeys(loc, rv), "spec.replicas")
+	if !ok || s.Confidence != "pinpointed" || len(s.Candidates) != 1 || s.Candidates[0] != "replicaCount" {
+		t.Fatalf("got %#v", s)
+	}
+}
+
+func TestSuggestValuesKeysUncertainMultiRef(t *testing.T) {
+	chartPath, src, vfs := writeVKChart(t)
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
+	// host line references two keys; rendered "x-y" matches neither a nor b alone.
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.host", Class: "managed-divergent", RenderedValue: "x-y", IntendedValue: "z-w"},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "spec.host")
+	if s.Confidence != "uncertain" || len(s.Candidates) != 2 {
+		t.Fatalf("got %#v", s)
+	}
+}
+
+func TestSuggestValuesKeysLikelyByValueMatch(t *testing.T) {
+	chartPath, src, vfs := writeVKChart(t)
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
+	// "foo" has no template line; rendered "nginx" value-matches only img.
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.foo", Class: "managed-divergent", RenderedValue: "nginx", IntendedValue: "apache"},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "spec.foo")
+	if s.Confidence != "likely" || len(s.Candidates) != 1 || s.Candidates[0] != "img" {
+		t.Fatalf("got %#v", s)
+	}
+}
+
+func TestSuggestValuesKeysUnmapped(t *testing.T) {
+	chartPath, vfs := t.TempDir(), []string{}
+	// TemplateFile points at a missing file -> no refs at all.
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: "myapp/templates/missing.yaml", ValuesFiles: vfs}
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.replicas", Class: "managed-divergent", RenderedValue: "1", IntendedValue: "3"},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "spec.replicas")
+	if s.Confidence != "unmapped" || len(s.Candidates) != 0 || s.Note == "" {
+		t.Fatalf("got %#v", s)
+	}
+}
+
+func TestSuggestValuesKeysSkipsNonDivergent(t *testing.T) {
+	chartPath, src, vfs := writeVKChart(t)
+	loc := HelmSourceLocation{ChartPath: chartPath, TemplateFile: src, ValuesFiles: vfs}
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.replicas", Class: "managed-match", RenderedValue: "1", IntendedValue: "1"},
+		{Path: "spec.img", Class: "unmanaged", IntendedValue: "nginx"},
+	}}
+	if got := SuggestValuesKeys(loc, rv); len(got) != 0 {
+		t.Fatalf("only managed-divergent fields get suggestions, got %#v", got)
+	}
+}
+
+func TestSuggestValuesKeysSecretNoValueLeak(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "templates", "secret.yaml"),
+		[]byte("data:\n  password: {{ .Values.secretPass }}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vf := filepath.Join(dir, "values.yaml")
+	if err := os.WriteFile(vf, []byte("secretPass: s3cr3tVALUE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loc := HelmSourceLocation{ChartPath: dir, TemplateFile: "myapp/templates/secret.yaml", ValuesFiles: []string{vf}}
+	// #13b redacts RenderedValue to "" for Secret findings.
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "data.password", Class: "managed-divergent", RenderedValue: "", IntendedValue: ""},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "data.password")
+	if s.Confidence != "pinpointed" || len(s.Candidates) != 1 || s.Candidates[0] != "secretPass" {
+		t.Fatalf("got %#v", s)
+	}
+	if strings.Contains(s.Note, "s3cr3tVALUE") || strings.Contains(strings.Join(s.Candidates, ","), "s3cr3tVALUE") {
+		t.Fatalf("values-file value leaked into suggestion: %#v", s)
 	}
 }
