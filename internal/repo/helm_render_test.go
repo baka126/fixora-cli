@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/fix"
 )
 
 const renderedDocSample = `---
@@ -166,5 +167,33 @@ func TestValidateAgainstRenderEndToEnd(t *testing.T) {
 	}
 	if class != "managed-divergent" {
 		t.Fatalf("spec.replicas should be managed-divergent (rendered 1 vs patch 3), got %q; fields=%#v notes=%v", class, rv.Fields, rv.Notes)
+	}
+}
+
+func TestPreviewSourcePatchAttachesRenderValidation(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not installed")
+	}
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
+	f.GitOps.HelmRelease = "rel"
+
+	plan := fix.Plan{PatchTemplate: "spec:\n  replicas: 3\n"}
+	result, err := PreviewSourcePatch(dir, "", f, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RenderValidation == nil {
+		t.Fatal("expected RenderValidation to be attached for a pinpointed Helm source")
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "spec.replicas") && strings.Contains(w, "reverted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a managed-divergent warning for spec.replicas, warnings=%v", result.Warnings)
 	}
 }
