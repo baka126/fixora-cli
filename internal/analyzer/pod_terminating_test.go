@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -106,4 +107,112 @@ func containsSubstr(xs []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+func stuckPodFixture(name string, extra map[string]any) map[string]any {
+	meta := map[string]any{"namespace": "prod", "name": name, "deletionTimestamp": "2000-01-01T00:00:00Z"}
+	pod := map[string]any{"metadata": meta, "spec": map[string]any{}}
+	for k, v := range extra {
+		pod[k] = v
+	}
+	return pod
+}
+
+func podTermScanContext(pods, nodes []map[string]any, events []kube.Event) *ScanContext {
+	return NewScanContext(context.Background(), fakeReader{
+		items:  map[string][]map[string]any{"pods": pods, "nodes": nodes},
+		events: events,
+	}, Options{})
+}
+
+func TestAnalyzePodsTerminatingFinalizerHigh(t *testing.T) {
+	pod := stuckPodFixture("stuck", map[string]any{
+		"metadata": map[string]any{"namespace": "prod", "name": "stuck", "deletionTimestamp": "2000-01-01T00:00:00Z", "finalizers": []any{"example.com/f1"}},
+	})
+	ctx := podTermScanContext([]map[string]any{pod}, nil, nil)
+	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "PodStuckTerminating")
+	for _, f := range findings {
+		if f.Status == "PodStuckTerminating" {
+			if f.Severity != "high" {
+				t.Fatalf("finalizer-blocked should be high severity, got %q", f.Severity)
+			}
+			if f.Recommendations[0].SafeByDefault {
+				t.Fatal("recommendation must be review-only (SafeByDefault=false)")
+			}
+		}
+	}
+}
+
+func TestAnalyzePodsTerminatingNotTerminating(t *testing.T) {
+	// No deletionTimestamp => not terminating => no finding.
+	pod := map[string]any{"metadata": map[string]any{"namespace": "prod", "name": "live"}, "spec": map[string]any{}}
+	ctx := podTermScanContext([]map[string]any{pod}, nil, nil)
+	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Status == "PodStuckTerminating" {
+			t.Fatalf("live pod must not be flagged: %#v", f)
+		}
+	}
+}
+
+func TestAnalyzePodsTerminatingWithinGrace(t *testing.T) {
+	// deletionTimestamp very recent => within grace+buffer => no finding.
+	recent := time.Now().Add(-3 * time.Second).UTC().Format(time.RFC3339)
+	pod := map[string]any{"metadata": map[string]any{"namespace": "prod", "name": "shutting", "deletionTimestamp": recent}, "spec": map[string]any{}}
+	ctx := podTermScanContext([]map[string]any{pod}, nil, nil)
+	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range findings {
+		if f.Status == "PodStuckTerminating" {
+			t.Fatalf("pod within grace must not be flagged: %#v", f)
+		}
+	}
+}
+
+func TestAnalyzePodsTerminatingNodeUnreachable(t *testing.T) {
+	pod := map[string]any{"metadata": map[string]any{"namespace": "prod", "name": "stuck", "deletionTimestamp": "2000-01-01T00:00:00Z"}, "spec": map[string]any{"nodeName": "node-1"}}
+	node := map[string]any{"metadata": map[string]any{"name": "node-1"}, "status": map[string]any{"conditions": []any{
+		map[string]any{"type": "Ready", "status": "Unknown"},
+	}}}
+	ctx := podTermScanContext([]map[string]any{pod}, []map[string]any{node}, nil)
+	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Status == "PodStuckTerminating" {
+			for _, e := range f.Evidence {
+				if strings.Contains(e.Value, "node-1") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected node-unreachable evidence, got %#v", findings)
+	}
+}
+
+func TestPodTerminatingCollisionGuard(t *testing.T) {
+	buildPlanKeys := []string{
+		"ImagePull", "OOMKilled", "CrashLoopBackOff", "CreateContainerConfigError",
+		"ExecFormatError", "PermissionDenied", "NoEndpoints", "ConnectionRefused",
+		"HPA", "Evicted", "Webhook",
+	}
+	const status = "PodStuckTerminating"
+	for _, k := range buildPlanKeys {
+		if strings.Contains(status, k) || strings.Contains(k, status) {
+			t.Fatalf("status %q collides with BuildPlan key %q", status, k)
+		}
+	}
 }
