@@ -2,9 +2,13 @@ package repo
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/fix"
 )
 
 func TestTemplateDiskPath(t *testing.T) {
@@ -188,5 +192,42 @@ func TestSuggestValuesKeysSecretNoValueLeak(t *testing.T) {
 	}
 	if strings.Contains(s.Note, "s3cr3tVALUE") || strings.Contains(strings.Join(s.Candidates, ","), "s3cr3tVALUE") {
 		t.Fatalf("values-file value leaked into suggestion: %#v", s)
+	}
+}
+
+func TestPreviewSourcePatchAttachesSuggestions(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not installed")
+	}
+	dir := t.TempDir()
+	writeFixtureChart(t, dir) // defined in helm_source_test.go: renders spec.replicas from .Values.replicaCount (=1)
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
+	f.GitOps.HelmRelease = "rel"
+
+	plan := fix.Plan{PatchTemplate: "spec:\n  replicas: 3\n"}
+	result, err := PreviewSourcePatch(dir, "", f, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RenderValidation == nil || len(result.RenderValidation.Suggestions) == 0 {
+		t.Fatalf("expected suggestions attached, got %#v", result.RenderValidation)
+	}
+	foundSuggestion := false
+	for _, s := range result.RenderValidation.Suggestions {
+		if s.FieldPath == "spec.replicas" && s.Confidence == "pinpointed" && len(s.Candidates) == 1 && s.Candidates[0] == "replicaCount" {
+			foundSuggestion = true
+		}
+	}
+	if !foundSuggestion {
+		t.Fatalf("expected pinpointed replicaCount suggestion, got %#v", result.RenderValidation.Suggestions)
+	}
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "spec.replicas") && strings.Contains(w, "replicaCount") && strings.Contains(w, "pinpointed") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected a values-key warning, warnings=%v", result.Warnings)
 	}
 }
