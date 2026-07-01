@@ -423,13 +423,26 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 		}
 		if loc.Pinpointed && strings.TrimSpace(plan.PatchYAML()) != "" {
 			rv := ValidateAgainstRender(loc, finding, plan.PatchYAML())
-			result.RenderValidation = &rv
 			for _, fv := range rv.Fields {
 				if fv.Class == "managed-divergent" {
 					result.Warnings = append(result.Warnings, "field "+fv.Path+" is set by the chart template; a direct patch will be reverted on Helm sync — change it in values")
 				}
 			}
 			result.Warnings = append(result.Warnings, rv.Notes...)
+			rv.Suggestions = SuggestValuesKeys(loc, rv)
+			result.RenderValidation = &rv
+			for _, s := range rv.Suggestions {
+				switch s.Confidence {
+				case "pinpointed", "likely":
+					result.Warnings = append(result.Warnings, "field "+s.FieldPath+" → set values key "+strings.Join(s.Candidates, " or ")+" ("+s.Confidence+")")
+				case "uncertain":
+					result.Warnings = append(result.Warnings, "field "+s.FieldPath+" → candidate values keys: "+strings.Join(s.Candidates, ", ")+" (uncertain)")
+				case "unmapped":
+					if s.Note != "" {
+						result.Warnings = append(result.Warnings, s.Note)
+					}
+				}
+			}
 		}
 		return result, nil
 	case "kustomize":
