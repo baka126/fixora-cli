@@ -82,6 +82,62 @@ func TestDaemonSetUnderScheduledTaintGap(t *testing.T) {
 	}
 }
 
+// TestDaemonSetUnderScheduledHonorsNodeSelector verifies a DaemonSet pinned to
+// a subset of nodes is compared only against nodes matching that selector.
+func TestDaemonSetUnderScheduledHonorsNodeSelector(t *testing.T) {
+	ds := makeDS("prod", "gpu-agent", 1, nil, map[string]any{"pool": "gpu"})
+	nodes := []kube.Node{
+		makeNode("gpu-1", map[string]string{"pool": "gpu", "kubernetes.io/arch": "amd64"}, nil),
+		makeNode("general-1", map[string]string{"pool": "general", "kubernetes.io/arch": "amd64"}, []map[string]any{
+			{"key": "dedicated", "effect": "NoSchedule", "value": "general"},
+		}),
+	}
+
+	reader := fakeReader{
+		items: map[string][]map[string]any{"daemonsets": {ds}},
+		nodes: nodes,
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+
+	for _, f := range report.Findings {
+		if f.Status == "DaemonSetUnderScheduled" {
+			t.Fatalf("nodeSelector-pinned DaemonSet should ignore non-target nodes, got %#v", f)
+		}
+	}
+}
+
+// TestDaemonSetUnderScheduledEqualTolerationRequiresValueMatch verifies Equal
+// tolerations do not mask taints with the same key/effect but a different value.
+func TestDaemonSetUnderScheduledEqualTolerationRequiresValueMatch(t *testing.T) {
+	ds := makeDS("prod", "infra-agent", 1,
+		[]any{map[string]any{"key": "dedicated", "effect": "NoSchedule", "operator": "Equal", "value": "infra"}},
+		nil,
+	)
+	nodes := []kube.Node{
+		makeNode("node-1", map[string]string{"kubernetes.io/arch": "amd64"}, nil),
+		makeNode("node-2", map[string]string{"kubernetes.io/arch": "amd64"}, []map[string]any{
+			{"key": "dedicated", "effect": "NoSchedule", "value": "gpu"},
+		}),
+	}
+
+	reader := fakeReader{
+		items: map[string][]map[string]any{"daemonsets": {ds}},
+		nodes: nodes,
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Status == "DaemonSetUnderScheduled" {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected DaemonSetUnderScheduled for mismatched Equal toleration value, got %#v", report.Findings)
+	}
+}
+
 // TestDaemonSetFleetHeterogeneous: nodes with arch amd64+arm64, DS has no arch nodeSelector → finding.
 func TestDaemonSetFleetHeterogeneous(t *testing.T) {
 	ds := makeDS("prod", "agent", 2, nil, nil)
@@ -123,7 +179,7 @@ func TestDaemonSetNoFindingsWhenHealthy(t *testing.T) {
 	// DS tolerates the taint, nodeSelector pins arch.
 	ds := makeDS("prod", "logger", 2,
 		[]any{
-			map[string]any{"key": "dedicated", "effect": "NoSchedule", "operator": "Equal"},
+			map[string]any{"key": "dedicated", "effect": "NoSchedule", "operator": "Equal", "value": "infra"},
 		},
 		map[string]any{"kubernetes.io/arch": "amd64"},
 	)

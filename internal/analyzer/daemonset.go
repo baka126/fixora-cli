@@ -56,7 +56,7 @@ func (a Analyzer) analyzeDaemonSets(ctx *ScanContext) ([]Finding, error) {
 			tolerations := nestedSlice(podSpec, "tolerations")
 			nodeSelector := nestedMap(podSpec, "nodeSelector")
 
-			out = append(out, checkUnderScheduled(namespace, name, ds, desiredNumberScheduled, nodes, tolerations)...)
+			out = append(out, checkUnderScheduled(namespace, name, ds, desiredNumberScheduled, nodes, tolerations, nodeSelector)...)
 			out = append(out, checkFleetHeterogeneous(namespace, name, ds, nodes, nodeSelector)...)
 		}
 	}
@@ -64,14 +64,15 @@ func (a Analyzer) analyzeDaemonSets(ctx *ScanContext) ([]Finding, error) {
 }
 
 // taintTolerated reports whether any toleration in the list covers the given taint.
-// ponytail: covers key/effect/Exists wildcard; omits value-operator nuance (Equal/NotExists edge cases).
-func taintTolerated(tolerations []any, taintKey, taintEffect string) bool {
+// Exists tolerations ignore taint values; Equal/default tolerations must match them.
+func taintTolerated(tolerations []any, taintKey, taintValue, taintEffect string) bool {
 	for _, t := range tolerations {
 		tol, ok := t.(map[string]any)
 		if !ok {
 			continue
 		}
 		key := strValue(tol["key"])
+		value := strValue(tol["value"])
 		effect := strValue(tol["effect"])
 		operator := strValue(tol["operator"])
 
@@ -88,8 +89,11 @@ func taintTolerated(tolerations []any, taintKey, taintEffect string) bool {
 			continue
 		}
 		// Exists operator matches any value for the key.
-		if operator == "Exists" || operator == "" || operator == "Equal" {
+		if operator == "Exists" {
 			return true
+		}
+		if operator == "" || operator == "Equal" {
+			return value == taintValue
 		}
 	}
 	return false
@@ -97,11 +101,17 @@ func taintTolerated(tolerations []any, taintKey, taintEffect string) bool {
 
 // checkUnderScheduled emits DaemonSetUnderScheduled when untolerated NoSchedule/NoExecute
 // taints on schedulable nodes explain a gap between desired and schedulable count.
-func checkUnderScheduled(namespace, name string, ds map[string]any, desired int, nodes []kube.Node, tolerations []any) []Finding {
+func checkUnderScheduled(namespace, name string, ds map[string]any, desired int, nodes []kube.Node, tolerations []any, nodeSelector map[string]any) []Finding {
 	schedulable := 0
 	var excludingTaintKeys []string
 	seen := map[string]bool{}
+nodeLoop:
 	for _, n := range nodes {
+		for key, value := range nodeSelector {
+			if n.Metadata.Labels[key] != strValue(value) {
+				continue nodeLoop
+			}
+		}
 		if n.Metadata.Labels["node.kubernetes.io/unschedulable"] == "true" {
 			continue
 		}
@@ -112,7 +122,7 @@ func checkUnderScheduled(namespace, name string, ds map[string]any, desired int,
 				continue
 			}
 			key := strValue(taint["key"])
-			if taintTolerated(tolerations, key, effect) {
+			if taintTolerated(tolerations, key, strValue(taint["value"]), effect) {
 				continue
 			}
 			if !seen[key] {
