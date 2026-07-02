@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -160,7 +161,44 @@ func TestStatefulSetRolloutBlockedEmptyRevisionSkipped(t *testing.T) {
 	assertNoFindingForStatus(t, findings, "StatefulSetRolloutBlocked")
 }
 
+func TestStatefulSetRolloutBlockedSkippedWhenPodsUnavailable(t *testing.T) {
+	sts := stsFixture("prod", "mysql", map[string]any{
+		"replicas":            float64(3),
+		"podManagementPolicy": "OrderedReady",
+	}, map[string]any{
+		"currentRevision":   "mysql-aaa",
+		"updateRevision":    "mysql-bbb",
+		"availableReplicas": float64(3),
+	})
+	reader := fakeReader{
+		items:   map[string][]map[string]any{"statefulsets": {sts}},
+		pods:    kube.PodList{Items: []kube.Pod{notReadyPod("mysql-0", "prod")}},
+		podsErr: errors.New("pods forbidden"),
+	}
+	ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+	findings, err := New(reader, Options{Namespace: "prod"}).analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForStatus(t, findings, "StatefulSetRolloutBlocked")
+}
+
 // ---- HeadlessServiceMissing ----
+
+func TestHeadlessServiceMissingWhenServiceNameAbsent(t *testing.T) {
+	sts := stsFixture("prod", "zk", map[string]any{
+		"replicas": float64(3),
+	}, map[string]any{"availableReplicas": float64(3)})
+	ctx, a := stsScanCtx(map[string][]map[string]any{
+		"statefulsets": {sts},
+		"services":     {},
+	}, kube.PodList{})
+	findings, err := a.analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "HeadlessServiceMissing")
+}
 
 func TestHeadlessServiceMissingWhenServiceAbsent(t *testing.T) {
 	sts := stsFixture("prod", "zk", map[string]any{
@@ -196,6 +234,23 @@ func TestHeadlessServiceMissingWhenServiceNotHeadless(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFindingStatus(t, findings, "HeadlessServiceMissing")
+}
+
+func TestHeadlessServiceCheckSkippedWhenServicesUnavailable(t *testing.T) {
+	sts := stsFixture("prod", "zk", map[string]any{
+		"replicas":    float64(3),
+		"serviceName": "zk-headless",
+	}, map[string]any{"availableReplicas": float64(3)})
+	reader := fakeReader{
+		items:    map[string][]map[string]any{"statefulsets": {sts}},
+		itemErrs: map[string]error{"services": errors.New("services forbidden")},
+	}
+	ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+	findings, err := New(reader, Options{Namespace: "prod"}).analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForStatus(t, findings, "HeadlessServiceMissing")
 }
 
 func TestHeadlessServicePresentNoFinding(t *testing.T) {
@@ -283,6 +338,28 @@ func TestStatefulSetStorageUnbindableEmptyClassSkipped(t *testing.T) {
 		"storageclasses": {},
 	}, kube.PodList{})
 	findings, err := a.analyzeStatefulSets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingForStatus(t, findings, "StatefulSetStorageUnbindable")
+}
+
+func TestStatefulSetStorageCheckSkippedWhenStorageClassesUnavailable(t *testing.T) {
+	sts := stsFixture("prod", "pg", map[string]any{
+		"replicas": float64(1),
+		"volumeClaimTemplates": []any{
+			map[string]any{
+				"metadata": map[string]any{"name": "data"},
+				"spec":     map[string]any{"storageClassName": "fast-ssd"},
+			},
+		},
+	}, map[string]any{"availableReplicas": float64(1)})
+	reader := fakeReader{
+		items:    map[string][]map[string]any{"statefulsets": {sts}},
+		itemErrs: map[string]error{"storageclasses": errors.New("storageclasses forbidden")},
+	}
+	ctx := NewScanContext(context.Background(), reader, Options{Namespace: "prod"})
+	findings, err := New(reader, Options{Namespace: "prod"}).analyzeStatefulSets(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
