@@ -2,10 +2,12 @@ package repo
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
@@ -13,16 +15,18 @@ import (
 // HelmSourceLocation describes where a rendered Kubernetes resource came from
 // inside a Helm chart tree.
 type HelmSourceLocation struct {
-	Chart          string
-	ChartPath      string
-	OwningSubchart string
-	TemplateFile   string
-	Release        string
-	Namespace      string
-	ValuesFiles    []string
-	Pinpointed     bool
-	Notes          []string
+	Chart          string   `json:"chart"`
+	ChartPath      string   `json:"chartPath"`
+	OwningSubchart string   `json:"owningSubchart"`
+	TemplateFile   string   `json:"templateFile"`
+	Release        string   `json:"release"`
+	Namespace      string   `json:"namespace"`
+	ValuesFiles    []string `json:"valuesFiles"`
+	Pinpointed     bool     `json:"pinpointed"`
+	Notes          []string `json:"notes,omitempty"`
 }
+
+var helmTemplateTimeout = 30 * time.Second
 
 // helmSourceMatches scans helm template output (renderedOutput) and returns
 // the "# Source:" path of the first document whose kind and name match.
@@ -148,8 +152,14 @@ func IdentifyHelmSource(repoPath string, finding analyzer.Finding) (HelmSourceLo
 		args = append(args, loc.Release)
 	}
 	args = append(args, loc.ChartPath)
-	cmd := exec.Command(helmPath, args...)
+	renderCtx, cancel := context.WithTimeout(context.Background(), helmTemplateTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(renderCtx, helmPath, args...)
 	out, renderErr := cmd.CombinedOutput()
+	if renderCtx.Err() == context.DeadlineExceeded {
+		loc.Notes = append(loc.Notes, "helm template timed out; cannot pinpoint template")
+		return loc, nil
+	}
 	if renderErr != nil {
 		loc.Notes = append(loc.Notes, "helm template failed: "+strings.TrimSpace(string(out)))
 		return loc, nil
@@ -272,7 +282,7 @@ func nameMatches(rendered, name, release string) bool {
 		// rendered has release- prefix and name as the remainder after it.
 		if strings.HasPrefix(rendered, release+"-") {
 			remainder := strings.TrimPrefix(rendered, release+"-")
-			if remainder == name {
+			if remainder == name || strings.HasSuffix(remainder, "-"+name) {
 				return true
 			}
 		}

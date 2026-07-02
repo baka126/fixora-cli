@@ -393,17 +393,16 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	result := SourcePatch{Mode: mode.Type, Preview: plan.PatchYAML()}
 	switch mode.Type {
 	case "helm":
-		loc, _ := IdentifyHelmSource(repoPath, finding)
+		loc, err := IdentifyHelmSource(repoPath, finding)
+		if err != nil {
+			return SourcePatch{}, err
+		}
 		result.HelmSource = &loc
 		firstValues := ""
 		if len(loc.ValuesFiles) > 0 {
 			firstValues = loc.ValuesFiles[0]
 		}
-		target := firstNonEmpty(outFile, firstValues, filepath.Join(repoPath, "values.yaml"))
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(repoPath, target)
-		}
-		result.Path = target
+		result.Path = resolveRepoPath(repoPath, firstNonEmpty(outFile, firstValues, "values.yaml"))
 		result.Actions = append(result.Actions, "identified Helm source location for operator review")
 		if loc.Pinpointed {
 			owner := loc.OwningSubchart
@@ -525,4 +524,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func resolveRepoPath(repoPath, target string) string {
+	cleanTarget := filepath.Clean(target)
+	if filepath.IsAbs(cleanTarget) {
+		return cleanTarget
+	}
+	cleanRepo := filepath.Clean(repoPath)
+	if cleanRepo != "." && cleanRepo != "" {
+		rel, err := filepath.Rel(cleanRepo, cleanTarget)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			if abs, absErr := filepath.Abs(cleanTarget); absErr == nil {
+				return abs
+			}
+			return cleanTarget
+		}
+	}
+	joined := filepath.Join(repoPath, cleanTarget)
+	if abs, err := filepath.Abs(joined); err == nil {
+		return abs
+	}
+	return joined
 }
