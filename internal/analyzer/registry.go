@@ -62,7 +62,7 @@ func (a Analyzer) runRegistry(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
 	for _, def := range registry {
-		if def.Name == "Pod" {
+		if def.Name == "Pod" || def.Name == "Secret" {
 			continue
 		}
 		if len(selected) == 0 && !def.Enabled {

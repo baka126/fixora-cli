@@ -13,6 +13,13 @@ func TestCheckSecretKeysRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var rawTrue map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawTrue); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := rawTrue["checkSecretKeys"]; !present {
+		t.Fatalf("expected JSON payload to contain exact checkSecretKeys field, got %s", string(data))
+	}
 
 	var got Config
 	if err := json.Unmarshal(data, &got); err != nil {

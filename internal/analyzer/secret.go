@@ -7,8 +7,9 @@ import (
 )
 
 // analyzeSecrets checks Secret key presence, base64 validity, and imagePullSecret
-// resolution. It reads ONLY key names and base64-decodability — never secret
-// values. It is off by default; set Options.CheckSecretKeys = true to enable.
+// resolution. It inspects encoded data only to validate base64 and never
+// includes raw or decoded values in findings. It is off by default; set
+// Options.CheckSecretKeys = true to enable.
 func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 	if !a.opts.CheckSecretKeys {
 		return nil, nil
@@ -18,7 +19,10 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	pods, _ := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
+	pods, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
+	if err != nil {
+		return nil, err
+	}
 
 	// Build a map of secret name → set of data keys (never values).
 	// Also track the secret type for imagePullSecret validation.
@@ -72,7 +76,7 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 				ref := nestedMap(nestedMap(envMap, "valueFrom"), "secretKeyRef")
 				secretName := strValue(ref["name"])
 				keyName := strValue(ref["key"])
-				if secretName == "" || keyName == "" {
+				if secretName == "" || keyName == "" || secretReferenceOptional(ref) {
 					continue
 				}
 				sKey := keyFor(podNS, secretName)
@@ -99,7 +103,7 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 				efMap, _ := ef.(map[string]any)
 				ref := nestedMap(efMap, "secretRef")
 				secretName := strValue(ref["name"])
-				if secretName == "" {
+				if secretName == "" || secretReferenceOptional(ref) {
 					continue
 				}
 				sKey := keyFor(podNS, secretName)
@@ -117,7 +121,7 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 			volMap, _ := vol.(map[string]any)
 			secretVol := nestedMap(volMap, "secret")
 			secretName := strValue(secretVol["secretName"])
-			if secretName == "" {
+			if secretName == "" || secretReferenceOptional(secretVol) {
 				continue
 			}
 			sKey := keyFor(podNS, secretName)
@@ -138,12 +142,12 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 			}
 			sKey := keyFor(podNS, secretName)
 			info, exists := secretsByKey[sKey]
-			if !exists || info.secretType != "kubernetes.io/dockerconfigjson" {
+			if !exists || !isImagePullSecretType(info.secretType) {
 				reason := podName + " references imagePullSecret " + secretName
 				if !exists {
 					reason += " (secret not found)"
 				} else {
-					reason += " (type is " + info.secretType + ", want kubernetes.io/dockerconfigjson)"
+					reason += " (type is " + info.secretType + ", want kubernetes.io/dockerconfigjson or kubernetes.io/dockercfg)"
 				}
 				out = append(out, secretFinding(podNS, secretName, "MissingPullSecret", "medium",
 					reason,
@@ -153,6 +157,14 @@ func (a Analyzer) analyzeSecrets(ctx *ScanContext) ([]Finding, error) {
 	}
 
 	return out, nil
+}
+
+func secretReferenceOptional(ref map[string]any) bool {
+	return boolValue(ref["optional"])
+}
+
+func isImagePullSecretType(secretType string) bool {
+	return secretType == "kubernetes.io/dockerconfigjson" || secretType == "kubernetes.io/dockercfg"
 }
 
 // secretFinding creates a Finding with an ID derived from namespace/Secret/name/status.

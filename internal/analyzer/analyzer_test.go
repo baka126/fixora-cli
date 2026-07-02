@@ -517,6 +517,7 @@ type fakeReader struct {
 	events          []kube.Event
 	resource        map[string]any
 	items           map[string][]map[string]any
+	itemErrs        map[string]error
 	runErr          error
 	eventsErr       error
 	logFn           func()
@@ -546,6 +547,9 @@ func (f fakeReader) GetResource(context.Context, string, string) (map[string]any
 func (f fakeReader) GetResourceItems(_ context.Context, _ string, _ bool, resource string) ([]map[string]any, error) {
 	if resource == "secrets" && f.secretItemCalls != nil {
 		atomic.AddInt32(f.secretItemCalls, 1)
+	}
+	if f.itemErrs != nil && f.itemErrs[resource] != nil {
+		return nil, f.itemErrs[resource]
 	}
 	if f.items != nil {
 		return f.items[resource], nil

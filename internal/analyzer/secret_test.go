@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -36,15 +37,56 @@ func TestSecretAnalyzerOffZeroReads(t *testing.T) {
 	}
 }
 
+// TestSecretFilterOffZeroReads asserts that selecting the Secret analyzer by
+// filter does not bypass the opt-in privacy gate.
+func TestSecretFilterOffZeroReads(t *testing.T) {
+	var secretCalls int32
+	reader := fakeReader{
+		secretItemCalls: &secretCalls,
+		items: map[string][]map[string]any{
+			"secrets": {
+				{"metadata": map[string]any{"namespace": "prod", "name": "db-creds"},
+					"data": map[string]any{"password": base64.StdEncoding.EncodeToString([]byte("s3cr3t"))}},
+			},
+		},
+	}
+	report := New(reader, Options{Namespace: "prod", Filters: []string{"secret"}}).ScanReport(context.Background())
+	if len(report.Findings) != 0 {
+		t.Fatalf("expected no findings when secret checks are off, got %#v", report.Findings)
+	}
+	if got := atomic.LoadInt32(&secretCalls); got != 0 {
+		t.Fatalf("expected 0 secret reads when --filter secret is used without opt-in, got %d", got)
+	}
+}
+
+// TestSecretAnalyzerReturnsPodListError asserts pod reference checks do not
+// silently disappear when pods cannot be listed.
+func TestSecretAnalyzerReturnsPodListError(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{
+		items: map[string][]map[string]any{
+			"secrets": {
+				{"metadata": map[string]any{"namespace": "prod", "name": "db-creds"}, "data": map[string]any{}},
+			},
+		},
+		itemErrs: map[string]error{"pods": fmt.Errorf("pods forbidden")},
+	}, Options{Namespace: "prod"})
+	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+	if _, err := a.analyzeSecrets(ctx); err == nil || !strings.Contains(err.Error(), "pods forbidden") {
+		t.Fatalf("expected pod list error to be returned, got %v", err)
+	}
+}
+
 // TestSecretAnalyzerMissingKey asserts SecretMissingKey is raised when a pod
 // references a key that does not exist in the named Secret.
 func TestSecretAnalyzerMissingKey(t *testing.T) {
+	rawSecretValue := "localhost"
+	encodedSecretValue := base64.StdEncoding.EncodeToString([]byte(rawSecretValue))
 	ctx := scanContextWithItems(map[string][]map[string]any{
 		"secrets": {
 			{
 				"metadata": map[string]any{"namespace": "prod", "name": "db-creds"},
 				"type":     "Opaque",
-				"data":     map[string]any{"host": base64.StdEncoding.EncodeToString([]byte("localhost"))},
+				"data":     map[string]any{"host": encodedSecretValue},
 			},
 		},
 		"pods": {
@@ -79,6 +121,10 @@ func TestSecretAnalyzerMissingKey(t *testing.T) {
 			ev := f.Evidence[0].Value
 			if !strings.Contains(ev, "host") {
 				t.Fatalf("expected present key 'host' in evidence, got %q", ev)
+			}
+			serialized := fmt.Sprintf("%#v", f)
+			if strings.Contains(serialized, rawSecretValue) || strings.Contains(serialized, encodedSecretValue) {
+				t.Fatalf("secret values leaked into finding: %s", serialized)
 			}
 		}
 	}
@@ -169,29 +215,34 @@ func TestSecretAnalyzerWrongPullSecretType(t *testing.T) {
 // TestSecretAnalyzerValidPullSecretNoFinding asserts no finding when
 // imagePullSecret has the correct type.
 func TestSecretAnalyzerValidPullSecretNoFinding(t *testing.T) {
-	ctx := scanContextWithItems(map[string][]map[string]any{
-		"secrets": {
-			{
-				"metadata": map[string]any{"namespace": "prod", "name": "registry-creds"},
-				"type":     "kubernetes.io/dockerconfigjson",
-				"data":     map[string]any{".dockerconfigjson": base64.StdEncoding.EncodeToString([]byte(`{"auths":{}}`))}},
-		},
-		"pods": {
-			{
-				"metadata": map[string]any{"namespace": "prod", "name": "web"},
-				"spec": map[string]any{
-					"imagePullSecrets": []any{map[string]any{"name": "registry-creds"}},
+	for _, secretType := range []string{"kubernetes.io/dockerconfigjson", "kubernetes.io/dockercfg"} {
+		t.Run(secretType, func(t *testing.T) {
+			ctx := scanContextWithItems(map[string][]map[string]any{
+				"secrets": {
+					{
+						"metadata": map[string]any{"namespace": "prod", "name": "registry-creds"},
+						"type":     secretType,
+						"data":     map[string]any{".dockerconfigjson": base64.StdEncoding.EncodeToString([]byte(`{"auths":{}}`))},
+					},
 				},
-			},
-		},
-	})
-	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
-	findings, err := a.analyzeSecrets(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(findings) != 0 {
-		t.Fatalf("expected no findings for valid pull secret, got %#v", findings)
+				"pods": {
+					{
+						"metadata": map[string]any{"namespace": "prod", "name": "web"},
+						"spec": map[string]any{
+							"imagePullSecrets": []any{map[string]any{"name": "registry-creds"}},
+						},
+					},
+				},
+			})
+			a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+			findings, err := a.analyzeSecrets(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(findings) != 0 {
+				t.Fatalf("expected no findings for valid pull secret, got %#v", findings)
+			}
+		})
 	}
 }
 
@@ -305,6 +356,52 @@ func TestSecretAnalyzerVolumeMissingSecret(t *testing.T) {
 				t.Fatalf("expected secret name in evidence, got %q", ev)
 			}
 		}
+	}
+}
+
+// TestSecretAnalyzerOptionalReferencesNoFinding asserts optional Secret refs are
+// intentionally allowed by Kubernetes and should not raise missing-key findings.
+func TestSecretAnalyzerOptionalReferencesNoFinding(t *testing.T) {
+	ctx := scanContextWithItems(map[string][]map[string]any{
+		"secrets": {},
+		"pods": {
+			{
+				"metadata": map[string]any{"namespace": "prod", "name": "api"},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"name": "api",
+						"env": []any{map[string]any{
+							"name": "OPTIONAL_PASSWORD",
+							"valueFrom": map[string]any{
+								"secretKeyRef": map[string]any{
+									"name":     "optional-env",
+									"key":      "password",
+									"optional": true,
+								},
+							},
+						}},
+						"envFrom": []any{map[string]any{
+							"secretRef": map[string]any{"name": "optional-envfrom", "optional": true},
+						}},
+					}},
+					"volumes": []any{map[string]any{
+						"name": "optional-vol",
+						"secret": map[string]any{
+							"secretName": "optional-volume",
+							"optional":   true,
+						},
+					}},
+				},
+			},
+		},
+	})
+	a := New(fakeReader{}, Options{Namespace: "prod", CheckSecretKeys: true})
+	findings, err := a.analyzeSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for optional Secret refs, got %#v", findings)
 	}
 }
 
