@@ -113,6 +113,28 @@ func TestNonFixCommandContextKeepsGlobalTimeout(t *testing.T) {
 	}
 }
 
+func TestCoordinateInHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("help exit %d", code)
+	}
+	if !strings.Contains(stdout.String(), "coordinate") {
+		t.Fatalf("help must document the coordinate subcommand")
+	}
+}
+
+func TestCoordinateRequiresRefs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"coordinate"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("coordinate with no refs must fail")
+	}
+	if !strings.Contains(stderr.String(), "resource") {
+		t.Fatalf("expected a usage error mentioning resources, got %q", stderr.String())
+	}
+}
+
 func TestHelpIsIncidentFocusedByDefault(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Execute([]string{"help"}, &stdout, &stderr)
