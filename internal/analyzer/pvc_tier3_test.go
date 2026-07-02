@@ -63,6 +63,29 @@ func TestPVCStorageClassNotFoundSkipsWhenSCExists(t *testing.T) {
 	assertNoFindingForResource(t, findings, "data")
 }
 
+// TestPVCStorageClassNotFoundWithEmptyStorageClassList verifies an empty
+// StorageClass list is a valid empty set, not an enumeration failure.
+func TestPVCStorageClassNotFoundWithEmptyStorageClassList(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{
+		items: map[string][]map[string]any{
+			"pvc": {
+				{
+					"metadata": map[string]any{"namespace": "prod", "name": "data"},
+					"spec":     map[string]any{"storageClassName": "ghost"},
+					"status":   map[string]any{"phase": "Bound"},
+				},
+			},
+			"storageclasses": {},
+		},
+	}, Options{Namespace: "prod"})
+
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "StorageClassNotFound")
+}
+
 // TestPVCVolumeAttachFailed verifies that FailedMount/FailedAttachVolume events
 // on a pod that mounts the PVC produce a VolumeAttachFailed (high) finding.
 func TestPVCVolumeAttachFailed(t *testing.T) {
@@ -112,6 +135,93 @@ func TestPVCVolumeAttachFailed(t *testing.T) {
 			t.Fatalf("expected high severity for VolumeAttachFailed, got %q", f.Severity)
 		}
 	}
+}
+
+// TestPVCVolumeAttachFailedChecksAllConsumers verifies RWX/multi-consumer PVCs
+// keep every pod/volume pair instead of only the last pod seen.
+func TestPVCVolumeAttachFailedChecksAllConsumers(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{
+		items: map[string][]map[string]any{
+			"pvc": {
+				{
+					"metadata": map[string]any{"namespace": "prod", "name": "shared"},
+					"spec":     map[string]any{"volumeName": "pv-shared"},
+					"status":   map[string]any{"phase": "Bound"},
+				},
+			},
+			"pods": {
+				podWithPVCVolume("prod", "consumer-a", "data-a", "shared"),
+				podWithPVCVolume("prod", "consumer-b", "data-b", "shared"),
+			},
+			"storageclasses": {},
+		},
+		events: []kube.Event{
+			{
+				Metadata:       kube.ObjectMeta{Namespace: "prod"},
+				InvolvedObject: kube.ObjectReference{Namespace: "prod", Name: "consumer-a"},
+				Reason:         "FailedMount",
+				Message:        "Unable to attach or mount volumes: unmounted volumes=[data-a]",
+			},
+		},
+	}, Options{Namespace: "prod"})
+
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "VolumeAttachFailed")
+}
+
+// TestPVCVolumeAttachFailedIgnoresOtherVolumeFailures verifies a multi-volume
+// pod's unrelated FailedMount event is not attributed to this PVC.
+func TestPVCVolumeAttachFailedIgnoresOtherVolumeFailures(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{
+		items: map[string][]map[string]any{
+			"pvc": {
+				{
+					"metadata": map[string]any{"namespace": "prod", "name": "data"},
+					"spec":     map[string]any{"volumeName": "pv-data"},
+					"status":   map[string]any{"phase": "Bound"},
+				},
+			},
+			"pods": {
+				{
+					"metadata": map[string]any{"namespace": "prod", "name": "api"},
+					"spec": map[string]any{
+						"volumes": []any{
+							map[string]any{
+								"name": "data-volume",
+								"persistentVolumeClaim": map[string]any{
+									"claimName": "data",
+								},
+							},
+							map[string]any{
+								"name": "cache-volume",
+								"persistentVolumeClaim": map[string]any{
+									"claimName": "cache",
+								},
+							},
+						},
+					},
+				},
+			},
+			"storageclasses": {},
+		},
+		events: []kube.Event{
+			{
+				Metadata:       kube.ObjectMeta{Namespace: "prod"},
+				InvolvedObject: kube.ObjectReference{Namespace: "prod", Name: "api"},
+				Reason:         "FailedMount",
+				Message:        "Unable to attach or mount volumes: unmounted volumes=[cache-volume]",
+			},
+		},
+	}, Options{Namespace: "prod"})
+
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoFindingWithStatus(t, findings, "VolumeAttachFailed")
 }
 
 // TestPVCVolumeResizePending verifies that a PVC with a FileSystemResizePending
@@ -222,6 +332,46 @@ func TestPVCVolumeAwaitingConsumerReplacePending(t *testing.T) {
 	}
 }
 
+// TestPVCVolumeAwaitingConsumerScansAllEvents verifies a later unrelated PVC
+// event does not hide an earlier WaitForFirstConsumer event.
+func TestPVCVolumeAwaitingConsumerScansAllEvents(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{
+		items: map[string][]map[string]any{
+			"pvc": {
+				{
+					"metadata": map[string]any{"namespace": "prod", "name": "lazy"},
+					"spec":     map[string]any{},
+					"status":   map[string]any{"phase": "Pending"},
+				},
+			},
+			"storageclasses": {},
+		},
+		events: []kube.Event{
+			{
+				Metadata:       kube.ObjectMeta{Namespace: "prod"},
+				InvolvedObject: kube.ObjectReference{Namespace: "prod", Name: "lazy"},
+				Reason:         "WaitForFirstConsumer",
+				Message:        "waiting for first consumer to be created before binding",
+				LastTime:       "2026-06-10T10:00:00Z",
+			},
+			{
+				Metadata:       kube.ObjectMeta{Namespace: "prod"},
+				InvolvedObject: kube.ObjectReference{Namespace: "prod", Name: "lazy"},
+				Reason:         "ExternalProvisioning",
+				Message:        "waiting for external provisioner",
+				LastTime:       "2026-06-10T10:01:00Z",
+			},
+		},
+	}, Options{Namespace: "prod"})
+
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFindingStatus(t, findings, "VolumeAwaitingConsumer")
+	assertNoFindingWithStatus(t, findings, "Pending")
+}
+
 // TestPVCPendingWithoutWaitForFirstConsumerStillEmitsPending confirms that a
 // Pending PVC without the WaitForFirstConsumer event keeps the original Pending
 // finding (not VolumeAwaitingConsumer).
@@ -308,4 +458,20 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func podWithPVCVolume(namespace, podName, volumeName, claimName string) map[string]any {
+	return map[string]any{
+		"metadata": map[string]any{"namespace": namespace, "name": podName},
+		"spec": map[string]any{
+			"volumes": []any{
+				map[string]any{
+					"name": volumeName,
+					"persistentVolumeClaim": map[string]any{
+						"claimName": claimName,
+					},
+				},
+			},
+		},
+	}
 }

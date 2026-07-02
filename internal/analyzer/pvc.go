@@ -17,8 +17,8 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 	// Build a set of known StorageClass names (fetched once, tolerate errors).
 	scNames := pvcStorageClassNames(ctx)
 
-	// Build a map from PVC name (namespace/name) → consuming pod name,
-	// so VolumeAttachFailed can find which pod mounts each PVC.
+	// Build a map from PVC name (namespace/name) to every consuming pod/volume,
+	// so VolumeAttachFailed can match mount failures to the correct claim.
 	podsByPVC := pvcConsumingPods(ctx, a.opts.Namespace, a.opts.AllNS)
 
 	out := []Finding{}
@@ -32,12 +32,12 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 			event := latestObjectEvent(events, namespace, name)
 			if event.Reason == "ProvisioningFailed" && strings.TrimSpace(event.Message) != "" {
 				out = append(out, pvcFinding(pvc, "ProvisioningFailed", "high", "PVC provisioning failed.", event.Message))
-			} else if event.Reason == "WaitForFirstConsumer" {
+			} else if waitEvent, ok := objectEventWithReason(events, namespace, name, "WaitForFirstConsumer"); ok {
 				// WaitForFirstConsumer is a normal Pending sub-state; report it
 				// at low severity instead of the generic medium Pending.
 				out = append(out, pvcFinding(pvc, "VolumeAwaitingConsumer", "low",
 					"PVC is pending because its StorageClass uses WaitForFirstConsumer binding mode.",
-					firstNonEmpty(event.Message, "WaitForFirstConsumer binding mode")))
+					firstNonEmpty(waitEvent.Message, "WaitForFirstConsumer binding mode")))
 			} else {
 				out = append(out, pvcFinding(pvc, "Pending", "medium", "PVC is pending and has not bound to storage.", firstNonEmpty(event.Message, "phase=Pending")))
 			}
@@ -77,13 +77,13 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 }
 
 // pvcStorageClassNames returns a set of known StorageClass names.
-// Returns nil if the list cannot be fetched or is empty (caller treats nil as
-// "data unavailable — skip the check").
+// Returns nil if the list cannot be fetched (caller treats nil as
+// "data unavailable -- skip the check"). An empty list is a valid empty set.
 func pvcStorageClassNames(ctx *ScanContext) map[string]bool {
 	// StorageClass is cluster-scoped — fetch cluster-wide regardless of the
 	// scan namespace (matches node.go / storage.go).
 	items, err := ctx.GetResourceItems("", true, "storageclasses")
-	if err != nil || len(items) == 0 {
+	if err != nil {
 		return nil
 	}
 	names := make(map[string]bool, len(items))
@@ -96,14 +96,19 @@ func pvcStorageClassNames(ctx *ScanContext) map[string]bool {
 	return names
 }
 
-// pvcConsumingPods returns a map from "namespace/pvcName" → pod name for every
-// pod that has a PVC volume mount. Tolerates missing pod items.
-func pvcConsumingPods(ctx *ScanContext, namespace string, allNS bool) map[string]string {
+type pvcConsumer struct {
+	podName    string
+	volumeName string
+}
+
+// pvcConsumingPods returns every pod/volume pair that mounts each PVC.
+// Tolerates missing pod items.
+func pvcConsumingPods(ctx *ScanContext, namespace string, allNS bool) map[string][]pvcConsumer {
 	pods, err := ctx.GetResourceItems(namespace, allNS, "pods")
 	if err != nil {
 		return nil
 	}
-	result := make(map[string]string)
+	result := make(map[string][]pvcConsumer)
 	for _, pod := range pods {
 		podNS, podName := objectNamespaceName(pod)
 		spec := nestedMap(pod, "spec")
@@ -118,7 +123,10 @@ func pvcConsumingPods(ctx *ScanContext, namespace string, allNS bool) map[string
 			}
 			claim := strValue(pvcRef["claimName"])
 			if claim != "" {
-				result[keyFor(podNS, claim)] = podName
+				result[keyFor(podNS, claim)] = append(result[keyFor(podNS, claim)], pvcConsumer{
+					podName:    podName,
+					volumeName: strValue(vol["name"]),
+				})
 			}
 		}
 	}
@@ -147,24 +155,41 @@ func pvcResizeCondition(pvc map[string]any) string {
 // pvcAttachFailedEvent scans events for FailedAttachVolume or FailedMount
 // reasons on pods that consume the given PVC. Returns the pod name, reason,
 // message, and true when found.
-func pvcAttachFailedEvent(events []kube.Event, namespace, pvcName string, podsByPVC map[string]string) (podName, reason, msg string, found bool) {
+func pvcAttachFailedEvent(events []kube.Event, namespace, pvcName string, podsByPVC map[string][]pvcConsumer) (podName, reason, msg string, found bool) {
 	if podsByPVC == nil {
 		return "", "", "", false
 	}
-	consumerPod := podsByPVC[keyFor(namespace, pvcName)]
-	if consumerPod == "" {
+	consumers := podsByPVC[keyFor(namespace, pvcName)]
+	if len(consumers) == 0 {
 		return "", "", "", false
+	}
+	consumerByPod := make(map[string][]string, len(consumers))
+	for _, consumer := range consumers {
+		if consumer.podName == "" || consumer.volumeName == "" {
+			continue
+		}
+		consumerByPod[consumer.podName] = append(consumerByPod[consumer.podName], consumer.volumeName)
 	}
 	for _, ev := range events {
 		evNS := firstNonEmpty(ev.InvolvedObject.Namespace, ev.Metadata.Namespace)
-		if evNS != namespace || ev.InvolvedObject.Name != consumerPod {
+		volumeNames := consumerByPod[ev.InvolvedObject.Name]
+		if evNS != namespace || len(volumeNames) == 0 {
 			continue
 		}
-		if ev.Reason == "FailedAttachVolume" || ev.Reason == "FailedMount" {
-			return consumerPod, ev.Reason, ev.Message, true
+		if (ev.Reason == "FailedAttachVolume" || ev.Reason == "FailedMount") && eventReferencesAnyVolume(ev.Message, volumeNames) {
+			return ev.InvolvedObject.Name, ev.Reason, ev.Message, true
 		}
 	}
 	return "", "", "", false
+}
+
+func eventReferencesAnyVolume(message string, volumeNames []string) bool {
+	for _, volumeName := range volumeNames {
+		if volumeName != "" && strings.Contains(message, volumeName) {
+			return true
+		}
+	}
+	return false
 }
 
 func pvcFinding(pvc map[string]any, status, severity, summary, evidence string) Finding {
@@ -201,6 +226,22 @@ func latestObjectEvent(events []kube.Event, namespace, name string) kube.Event {
 		}
 	}
 	return latest
+}
+
+func objectEventWithReason(events []kube.Event, namespace, name, reason string) (kube.Event, bool) {
+	var latest kube.Event
+	found := false
+	for _, event := range events {
+		eventNS := firstNonEmpty(event.InvolvedObject.Namespace, event.Metadata.Namespace)
+		if eventNS != namespace || event.InvolvedObject.Name != name || event.Reason != reason {
+			continue
+		}
+		if !found || event.LastTime >= latest.LastTime {
+			latest = event
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func pvcStorageRequest(spec map[string]any) string {
