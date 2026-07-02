@@ -44,7 +44,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		}
 		list, err := analyzer.run(ctx)
 		if err != nil {
-			skipped = append(skipped, SkippedCheck{Name: analyzer.name, Reason: err.Error()})
+			skipped = append(skipped, rbacAwareSkip(analyzer.name, err))
 			continue
 		}
 		findings = append(findings, list...)
@@ -283,7 +283,7 @@ func (a Analyzer) objectNameState(ctx *ScanContext, namespace, resource, name st
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "forbidden"), strings.Contains(msg, "unauthorized"):
+	case classifyReadError(err):
 		return objectState{Forbidden: true, Message: "resource exists or may exist but is not readable: " + err.Error()}
 	case strings.Contains(msg, "notfound"), strings.Contains(msg, "not found"):
 		return objectState{Message: "not found"}

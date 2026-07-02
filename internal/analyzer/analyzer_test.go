@@ -512,6 +512,23 @@ func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
 	assertNoFindingForResource(t, findings, "api")
 }
 
+func TestScanReportLabelsForbiddenEventsAsRBAC(t *testing.T) {
+	reader := fakeReader{eventsErr: fmt.Errorf("Error from server (Forbidden): events is forbidden")}
+	report := New(reader, Options{}).ScanReport(context.Background())
+	found := false
+	for _, s := range report.Skipped {
+		if s.Name == "events" {
+			found = true
+			if !s.RBACBlocked {
+				t.Fatalf("forbidden events read must be labeled RBACBlocked, got %#v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected an events skip entry")
+	}
+}
+
 type fakeReader struct {
 	pods             kube.PodList
 	events           []kube.Event
