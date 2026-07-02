@@ -77,8 +77,18 @@ func rolloutHealthy(class string) bool {
 // buildCoordinateSteps derives an ordered step list from resource refs, reusing
 // the same planning path as `fix` so ApplyEligible is enforced identically.
 // Each step's patch is written to a temp file for dry-run/apply.
-func buildCoordinateSteps(ctx context.Context, a analyzer.Analyzer, opts options, refs []string) ([]coordinate.Step, error) {
+func buildCoordinateSteps(ctx context.Context, a analyzer.Analyzer, opts options, refs []string) (_ []coordinate.Step, err error) {
 	steps := make([]coordinate.Step, 0, len(refs))
+	// Clean up patch files written so far if we bail on a later ref.
+	defer func() {
+		if err != nil {
+			for _, s := range steps {
+				if s.PatchFile != "" {
+					os.Remove(s.PatchFile)
+				}
+			}
+		}
+	}()
 	for _, ref := range refs {
 		finding, err := a.AnalyzeResource(ctx, ref)
 		if err != nil {
