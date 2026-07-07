@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/coordinate"
@@ -113,5 +115,17 @@ func TestFilterApplyEligible(t *testing.T) {
 	got := filterApplyEligible(steps)
 	if len(got) != 2 || got[0].Ref != "ConfigMap/a" || got[1].Ref != "Secret/c" {
 		t.Fatalf("filter dropped/ordered wrong: %#v", got)
+	}
+}
+
+func TestCoordinateFromRejectsExplicitRefs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// --from combined with a positional ref must error before any cluster call.
+	code := Execute([]string{"coordinate", "--from", "Deployment/web", "Service/x"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected exit 2 for --from + explicit refs, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "from") {
+		t.Fatalf("expected an error mentioning --from, got %q", stderr.String())
 	}
 }
