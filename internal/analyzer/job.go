@@ -39,7 +39,35 @@ func (a Analyzer) analyzeJobs(ctx *ScanContext) ([]Finding, error) {
 		}
 
 		failed := intValue(status["failed"])
-		if failed > 0 {
+		succeeded := intValue(status["succeeded"])
+		backoffLimit := 6 // Kubernetes default
+		if _, ok := spec["backoffLimit"]; ok {
+			backoffLimit = intValue(spec["backoffLimit"])
+		}
+
+		if failed > 0 && succeeded == 0 && failed < backoffLimit {
+			out = append(out, Finding{
+				ID:           keyFor(namespace, "Job/"+name+"/JobRetrying"),
+				Namespace:    namespace,
+				ResourceKind: "Job",
+				ResourceName: name,
+				Status:       "JobRetrying",
+				Severity:     "medium",
+				Category:     "workload",
+				Summary:      fmt.Sprintf("Job %s is retrying (%d/%d failures)", name, failed, backoffLimit),
+				Evidence: []Evidence{
+					{Label: "Failed", Value: fmt.Sprint(failed)},
+					{Label: "BackoffLimit", Value: fmt.Sprint(backoffLimit)},
+				},
+				GitOps: gitOpsForObject(job),
+				Recommendations: []Recommendation{{
+					Title:         "Inspect job logs",
+					Description:   "Check the logs of the failed pods for errors before the backoff limit is reached.",
+					PatchType:     "job",
+					SafeByDefault: false,
+				}},
+			})
+		} else if failed > 0 {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Job/"+name+"/Failed"),
 				Namespace:    namespace,
