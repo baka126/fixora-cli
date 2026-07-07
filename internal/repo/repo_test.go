@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,7 +129,31 @@ func gitTest(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
+func TestWriteSourcePatchHelmDoesNotMutateValues(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+	valuesPath := filepath.Join(dir, "values.yaml")
+	before, _ := os.ReadFile(valuesPath)
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "prod"}
+	f.GitOps.HelmRelease = "rel"
+	plan := fix.BuildPlan(f)
+	res, err := WriteSourcePatch(dir, "", f, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(valuesPath)
+	if string(before) != string(after) {
+		t.Fatalf("values.yaml must not be mutated by the Helm path")
+	}
+	if res.HelmSource == nil || len(res.HelmSource.ValuesFiles) == 0 {
+		t.Fatalf("expected HelmSource populated, got %+v", res.HelmSource)
+	}
+	if res.Mode != "helm" {
+		t.Fatalf("expected Mode==helm, got %q", res.Mode)
+	}
+}
+
+func TestWriteSourcePatchHelmMode(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: api\nversion: 0.1.0\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -137,6 +162,7 @@ func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	if err := os.WriteFile(values, []byte("image:\n  repository: api\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	before, _ := os.ReadFile(values)
 	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod", Status: "ImagePullBackOff"}
 	plan := fix.BuildPlan(finding)
 
@@ -147,14 +173,81 @@ func TestWriteSourcePatchAppendsHelmReviewBlock(t *testing.T) {
 	if result.Mode != "helm" {
 		t.Fatalf("expected helm mode, got %#v", result)
 	}
-	data, err := os.ReadFile(values)
+	// values.yaml must not be mutated
+	after, _ := os.ReadFile(values)
+	if string(before) != string(after) {
+		t.Fatalf("values.yaml must not be mutated by the Helm path, got: %s", string(after))
+	}
+	// HelmSource must be populated
+	if result.HelmSource == nil {
+		t.Fatalf("expected HelmSource populated, got nil")
+	}
+	// Warnings must guide operator toward helm template verification
+	if !containsString(result.Warnings, "helm template") {
+		t.Fatalf("expected helm template warning, got %v", result.Warnings)
+	}
+}
+
+func TestSourcePatchHelmSourceJSONTags(t *testing.T) {
+	patch := SourcePatch{
+		Path: "values.yaml",
+		Mode: "helm",
+		HelmSource: &HelmSourceLocation{
+			Chart:          "api",
+			ChartPath:      "charts/api",
+			OwningSubchart: "worker",
+			TemplateFile:   "templates/deployment.yaml",
+			Release:        "rel",
+			Namespace:      "prod",
+			ValuesFiles:    []string{"values.yaml"},
+			Pinpointed:     true,
+		},
+	}
+	data, err := json.Marshal(patch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "fixoraSuggestedPatch") {
-		t.Fatalf("expected Helm review block, got %s", string(data))
+	got := string(data)
+	for _, want := range []string{
+		`"helmSource"`,
+		`"chartPath":"charts/api"`,
+		`"owningSubchart":"worker"`,
+		`"templateFile":"templates/deployment.yaml"`,
+		`"valuesFiles":["values.yaml"]`,
+		`"pinpointed":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in JSON, got %s", want, got)
+		}
 	}
-	if len(result.Warnings) == 0 || !strings.Contains(strings.Join(result.Warnings, " "), "advisory only") {
-		t.Fatalf("expected advisory warning, got %#v", result.Warnings)
+	for _, unwanted := range []string{`"ChartPath"`, `"OwningSubchart"`, `"TemplateFile"`, `"ValuesFiles"`, `"Notes"`} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("unexpected Go field name %s in JSON: %s", unwanted, got)
+		}
+	}
+}
+
+func TestResolveRepoPathDoesNotDoublePrefixRelativeRepo(t *testing.T) {
+	dir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+	if err := os.Mkdir("chart", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveRepoPath("chart", filepath.Join("chart", "values.yaml"))
+	want, err := filepath.Abs(filepath.Join("chart", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
