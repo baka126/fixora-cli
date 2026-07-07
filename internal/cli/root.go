@@ -46,68 +46,69 @@ import (
 )
 
 type options struct {
-	namespace      string
-	allNS          bool
-	context        string
-	output         string
-	includeLogs    bool
-	useAI          bool
-	noAI           bool
-	autoFix        bool
-	apply          bool
-	yes            bool
-	outFile        string
-	editPatch      bool
-	verbose        bool
-	redact         bool
-	unsafeAI       bool
-	filters        string
-	labelSelector  string
-	wide           bool
-	noColor        bool
-	proof          bool
-	paranoid       bool
-	preview        bool
-	forceRisky     bool
-	typedClient    bool
-	tui            bool
-	repoPath       string
-	strategy       string
-	branch         string
-	commit         bool
-	mcp            bool
-	profile        string
-	aiBudget       int
-	container      string
-	image          string
-	memRequest     string
-	memLimit       string
-	cpuRequest     string
-	envName        string
-	configMap      string
-	configKey      string
-	timeout        time.Duration
-	logTail        int
-	maxLogBytes    int
-	applyDryRun    bool
-	sourcePatch    bool
-	shadowVerify   bool
-	shadowTimeout  time.Duration
-	rolloutTimeout time.Duration
-	shadowRetries  int
-	keepShadow     bool
-	shadowEgress   string
-	delivery       string
-	prBase         string
-	prTitle        string
-	watchInterval  time.Duration
-	lintFiles      listFlag
-	maxFindings    int
-	quick          bool
-	safe           bool
-	gitops         bool
-	visited        map[string]bool
-	promptInput    *bufio.Reader
+	namespace       string
+	allNS           bool
+	context         string
+	output          string
+	includeLogs     bool
+	useAI           bool
+	noAI            bool
+	autoFix         bool
+	apply           bool
+	yes             bool
+	outFile         string
+	editPatch       bool
+	verbose         bool
+	redact          bool
+	unsafeAI        bool
+	filters         string
+	labelSelector   string
+	wide            bool
+	noColor         bool
+	proof           bool
+	paranoid        bool
+	preview         bool
+	forceRisky      bool
+	typedClient     bool
+	checkCertExpiry bool
+	tui             bool
+	repoPath        string
+	strategy        string
+	branch          string
+	commit          bool
+	mcp             bool
+	profile         string
+	aiBudget        int
+	container       string
+	image           string
+	memRequest      string
+	memLimit        string
+	cpuRequest      string
+	envName         string
+	configMap       string
+	configKey       string
+	timeout         time.Duration
+	logTail         int
+	maxLogBytes     int
+	applyDryRun     bool
+	sourcePatch     bool
+	shadowVerify    bool
+	shadowTimeout   time.Duration
+	rolloutTimeout  time.Duration
+	shadowRetries   int
+	keepShadow      bool
+	shadowEgress    string
+	delivery        string
+	prBase          string
+	prTitle         string
+	watchInterval   time.Duration
+	lintFiles       listFlag
+	maxFindings     int
+	quick           bool
+	safe            bool
+	gitops          bool
+	visited         map[string]bool
+	promptInput     *bufio.Reader
 }
 
 type listFlag []string
@@ -203,12 +204,13 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	filters := analyzerFiltersForCommand(cmd, rest, opts)
 	a := analyzer.New(reader, analyzer.Options{
-		Namespace:     opts.namespace,
-		AllNS:         opts.allNS,
-		IncludeLogs:   opts.includeLogs,
-		Redact:        opts.redact || opts.paranoid,
-		Filters:       filters,
-		LabelSelector: opts.labelSelector,
+		Namespace:       opts.namespace,
+		AllNS:           opts.allNS,
+		IncludeLogs:     opts.includeLogs,
+		Redact:          opts.redact || opts.paranoid,
+		Filters:         filters,
+		LabelSelector:   opts.labelSelector,
+		CheckCertExpiry: opts.checkCertExpiry,
 	})
 
 	switch cmd {
@@ -230,7 +232,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -244,7 +246,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		err := server.Serve(ctx, server.Options{
 			Addr:        addr,
 			Kubectl:     k,
-			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector},
+			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckCertExpiry: opts.checkCertExpiry},
 			Token:       os.Getenv("FIXORA_SERVE_TOKEN"),
 		})
 		if err != nil {
@@ -549,14 +551,15 @@ func parseFlags(args []string) (options, []string, error) {
 		defaultOutput = "text"
 	}
 	opts := options{
-		output:      defaultOutput,
-		namespace:   "default",
-		redact:      cfg.Redact,
-		paranoid:    cfg.Paranoid,
-		timeout:     timeout,
-		logTail:     cfg.LogTail,
-		maxLogBytes: cfg.MaxLogBytes,
-		applyDryRun: cfg.ApplyDryRun,
+		output:          defaultOutput,
+		namespace:       "default",
+		redact:          cfg.Redact,
+		paranoid:        cfg.Paranoid,
+		checkCertExpiry: cfg.CheckCertExpiry,
+		timeout:         timeout,
+		logTail:         cfg.LogTail,
+		maxLogBytes:     cfg.MaxLogBytes,
+		applyDryRun:     cfg.ApplyDryRun,
 	}
 	if opts.logTail <= 0 {
 		opts.logTail = 120
@@ -591,6 +594,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
+	fs.BoolVar(&opts.checkCertExpiry, "cert-expiry", opts.checkCertExpiry, "check Ingress TLS certificate expiry (reads only the public tls.crt, never the private key)")
 	fs.BoolVar(&opts.tui, "tui", false, "enable interactive terminal dashboard for the ui command")
 	fs.BoolVar(&opts.quick, "quick", false, "use fast incident defaults")
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")

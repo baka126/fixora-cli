@@ -113,13 +113,14 @@ type AnalyzerPlugin interface {
 }
 
 type Options struct {
-	Namespace      string
-	AllNS          bool
-	IncludeLogs    bool
-	Redact         bool
-	Filters        []string
-	LabelSelector  string
-	MaxConcurrency int
+	Namespace       string
+	AllNS           bool
+	IncludeLogs     bool
+	Redact          bool
+	Filters         []string
+	LabelSelector   string
+	MaxConcurrency  int
+	CheckCertExpiry bool
 }
 
 type Analyzer struct {
