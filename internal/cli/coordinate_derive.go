@@ -137,6 +137,27 @@ func assembleRefs(refs References, services []string, rootRef string) []string {
 	return out
 }
 
+// inclusionReason explains, from a derived ref's kind prefix, why it was added
+// to the coordinated set — so the operator sees what each mutation touches and
+// why before confirming.
+func inclusionReason(ref, rootRef string) string {
+	if ref == rootRef {
+		return "root workload"
+	}
+	switch {
+	case strings.HasPrefix(ref, "ConfigMap/"):
+		return "referenced ConfigMap"
+	case strings.HasPrefix(ref, "Secret/"):
+		return "referenced Secret"
+	case strings.HasPrefix(ref, "PersistentVolumeClaim/"):
+		return "mounted PVC"
+	case strings.HasPrefix(ref, "Service/"):
+		return "selector-matched Service"
+	default:
+		return "referenced by the root workload"
+	}
+}
+
 // filterApplyEligible keeps only steps whose plan is apply-eligible, preserving
 // order. Healthy/unfixable references drop out of the coordinated set.
 func filterApplyEligible(steps []coordinate.Step) []coordinate.Step {
@@ -185,7 +206,7 @@ func runCoordinateFrom(ctx context.Context, stdout, stderr io.Writer, opts optio
 	fmt.Fprintln(stdout, "Derived coordinated fix set")
 	fmt.Fprintln(stdout, "===========================")
 	for _, s := range eligible {
-		fmt.Fprintf(stdout, "- %s\n", s.Ref)
+		fmt.Fprintf(stdout, "- %s (%s)\n", s.Ref, inclusionReason(s.Ref, rootRef))
 	}
 	if len(eligible) < 2 {
 		fmt.Fprintf(stdout, "\nFewer than two resources need a coordinated fix. Use `fix %s` for a single-resource fix.\n", rootRef)

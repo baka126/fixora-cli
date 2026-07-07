@@ -19,6 +19,10 @@ func deploymentManifest() map[string]any {
 				"metadata": map[string]any{"labels": map[string]any{"app": "web", "tier": "fe"}},
 				"spec": map[string]any{
 					"imagePullSecrets": []any{map[string]any{"name": "regcred"}},
+					"initContainers": []any{map[string]any{
+						"name":    "init",
+						"envFrom": []any{map[string]any{"configMapRef": map[string]any{"name": "init-cfg"}}},
+					}},
 					"containers": []any{map[string]any{
 						"name": "web",
 						"envFrom": []any{
@@ -53,7 +57,7 @@ func sortedEqual(t *testing.T, got, want []string, label string) {
 
 func TestExtractReferencesDeployment(t *testing.T) {
 	refs := extractReferences(deploymentManifest())
-	sortedEqual(t, refs.ConfigMaps, []string{"web-cfg", "key-cfg", "vol-cfg"}, "configmaps")
+	sortedEqual(t, refs.ConfigMaps, []string{"web-cfg", "key-cfg", "vol-cfg", "init-cfg"}, "configmaps")
 	sortedEqual(t, refs.Secrets, []string{"web-sec", "vol-sec", "regcred"}, "secrets")
 	sortedEqual(t, refs.PVCs, []string{"data-pvc"}, "pvcs")
 	if refs.PodLabels["app"] != "web" || refs.PodLabels["tier"] != "fe" {
