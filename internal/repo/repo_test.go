@@ -251,3 +251,28 @@ func TestResolveRepoPathDoesNotDoublePrefixRelativeRepo(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestDetectPrefersRootChartOverSubchart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: umbrella\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "charts", "redis")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "Chart.yaml"), []byte("apiVersion: v2\nname: redis\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mode, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Type != "helm" {
+		t.Fatalf("type: got %q want helm", mode.Type)
+	}
+	want := filepath.Join(dir, "Chart.yaml")
+	if mode.HelmChart != want {
+		t.Fatalf("HelmChart: got %q, want the root chart %q", mode.HelmChart, want)
+	}
+}

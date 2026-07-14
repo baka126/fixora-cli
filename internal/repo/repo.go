@@ -63,7 +63,12 @@ func Detect(path string) (Mode, error) {
 		base := filepath.Base(p)
 		if base == "Chart.yaml" {
 			mode.Type = "helm"
-			mode.HelmChart = p
+			// Prefer the shallowest Chart.yaml so an umbrella chart's root is
+			// kept rather than a subchart under charts/ (WalkDir would otherwise
+			// overwrite the root with a deeper subchart Chart.yaml).
+			if mode.HelmChart == "" || chartDepth(path, p) < chartDepth(path, mode.HelmChart) {
+				mode.HelmChart = p
+			}
 		}
 		if strings.HasPrefix(base, "values") && strings.HasSuffix(base, ".yaml") {
 			mode.ValuesFiles = append(mode.ValuesFiles, p)
@@ -80,6 +85,16 @@ func Detect(path string) (Mode, error) {
 		return nil
 	})
 	return mode, err
+}
+
+// chartDepth returns how many directory levels p sits below root, used to keep
+// the shallowest Chart.yaml when a chart tree contains subcharts.
+func chartDepth(root, p string) int {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return strings.Count(p, string(os.PathSeparator))
+	}
+	return strings.Count(rel, string(os.PathSeparator))
 }
 
 func Plan(ctx context.Context, repoPath string, finding analyzer.Finding, plan fix.Plan) (Mode, error) {
