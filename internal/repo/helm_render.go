@@ -23,8 +23,9 @@ type FieldVerdict struct {
 // RenderValidation is the result of comparing an intended patch to the chart's
 // rendered output. Failures degrade into Notes rather than errors.
 type RenderValidation struct {
-	Fields []FieldVerdict
-	Notes  []string
+	Fields      []FieldVerdict
+	Notes       []string
+	Suggestions []ValuesKeySuggestion
 }
 
 // renderedDocFor returns the YAML body of the first rendered document whose
