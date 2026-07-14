@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
@@ -35,19 +36,50 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "cronjob", aliases: []string{"cronjob", "cronjobs", "workload"}, run: a.analyzeCronJobs},
 		{name: "replicaset", aliases: []string{"replicaset", "replicasets", "workload"}, run: a.analyzeReplicaSets},
 	}
+	selected := filterSet(a.opts.Filters)
+
+	// Select the analyzers to run, preserving registration order.
+	var jobs []precisionAnalyzer
+	for _, pa := range analyzers {
+		if len(selected) > 0 && !matchesAny(selected, pa.aliases...) {
+			continue
+		}
+		jobs = append(jobs, pa)
+	}
+
+	type result struct {
+		findings []Finding
+		skipped  []SkippedCheck
+	}
+	results := make([]result, len(jobs))
+
+	workers := a.opts.MaxConcurrency
+	if workers <= 0 {
+		workers = 10
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i := range jobs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, pa precisionAnalyzer) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			list, err := pa.run(ctx)
+			if err != nil {
+				results[i].skipped = []SkippedCheck{rbacAwareSkip(pa.name, err)}
+				return
+			}
+			results[i].findings = list
+		}(i, jobs[i])
+	}
+	wg.Wait()
+
 	findings := []Finding{}
 	skipped := []SkippedCheck{}
-	selected := filterSet(a.opts.Filters)
-	for _, analyzer := range analyzers {
-		if len(selected) > 0 && !matchesAny(selected, analyzer.aliases...) {
-			continue
-		}
-		list, err := analyzer.run(ctx)
-		if err != nil {
-			skipped = append(skipped, SkippedCheck{Name: analyzer.name, Reason: err.Error()})
-			continue
-		}
-		findings = append(findings, list...)
+	for _, r := range results {
+		findings = append(findings, r.findings...)
+		skipped = append(skipped, r.skipped...)
 	}
 	return findings, skipped
 }
@@ -283,7 +315,7 @@ func (a Analyzer) objectNameState(ctx *ScanContext, namespace, resource, name st
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "forbidden"), strings.Contains(msg, "unauthorized"):
+	case classifyReadError(err):
 		return objectState{Forbidden: true, Message: "resource exists or may exist but is not readable: " + err.Error()}
 	case strings.Contains(msg, "notfound"), strings.Contains(msg, "not found"):
 		return objectState{Message: "not found"}

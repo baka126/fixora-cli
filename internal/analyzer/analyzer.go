@@ -49,14 +49,14 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 			pods, err := sctx.GetPods()
 			if err != nil {
 				mu.Lock()
-				skipped = append(skipped, SkippedCheck{Name: "pods", Reason: err.Error()})
+				skipped = append(skipped, rbacAwareSkip("pods", err))
 				mu.Unlock()
 				return
 			}
 			events, err := sctx.GetEvents()
 			if err != nil {
 				mu.Lock()
-				skipped = append(skipped, SkippedCheck{Name: "events", Reason: err.Error()})
+				skipped = append(skipped, rbacAwareSkip("events", err))
 				mu.Unlock()
 				events = nil
 			}
