@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 // binPath is the kubectl-fixora binary under test; kubeContext is the kind
@@ -231,4 +233,29 @@ func applyDeployWithMeta(t *testing.T, ns, name string, labels, annotations map[
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("apply deployment %s: %v: %s", name, err, stderr.String())
 	}
+}
+
+// requireGone fails if a resource still exists. Used to prove shadow
+// verification did not leak its sandbox into the namespace.
+func requireGone(t *testing.T, ns, kind, name string) {
+	t.Helper()
+	waitFor(t, 60*time.Second, kind+"/"+name+" to be deleted", func() bool {
+		_, _, code := run(t, "kubectl", "--context", kubeContext,
+			"get", kind+"/"+name, "-n", ns)
+		return code != 0
+	})
+}
+
+// typedClient builds the client-go client shadow verification requires.
+// NewRequiredTypedClient is deliberate: NewTypedClient silently returns a
+// Kubectl fallback shim on error (internal/kube/typed.go:49), which would
+// surface here as a confusing "requires typed client access" failure instead
+// of the real kubeconfig problem.
+func typedClient(t *testing.T) *kube.TypedClient {
+	t.Helper()
+	c, err := kube.NewRequiredTypedClient(kubeContext, "e2e shadow verification")
+	if err != nil {
+		t.Fatalf("typed client for context %s: %v", kubeContext, err)
+	}
+	return c
 }
