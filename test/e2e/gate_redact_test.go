@@ -41,6 +41,28 @@ func TestRedactionHoldsAtEgress(t *testing.T) {
 	if strings.Contains(stdout+stderr, leakedSecret) {
 		t.Fatal("secret appeared in command output despite --redact")
 	}
+
+	// Guard against a vacuous pass. The assertions above hold trivially if the
+	// pod log text never reached the AI payload at all (evidence bounding
+	// dropped it, Logs() errored, a plumbing regression): a request still goes
+	// out carrying finding metadata, so len(sent) > 0 and "secret absent" is
+	// true while nothing about log redaction was exercised. The redact rule
+	// keeps the "password=" prefix and rewrites only the value
+	// (internal/redact/redact.go:22-23), so a redacted log line appears as
+	// "password=[REDACTED]". Requiring that in a recorded body proves both
+	// halves of the contract: the log text really did cross the egress
+	// boundary, and it was redacted on the way.
+	redacted := false
+	for _, body := range sent {
+		if strings.Contains(body, "password=[REDACTED]") {
+			redacted = true
+			break
+		}
+	}
+	if !redacted {
+		t.Fatal("no AI request carried the redacted log line \"password=[REDACTED]\"; " +
+			"the pod log evidence never reached the AI payload, so the redaction assertion proved nothing")
+	}
 }
 
 // TestMaliciousAIPatchRejected drives the shadow allowlist directly. Each
