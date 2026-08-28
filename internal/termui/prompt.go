@@ -84,6 +84,26 @@ func ConfirmEditPatch(path string, in io.Reader, out io.Writer) bool {
 	return response == "y" || response == "yes"
 }
 
+// Confirm asks a caller-supplied yes/no question and returns true only on an
+// explicit "y"/"yes". Use this instead of the wording-specific helpers when the
+// prompt is not about a failed rollout.
+func Confirm(prompt string, in io.Reader, out io.Writer) bool {
+	if in == nil {
+		in = os.Stdin
+	}
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprintf(out, "\n%s [y/N]: ", prompt)
+	reader := bufio.NewReader(in)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes"
+}
+
 func ConfirmRollback(command string, in io.Reader, out io.Writer) bool {
 	if in == nil {
 		in = os.Stdin
