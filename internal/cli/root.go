@@ -73,6 +73,7 @@ type options struct {
 	checkCertExpiry bool
 	tui             bool
 	repoPath        string
+	from            string
 	strategy        string
 	branch          string
 	commit          bool
@@ -348,6 +349,15 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
 	case "coordinate":
+		if opts.from != "" {
+			if len(rest) > 0 {
+				fmt.Fprintln(stderr, "error: --from auto-derives the set; do not also pass explicit resources")
+				return 2
+			}
+			analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
+			defer analysisCancel()
+			return runCoordinateFrom(analysisCtx, stdout, stderr, opts, a, k, opts.from)
+		}
 		if len(rest) < 2 {
 			fmt.Fprintln(stderr, "error: coordinate requires two or more resources (kind/name ...) to apply together")
 			return 2
@@ -627,6 +637,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
+	fs.StringVar(&opts.from, "from", "", "coordinate: auto-derive the related resource set from this root <kind/name>")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
