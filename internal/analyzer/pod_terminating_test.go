@@ -24,12 +24,12 @@ func TestDeletionAge(t *testing.T) {
 }
 
 func TestIsStuckTerminating(t *testing.T) {
-	// grace defaults to 30s; buffer 30s => stuck when age > 60s.
-	if isStuckTerminating(45*time.Second, 0) {
-		t.Fatal("45s with default grace is within grace+buffer, not stuck")
+	// grace 30s + buffer 30s => stuck when age > 60s.
+	if isStuckTerminating(45*time.Second, 30) {
+		t.Fatal("45s with grace 30 is within grace+buffer, not stuck")
 	}
-	if !isStuckTerminating(90*time.Second, 0) {
-		t.Fatal("90s with default grace should be stuck")
+	if !isStuckTerminating(90*time.Second, 30) {
+		t.Fatal("90s with grace 30 should be stuck")
 	}
 	// explicit grace 120s => stuck when age > 150s.
 	if isStuckTerminating(140*time.Second, 120) {
@@ -37,6 +37,25 @@ func TestIsStuckTerminating(t *testing.T) {
 	}
 	if !isStuckTerminating(200*time.Second, 120) {
 		t.Fatal("200s with grace 120 should be stuck")
+	}
+	// force-delete (grace 0): only the 30s buffer applies.
+	if isStuckTerminating(20*time.Second, 0) {
+		t.Fatal("20s with grace 0 is still within the buffer")
+	}
+	if !isStuckTerminating(45*time.Second, 0) {
+		t.Fatal("45s with grace 0 (force delete) should be stuck")
+	}
+}
+
+func TestEffectiveGracePeriod(t *testing.T) {
+	if g := effectiveGracePeriod(map[string]any{}); g != 30 {
+		t.Fatalf("absent field must default to 30, got %d", g)
+	}
+	if g := effectiveGracePeriod(map[string]any{"deletionGracePeriodSeconds": float64(0)}); g != 0 {
+		t.Fatalf("explicit 0 (force delete) must be honoured, got %d", g)
+	}
+	if g := effectiveGracePeriod(map[string]any{"deletionGracePeriodSeconds": float64(60)}); g != 60 {
+		t.Fatalf("explicit 60 must be used, got %d", g)
 	}
 }
 
@@ -75,11 +94,21 @@ func TestTerminatingCausesVolumeDetach(t *testing.T) {
 	events := []kube.Event{{
 		Reason:         "FailedUnMount",
 		Message:        "Unable to detach volume",
-		InvolvedObject: kube.ObjectReference{Namespace: "prod", Name: "p"},
+		InvolvedObject: kube.ObjectReference{Kind: "Pod", Namespace: "prod", Name: "p"},
 	}}
 	causes, _ := terminatingCauses(pod, events, nil)
 	if !containsSubstr(causes, "detach") && !containsSubstr(causes, "FailedUnMount") {
 		t.Fatalf("expected volume-detach cause, got %v", causes)
+	}
+
+	// A same-named event on a different kind must not be misattributed.
+	other := []kube.Event{{
+		Reason:         "FailedUnMount",
+		Message:        "Unable to detach volume",
+		InvolvedObject: kube.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: "prod", Name: "p"},
+	}}
+	if c, _ := terminatingCauses(pod, other, nil); containsSubstr(c, "detach") || containsSubstr(c, "FailedUnMount") {
+		t.Fatalf("non-Pod event must not be attributed to the pod, got %v", c)
 	}
 }
 
@@ -102,20 +131,11 @@ func TestTerminatingCausesNodeUnreachable(t *testing.T) {
 // containsSubstr reports whether any element of xs contains sub.
 func containsSubstr(xs []string, sub string) bool {
 	for _, x := range xs {
-		if len(sub) > 0 && len(x) >= len(sub) && strings.Contains(x, sub) {
+		if sub != "" && strings.Contains(x, sub) {
 			return true
 		}
 	}
 	return false
-}
-
-func stuckPodFixture(name string, extra map[string]any) map[string]any {
-	meta := map[string]any{"namespace": "prod", "name": name, "deletionTimestamp": "2000-01-01T00:00:00Z"}
-	pod := map[string]any{"metadata": meta, "spec": map[string]any{}}
-	for k, v := range extra {
-		pod[k] = v
-	}
-	return pod
 }
 
 func podTermScanContext(pods, nodes []map[string]any, events []kube.Event) *ScanContext {
@@ -126,9 +146,10 @@ func podTermScanContext(pods, nodes []map[string]any, events []kube.Event) *Scan
 }
 
 func TestAnalyzePodsTerminatingFinalizerHigh(t *testing.T) {
-	pod := stuckPodFixture("stuck", map[string]any{
+	pod := map[string]any{
 		"metadata": map[string]any{"namespace": "prod", "name": "stuck", "deletionTimestamp": "2000-01-01T00:00:00Z", "finalizers": []any{"example.com/f1"}},
-	})
+		"spec":     map[string]any{},
+	}
 	ctx := podTermScanContext([]map[string]any{pod}, nil, nil)
 	findings, err := New(fakeReader{}, Options{}).analyzePodsTerminating(ctx)
 	if err != nil {

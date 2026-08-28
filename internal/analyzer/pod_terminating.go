@@ -23,18 +23,26 @@ func deletionAge(deletionTS string, now time.Time) (time.Duration, bool) {
 	return now.Sub(t), true
 }
 
-// gracePeriodOrDefault returns the effective grace period, defaulting to 30s.
-func gracePeriodOrDefault(gracePeriodSeconds int) int {
-	if gracePeriodSeconds <= 0 {
+// effectiveGracePeriod resolves a terminating pod's grace period. An explicit
+// value is honoured — including 0, which the API server sets for
+// `kubectl delete --grace-period=0` — and only a genuinely absent field falls
+// back to the 30s Kubernetes default.
+func effectiveGracePeriod(meta map[string]any) int {
+	v, ok := meta["deletionGracePeriodSeconds"]
+	if !ok {
 		return 30
 	}
-	return gracePeriodSeconds
+	if n := intValue(v); n > 0 {
+		return n
+	}
+	return 0
 }
 
 // isStuckTerminating reports whether a terminating pod has outlived its grace
 // period plus a buffer (so a pod mid-graceful-shutdown is not flagged).
-func isStuckTerminating(age time.Duration, gracePeriodSeconds int) bool {
-	limit := time.Duration(gracePeriodOrDefault(gracePeriodSeconds))*time.Second + terminatingGraceBuffer
+// graceSeconds is the already-resolved effective grace period.
+func isStuckTerminating(age time.Duration, graceSeconds int) bool {
+	limit := time.Duration(graceSeconds)*time.Second + terminatingGraceBuffer
 	return age > limit
 }
 
@@ -74,7 +82,7 @@ func terminatingCauses(pod map[string]any, events []kube.Event, nodeReady map[st
 	namespace, name := objectNamespaceName(pod)
 	for _, e := range events {
 		eventNS := firstNonEmpty(e.InvolvedObject.Namespace, e.Metadata.Namespace)
-		if eventNS != namespace || e.InvolvedObject.Name != name {
+		if eventNS != namespace || e.InvolvedObject.Name != name || e.InvolvedObject.Kind != "Pod" {
 			continue
 		}
 		if strings.Contains(e.Reason, "FailedDetach") || strings.Contains(e.Reason, "FailedUnMount") || strings.Contains(e.Reason, "FailedUnmount") {
@@ -114,7 +122,7 @@ func (a Analyzer) analyzePodsTerminating(ctx *ScanContext) ([]Finding, error) {
 		if !ok {
 			continue
 		}
-		grace := intValue(meta["deletionGracePeriodSeconds"])
+		grace := effectiveGracePeriod(meta)
 		if !isStuckTerminating(age, grace) {
 			continue
 		}
@@ -173,7 +181,7 @@ func podTerminatingFinding(pod map[string]any, severity string, age time.Duratio
 	evidence := []Evidence{
 		{Label: "Deletion requested", Value: strValue(meta["deletionTimestamp"])},
 		{Label: "Terminating for", Value: age.Round(time.Second).String()},
-		{Label: "Grace period", Value: strconv.Itoa(gracePeriodOrDefault(grace)) + "s"},
+		{Label: "Grace period", Value: strconv.Itoa(grace) + "s"},
 	}
 	if len(causes) == 0 {
 		evidence = append(evidence, Evidence{Label: "Likely cause", Value: "no finalizer, preStop, failed-detach event, or node problem detected; kubelet may not have confirmed deletion"})
