@@ -215,12 +215,3 @@ func checkFleetHeterogeneous(namespace, name string, ds map[string]any, nodes []
 		}},
 	}}
 }
-
-func sortedKeys(m map[string]bool) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}

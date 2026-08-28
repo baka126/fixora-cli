@@ -3,6 +3,7 @@ package repo
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,10 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
+
+// helmTemplateTimeout bounds a single `helm template` invocation so a hanging
+// helm process can't stall the fix pipeline. Overridable in tests.
+var helmTemplateTimeout = 30 * time.Second
 
 // HelmSourceLocation describes where a rendered Kubernetes resource came from
 // inside a Helm chart tree.
@@ -25,8 +30,6 @@ type HelmSourceLocation struct {
 	Pinpointed     bool     `json:"pinpointed"`
 	Notes          []string `json:"notes,omitempty"`
 }
-
-var helmTemplateTimeout = 30 * time.Second
 
 // helmSourceMatches scans helm template output (renderedOutput) and returns
 // the "# Source:" path of the first document whose kind and name match.
@@ -109,6 +112,37 @@ func helmSourceMatches(renderedOutput, kind, name, release string) (sourcePath s
 	return "", false
 }
 
+// renderChart runs `helm template [release] chartPath` under helmTemplateTimeout
+// and returns the rendered manifest stream. It wraps the failure modes callers
+// degrade on: helm not on PATH, a render that exceeds the timeout, and a
+// non-zero helm exit (whose combined output carries the reason, with the exec
+// error preserved when helm produced no output).
+func renderChart(chartPath, release string) (string, error) {
+	helmPath, err := exec.LookPath("helm")
+	if err != nil {
+		return "", fmt.Errorf("helm not found: %w", err)
+	}
+	args := []string{"template"}
+	if release != "" {
+		args = append(args, release)
+	}
+	args = append(args, chartPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), helmTemplateTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, helmPath, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("helm template timed out after %s", helmTemplateTimeout)
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(out)); detail != "" {
+			return "", fmt.Errorf("helm template failed: %s", detail)
+		}
+		return "", fmt.Errorf("helm template failed: %w", err)
+	}
+	return string(out), nil
+}
+
 // IdentifyHelmSource locates where a Helm-managed resource's fix belongs
 // within the chart tree at repoPath. It always returns a valid location —
 // failures during helm templating degrade gracefully via Pinpointed=false
@@ -139,33 +173,15 @@ func IdentifyHelmSource(repoPath string, finding analyzer.Finding) (HelmSourceLo
 		loc.Notes = append(loc.Notes, "no Helm release label on the resource; confirm it is Helm-managed")
 	}
 
-	// Step 4: pinpoint via helm template.
-	helmPath, lookErr := exec.LookPath("helm")
-	if lookErr != nil {
-		loc.Notes = append(loc.Notes, "helm not found; cannot pinpoint template")
-		return loc, nil
-	}
-
-	// Pass the release name when known so rendered names match the live resource.
-	args := []string{"template"}
-	if loc.Release != "" {
-		args = append(args, loc.Release)
-	}
-	args = append(args, loc.ChartPath)
-	renderCtx, cancel := context.WithTimeout(context.Background(), helmTemplateTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(renderCtx, helmPath, args...)
-	out, renderErr := cmd.CombinedOutput()
-	if renderCtx.Err() == context.DeadlineExceeded {
-		loc.Notes = append(loc.Notes, "helm template timed out; cannot pinpoint template")
-		return loc, nil
-	}
+	// Step 4: pinpoint via helm template (timeout + error handling live in
+	// renderChart).
+	out, renderErr := renderChart(loc.ChartPath, loc.Release)
 	if renderErr != nil {
-		loc.Notes = append(loc.Notes, "helm template failed: "+strings.TrimSpace(string(out)))
+		loc.Notes = append(loc.Notes, "cannot pinpoint template: "+renderErr.Error())
 		return loc, nil
 	}
 
-	path, ok := helmSourceMatches(string(out), finding.ResourceKind, finding.ResourceName, loc.Release)
+	path, ok := helmSourceMatches(out, finding.ResourceKind, finding.ResourceName, loc.Release)
 	if !ok {
 		loc.Notes = append(loc.Notes, "no rendered resource matched "+finding.ResourceKind+"/"+finding.ResourceName)
 		return loc, nil

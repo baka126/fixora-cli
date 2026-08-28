@@ -288,7 +288,10 @@ func podOwnerID(pod map[string]any, podName string) string {
 	return kind + "/" + name
 }
 
-func sortedKeys(m map[string]struct{}) []string {
+// sortedKeys returns the keys of m in ascending order. Generic over the value
+// type so both set-shaped (map[string]struct{}) and flag-shaped
+// (map[string]bool) maps can use it.
+func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

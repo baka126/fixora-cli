@@ -531,9 +531,11 @@ func TestScanReportLabelsForbiddenEventsAsRBAC(t *testing.T) {
 
 type fakeReader struct {
 	pods             kube.PodList
+	podsErr          error
 	events           []kube.Event
 	resource         map[string]any
 	items            map[string][]map[string]any
+	itemErrs         map[string]error
 	runErr           error
 	eventsErr        error
 	logFn            func()

@@ -154,6 +154,38 @@ func TestIdentifyHelmSourceEmptyRelease(t *testing.T) {
 	}
 }
 
+func TestRenderChartTimesOut(t *testing.T) {
+	binDir := t.TempDir()
+	helmPath := filepath.Join(binDir, "helm")
+	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	old := helmTemplateTimeout
+	helmTemplateTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { helmTemplateTimeout = old })
+
+	if _, err := renderChart(t.TempDir(), "rel"); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected a timeout error, got %v", err)
+	}
+}
+
+func TestRenderChartPreservesExecErrorWithNoOutput(t *testing.T) {
+	binDir := t.TempDir()
+	helmPath := filepath.Join(binDir, "helm")
+	// Exit non-zero, emit nothing: the exec error must not be dropped.
+	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	_, err := renderChart(t.TempDir(), "rel")
+	if err == nil || err.Error() == "helm template failed: " {
+		t.Fatalf("expected a non-empty failure message, got %v", err)
+	}
+}
+
 func TestIdentifyHelmSourcePinpointEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not installed")
