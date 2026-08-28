@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,4 +120,65 @@ func waitForNotReady(t *testing.T, ns, deploy string) {
 			"deployment/"+deploy, "-n", ns, "-o", "jsonpath={.status.availableReplicas}")
 		return code == 0 && strings.TrimSpace(out) == ""
 	})
+}
+
+// applyDeployWithMeta applies the broken deployment with caller-supplied
+// labels and annotations, so a test can set exactly one GitOps marker. The
+// markers are stamped on both the Deployment metadata and the pod template:
+// for a failing workload fixora derives the finding (and its GitOps hints)
+// from the owned pod, so template metadata is what the source-managed gate
+// actually reads.
+func applyDeployWithMeta(t *testing.T, ns, name string, labels, annotations map[string]string) {
+	t.Helper()
+
+	podLabels := map[string]string{"app": name}
+	for k, v := range labels {
+		podLabels[k] = v
+	}
+
+	meta := map[string]any{"name": name}
+	if len(labels) > 0 {
+		meta["labels"] = labels
+	}
+	if len(annotations) > 0 {
+		meta["annotations"] = annotations
+	}
+
+	templateMeta := map[string]any{"labels": podLabels}
+	if len(annotations) > 0 {
+		templateMeta["annotations"] = annotations
+	}
+
+	doc := map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   meta,
+		"spec": map[string]any{
+			"replicas": 1,
+			"selector": map[string]any{"matchLabels": map[string]string{"app": name}},
+			"template": map[string]any{
+				"metadata": templateMeta,
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"name":  "api",
+						"image": "ghcr.io/fixora/does-not-exist:e2e",
+					}},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal deployment: %v", err)
+	}
+
+	cmd := exec.Command("kubectl", "--context", kubeContext, "apply", "-n", ns, "-f", "-")
+	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
+	cmd.Stdin = bytes.NewReader(body)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("apply deployment %s: %v: %s", name, err, stderr.String())
+	}
 }
