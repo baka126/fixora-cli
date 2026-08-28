@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -86,4 +87,36 @@ func newNamespace(t *testing.T) string {
 			"delete", "namespace", ns, "--ignore-not-found=true", "--wait=false")
 	})
 	return ns
+}
+
+// applyFixture applies a YAML file from test/e2e/fixtures into ns.
+func applyFixture(t *testing.T, ns, file string) {
+	t.Helper()
+	kubectl(t, "apply", "-n", ns, "-f", filepath.Join("fixtures", file))
+}
+
+// specOf returns the live .spec of a resource as canonical JSON. Comparing
+// this catches any mutation, including ones that do not bump generation.
+func specOf(t *testing.T, ns, ref string) string {
+	t.Helper()
+	return strings.TrimSpace(kubectl(t, "get", ref, "-n", ns, "-o", "jsonpath={.spec}"))
+}
+
+// requireUnchanged fails if the live spec differs from the captured baseline.
+func requireUnchanged(t *testing.T, ns, ref, before string) {
+	t.Helper()
+	if after := specOf(t, ns, ref); after != before {
+		t.Fatalf("%s was mutated but the gate should have blocked it\nbefore: %s\nafter:  %s", ref, before, after)
+	}
+}
+
+// waitForNotReady blocks until a deployment reports zero available replicas,
+// which is the state fixora's analyzers key off.
+func waitForNotReady(t *testing.T, ns, deploy string) {
+	t.Helper()
+	waitFor(t, 90*time.Second, deploy+" to report unavailable replicas", func() bool {
+		out, _, code := run(t, "kubectl", "--context", kubeContext, "get",
+			"deployment/"+deploy, "-n", ns, "-o", "jsonpath={.status.availableReplicas}")
+		return code == 0 && strings.TrimSpace(out) == ""
+	})
 }
