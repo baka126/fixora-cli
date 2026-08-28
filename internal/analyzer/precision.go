@@ -35,6 +35,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "job", aliases: []string{"job", "jobs", "workload"}, run: a.analyzeJobs},
 		{name: "cronjob", aliases: []string{"cronjob", "cronjobs", "workload"}, run: a.analyzeCronJobs},
 		{name: "replicaset", aliases: []string{"replicaset", "replicasets", "workload"}, run: a.analyzeReplicaSets},
+		{name: "secret", aliases: []string{"secret", "secrets", "configuration"}, run: a.analyzeSecrets},
 		{name: "pod-terminating", aliases: []string{"pod", "pods", "terminating"}, run: a.analyzePodsTerminating},
 	}
 	selected := filterSet(a.opts.Filters)

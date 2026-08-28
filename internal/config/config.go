@@ -41,6 +41,7 @@ type Config struct {
 	Profiles               map[string]Settings `json:"profiles,omitempty"`
 	Contexts               map[string]Settings `json:"contexts,omitempty"`
 	CustomProfiles         map[string]string   `json:"customProfiles,omitempty"`
+	CheckSecretKeys        bool                `json:"checkSecretKeys,omitempty"`
 }
 
 type Settings struct {
@@ -156,6 +157,7 @@ func Public(cfg Config) map[string]any {
 		"applyDryRun":            cfg.ApplyDryRun,
 		"customAnalyzers":        cfg.CustomAnalyzers,
 		"checkCertExpiry":        cfg.CheckCertExpiry,
+		"checkSecretKeys":        cfg.CheckSecretKeys,
 		"allowedImageRegistries": cfg.AllowedImageRegistries,
 		"maxPatchMemory":         cfg.MaxPatchMemory,
 		"maxPatchCPU":            cfg.MaxPatchCPU,
@@ -217,6 +219,7 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
 	add("checkCertExpiry", cfg.CheckCertExpiry, sourceFor(raw, "checkCertExpiry"))
+	add("checkSecretKeys", cfg.CheckSecretKeys, sourceFor(raw, "checkSecretKeys"))
 	add("allowedImageRegistries", cfg.AllowedImageRegistries, sourceFor(raw, "allowedImageRegistries"))
 	add("maxPatchMemory", cfg.MaxPatchMemory, sourceFor(raw, "maxPatchMemory"))
 	add("maxPatchCPU", cfg.MaxPatchCPU, sourceFor(raw, "maxPatchCPU"))

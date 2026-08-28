@@ -120,6 +120,7 @@ type Options struct {
 	Filters         []string
 	LabelSelector   string
 	MaxConcurrency  int
+	CheckSecretKeys bool
 	CheckCertExpiry bool
 }
 
