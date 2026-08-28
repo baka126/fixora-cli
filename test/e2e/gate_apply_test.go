@@ -20,11 +20,14 @@ func TestApplyGateBlocksIneligiblePlan(t *testing.T) {
 
 	// --quick suppresses shadow (there is no --no-shadow flag); --no-ai keeps
 	// this test independent of any AI provider.
-	_, stderr, code := fixora(t, "fix", "deployment/broken-api",
+	stdout, stderr, _ := fixora(t, "fix", "deployment/broken-api",
 		"-n", ns, "--quick", "--no-ai", "--delivery", "cluster", "--yes")
 
-	if code == 0 {
-		t.Fatalf("an ineligible plan must not exit 0; stderr=%s", stderr)
+	// An ineligible plan is a successful "declined to act" outcome: the guided
+	// walkthrough prints this and exits 0. The exit code is not the contract —
+	// the live spec staying byte-identical is.
+	if !strings.Contains(stdout, "No production mutation was attempted.") {
+		t.Fatalf("expected the walkthrough to decline explicitly; stdout=%s stderr=%s", stdout, stderr)
 	}
 	requireUnchanged(t, ns, "deployment/broken-api", before)
 }

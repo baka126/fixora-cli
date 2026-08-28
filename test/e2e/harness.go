@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,14 @@ func run(t *testing.T, name string, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
+	// Auto-approve any interactive confirmation. --yes does NOT bypass the
+	// guided-fix apply prompt (root.go calls termui.ConfirmApply reading
+	// os.Stdin unconditionally); an exec'd process with no stdin gets EOF,
+	// the prompt is declined, and nothing applies. Without this a negative
+	// gate test could pass for the WRONG reason — prompt declined rather
+	// than the safety gate firing. Mirrors the repo's synthetic-stdin
+	// convention for prompt confirmation flows.
+	cmd.Stdin = strings.NewReader("y\ny\ny\ny\ny\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -41,18 +50,21 @@ func run(t *testing.T, name string, args ...string) (string, string, int) {
 	return stdout.String(), stderr.String(), code
 }
 
-// fixora runs the binary under test against the kind cluster.
+// fixora runs the binary under test against the kind cluster. args are passed
+// through untouched: fixora dispatches on args[0], so a prepended global flag
+// would break command routing. The exported KUBECONFIG already points at the
+// kind cluster (kind writes current-context: kind-<name>), so the context is
+// correct without an explicit --context.
 func fixora(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
-	full := append([]string{"--context", kubeContext}, args...)
-	return run(t, binPath, full...)
+	return run(t, binPath, args...)
 }
 
 // kubectl runs kubectl against the kind cluster and fails the test on error.
+// Context comes from the exported KUBECONFIG, same as fixora.
 func kubectl(t *testing.T, args ...string) string {
 	t.Helper()
-	full := append([]string{"--context", kubeContext}, args...)
-	stdout, stderr, code := run(t, "kubectl", full...)
+	stdout, stderr, code := run(t, "kubectl", args...)
 	if code != 0 {
 		t.Fatalf("kubectl %v exited %d: %s", args, code, stderr)
 	}
@@ -77,11 +89,31 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool)
 // cleanup. Per-test namespaces are what make t.Parallel() safe here.
 func newNamespace(t *testing.T) string {
 	t.Helper()
-	ns := strings.ToLower(strings.NewReplacer("/", "-", "_", "-").Replace(t.Name()))
-	if len(ns) > 60 {
-		ns = ns[:60]
+
+	// Go subtest names carry '.', '(', ')', ':', ',' and capitals, none of
+	// which are legal in an RFC 1123 label. Map anything outside [a-z0-9-] to
+	// '-', collapse runs, trim, then append a short unique suffix so two names
+	// that sanitize (or truncate) to the same string do not collide.
+	var b strings.Builder
+	for _, r := range strings.ToLower(t.Name()) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
 	}
-	ns = strings.Trim(ns, "-")
+	base := b.String()
+	for strings.Contains(base, "--") {
+		base = strings.ReplaceAll(base, "--", "-")
+	}
+	base = strings.Trim(base, "-")
+
+	suffix := fmt.Sprintf("%05d", time.Now().UnixNano()%100000)
+	if limit := 63 - len(suffix) - 1; len(base) > limit {
+		base = strings.Trim(base[:limit], "-")
+	}
+	ns := base + "-" + suffix
+
 	kubectl(t, "create", "namespace", ns)
 	t.Cleanup(func() {
 		_, _, _ = run(t, "kubectl", "--context", kubeContext,
