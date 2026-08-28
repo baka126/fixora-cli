@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -78,6 +79,21 @@ func TestRunCoordinateStepsFailureRollbackExit1(t *testing.T) {
 	}
 	if d.restored == 0 {
 		t.Fatal("expected rollback restores on failure")
+	}
+}
+
+func TestRunCoordinateStepsApplyErrorRollbackExit1(t *testing.T) {
+	var out, errw bytes.Buffer
+	d := &fakeCoordDeps{applyErr: map[string]error{"b": errors.New("apply failed")}}
+	code := runCoordinateSteps(context.Background(), &out, &errw, []coordinate.Step{coordStep("a", true), coordStep("b", true)}, d, func() bool { return true }, func() bool { return true })
+	if code != 1 {
+		t.Fatalf("apply error should exit 1, got %d", code)
+	}
+	if len(d.applied) != 1 {
+		t.Fatalf("only step a should have applied, got %v", d.applied)
+	}
+	if d.restored == 0 {
+		t.Fatal("expected step a to be rolled back after step b's apply error")
 	}
 }
 

@@ -32,6 +32,7 @@ type Report struct {
 	Steps   []StepReport
 	Aborted bool // preflight/confirm rejected the set; nothing mutated
 	Mutated bool // at least one Apply succeeded
+	Failed  bool // a step failed to apply or verify after mutation began
 }
 
 // Deps is the injected side-effect surface. Real impl is kube-backed; tests
@@ -112,6 +113,13 @@ func Run(ctx context.Context, steps []Step, d Deps, sourceManaged func(analyzer.
 	}
 
 	if !failed {
+		return report
+	}
+	report.Failed = true
+
+	// Nothing was applied (first Capture/Apply failed) — no prefix to roll back,
+	// so don't prompt for a zero-step rollback.
+	if len(appliedPrefix) == 0 {
 		return report
 	}
 

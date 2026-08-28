@@ -13,6 +13,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/ops"
+	"github.com/fixora/kubectl-fixora/internal/termui"
 )
 
 // coordinateDeps is the kube-backed implementation of coordinate.Deps.
@@ -30,7 +31,11 @@ func (d coordinateDeps) Apply(ctx context.Context, file string) error {
 }
 
 func (d coordinateDeps) Capture(ctx context.Context, kind, name, namespace string) ([]byte, error) {
-	return d.k.Run(ctx, "get", kind+"/"+name, "-n", namespace, "-o", "yaml")
+	args := []string{"get", kind + "/" + name, "-o", "yaml"}
+	if namespace != "" {
+		args = append(args, "-n", namespace)
+	}
+	return d.k.Run(ctx, args...)
 }
 
 func (d coordinateDeps) Restore(ctx context.Context, manifest []byte) error {
@@ -74,6 +79,26 @@ func rolloutHealthy(class string) bool {
 	}
 }
 
+// coordinateConfirmers builds the apply/rollback confirmation callbacks for the
+// saga: --yes auto-approves the apply and always declines auto-rollback;
+// otherwise both prompt on the supplied reader with a coordinate-specific
+// message (not the rollout-failure wording of termui.ConfirmRollback).
+func coordinateConfirmers(yes bool, n int, in io.Reader, out io.Writer) (confirmApply, confirmRollback func() bool) {
+	confirmApply = func() bool {
+		if yes {
+			return true
+		}
+		return termui.Confirm(fmt.Sprintf("Apply %d coordinated changes now?", n), in, out)
+	}
+	confirmRollback = func() bool {
+		if yes {
+			return false // never auto-roll-back non-interactively
+		}
+		return termui.Confirm("Roll back the already-applied changes now?", in, out)
+	}
+	return confirmApply, confirmRollback
+}
+
 // buildCoordinateSteps derives an ordered step list from resource refs, reusing
 // the same planning path as `fix` so ApplyEligible is enforced identically.
 // Each step's patch is written to a temp file for dry-run/apply.
@@ -106,6 +131,7 @@ func buildCoordinateSteps(ctx context.Context, a analyzer.Analyzer, opts options
 			}
 			if _, err := f.WriteString(plan.PatchYAML()); err != nil {
 				f.Close()
+				os.Remove(f.Name())
 				return nil, err
 			}
 			f.Close()
@@ -148,11 +174,9 @@ func runCoordinateSteps(ctx context.Context, stdout, stderr io.Writer, steps []c
 		fmt.Fprintln(stderr, "coordinated apply aborted; no changes were made")
 		return 2
 	}
-	for _, s := range report.Steps {
-		if s.Applied && !s.Healthy {
-			fmt.Fprintln(stderr, "coordinated apply failed; applied steps were rolled back where possible")
-			return 1
-		}
+	if report.Failed {
+		fmt.Fprintln(stderr, "coordinated apply failed; applied steps were rolled back where possible")
+		return 1
 	}
 	fmt.Fprintln(stdout, "coordinated apply healthy")
 	return 0

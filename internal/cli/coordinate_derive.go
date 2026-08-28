@@ -9,7 +9,6 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/coordinate"
 	"github.com/fixora/kubectl-fixora/internal/kube"
-	"github.com/fixora/kubectl-fixora/internal/termui"
 )
 
 // References is the set of resources a workload's pod template actually
@@ -214,18 +213,7 @@ func runCoordinateFrom(ctx context.Context, stdout, stderr io.Writer, opts optio
 	}
 
 	in := inputFor(opts)
-	confirmApply := func() bool {
-		if opts.yes {
-			return true
-		}
-		return termui.ConfirmRollback(fmt.Sprintf("apply %d coordinated changes", len(eligible)), in, stderr)
-	}
-	confirmRollback := func() bool {
-		if opts.yes {
-			return false
-		}
-		return termui.ConfirmRollback("roll back the already-applied changes", in, stderr)
-	}
+	confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(eligible), in, stderr)
 	deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
 	return runCoordinateSteps(ctx, stdout, stderr, eligible, deps, confirmApply, confirmRollback)
 }

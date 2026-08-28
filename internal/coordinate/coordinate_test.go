@@ -140,6 +140,35 @@ func TestRunMidFailureNonInteractiveLeavesPrefixApplied(t *testing.T) {
 	}
 }
 
+func TestRunFirstStepCaptureFailureDoesNotPromptRollback(t *testing.T) {
+	rollbackAsked := false
+	d := &fakeDeps{captureErr: map[string]error{"a": errors.New("not found")}}
+	rep := Run(context.Background(), []Step{step("a", true), step("b", true)}, d,
+		notManaged, always, func() bool { rollbackAsked = true; return true })
+	if rollbackAsked {
+		t.Fatal("nothing was applied; rollback must not be offered")
+	}
+	if !rep.Failed || rep.Mutated {
+		t.Fatalf("first-step capture failure = failed, unmutated; got %#v", rep)
+	}
+	if len(d.applied) != 0 || len(d.restored) != 0 {
+		t.Fatalf("no apply/restore expected; applied=%v restored=%v", d.applied, d.restored)
+	}
+}
+
+func TestRunFirstStepApplyFailureDoesNotPromptRollback(t *testing.T) {
+	rollbackAsked := false
+	d := &fakeDeps{applyErr: map[string]error{"a": errors.New("apply failed")}}
+	rep := Run(context.Background(), []Step{step("a", true), step("b", true)}, d,
+		notManaged, always, func() bool { rollbackAsked = true; return true })
+	if rollbackAsked {
+		t.Fatal("nothing was applied; rollback must not be offered")
+	}
+	if !rep.Failed || rep.Mutated {
+		t.Fatalf("first-step apply failure = failed, unmutated; got %#v", rep)
+	}
+}
+
 func TestRunRestoreErrorContinuesReverseWalk(t *testing.T) {
 	d := &fakeDeps{healthy: map[string]bool{"b": false}, restoreErr: map[string]error{"prior:a": errors.New("immutable")}}
 	rep := Run(context.Background(), []Step{step("a", true), step("b", true)}, d, notManaged, always, always)

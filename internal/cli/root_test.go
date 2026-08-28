@@ -133,6 +133,13 @@ func TestCoordinateRequiresRefs(t *testing.T) {
 	if !strings.Contains(stderr.String(), "resource") {
 		t.Fatalf("expected a usage error mentioning resources, got %q", stderr.String())
 	}
+
+	// Boundary: exactly one ref must also fail (coordinate needs two or more).
+	stdout.Reset()
+	stderr.Reset()
+	if code := Execute([]string{"coordinate", "deployment/api"}, &stdout, &stderr); code == 0 {
+		t.Fatal("coordinate with a single ref must fail (requires two or more)")
+	}
 }
 
 func TestHelpIsIncidentFocusedByDefault(t *testing.T) {

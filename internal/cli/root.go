@@ -370,18 +370,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		in := inputFor(opts)
-		confirmApply := func() bool {
-			if opts.yes {
-				return true
-			}
-			return termui.ConfirmRollback(fmt.Sprintf("apply %d coordinated changes", len(steps)), in, stderr)
-		}
-		confirmRollback := func() bool {
-			if opts.yes {
-				return false // never auto-rollback non-interactively
-			}
-			return termui.ConfirmRollback("roll back the already-applied changes", in, stderr)
-		}
+		confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(steps), in, stderr)
 		deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
 		return runCoordinateSteps(analysisCtx, stdout, stderr, steps, deps, confirmApply, confirmRollback)
 	case "graph":
@@ -2636,11 +2625,12 @@ Fast incident workflow:
   scan                         List failing workloads, with logs and typed reads by default
   why <kind/name>              Explain root cause, proof, rollback hint, and next step
   fix <kind/name>              Guided walkthrough: root cause -> fix -> shadow -> deliver.
-  coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure
                                Interactive on a TTY; pass -o json or --yes for scripted runs.
     --delivery                 How to ship a verified fix: patch, cluster, or pr (default: patch).
     --yes                      Confirm non-interactive cluster/PR delivery.
                                (--apply, --source-patch, --gitops are deprecated aliases.)
+  coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure.
+                               Interactive on a TTY; pass --yes for scripted/non-interactive runs.
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
   doctor                       Validate access, RBAC, logs, events, metrics, Helm/GitOps CRDs
