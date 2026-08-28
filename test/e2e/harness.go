@@ -22,13 +22,17 @@ var (
 	kubeconfig  string
 )
 
-// run executes a command and returns stdout, stderr and the exit code. A
+// runEnv is the one place a command is constructed. It executes name with args
+// and extra env appended, and returns stdout, stderr and the exit code. A
 // non-zero exit is a value, not an error: exit codes are part of the contract
-// under test.
-func run(t *testing.T, name string, args ...string) (string, string, int) {
+// under test. run, fixora and fixoraEnv all delegate here.
+//
+// Extra env entries are appended AFTER KUBECONFIG so a caller-supplied value
+// wins.
+func runEnv(t *testing.T, env []string, name string, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
-	cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
+	cmd.Env = append(append(os.Environ(), "KUBECONFIG="+kubeconfig), env...)
 	// Auto-approve any interactive confirmation. --yes does NOT bypass the
 	// guided-fix apply prompt (root.go calls termui.ConfirmApply reading
 	// os.Stdin unconditionally); an exec'd process with no stdin gets EOF,
@@ -50,6 +54,12 @@ func run(t *testing.T, name string, args ...string) (string, string, int) {
 	return stdout.String(), stderr.String(), code
 }
 
+// run executes a command with no extra environment.
+func run(t *testing.T, name string, args ...string) (string, string, int) {
+	t.Helper()
+	return runEnv(t, nil, name, args...)
+}
+
 // fixora runs the binary under test against the kind cluster. args are passed
 // through untouched: fixora dispatches on args[0], so a prepended global flag
 // would break command routing. The exported KUBECONFIG already points at the
@@ -57,7 +67,15 @@ func run(t *testing.T, name string, args ...string) (string, string, int) {
 // correct without an explicit --context.
 func fixora(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
-	return run(t, binPath, args...)
+	return runEnv(t, nil, binPath, args...)
+}
+
+// fixoraEnv runs the binary under test with extra environment variables
+// appended (used to point fixora at the AI stub). Same dispatch rules as
+// fixora: args are passed through untouched.
+func fixoraEnv(t *testing.T, env []string, args ...string) (string, string, int) {
+	t.Helper()
+	return runEnv(t, env, binPath, args...)
 }
 
 // kubectl runs kubectl against the kind cluster and fails the test on error.
