@@ -22,11 +22,17 @@ const labelSession = "fixora.io/session"
 const annotationExpires = "fixora.io/expires-at"
 
 type clonePlan struct {
-	Original       *corev1.Pod
-	UnpatchedClone *corev1.Pod
-	Clone          *corev1.Pod
-	Policy         *networkingv1.NetworkPolicy
-	Warnings       []string
+	Original          *corev1.Pod
+	UnpatchedClone    *corev1.Pod
+	Clone             *corev1.Pod
+	Policy            *networkingv1.NetworkPolicy
+	Warnings          []string
+	NamespaceMetadata namespaceMetadata
+}
+
+type namespaceMetadata struct {
+	Labels      map[string]string
+	Annotations map[string]string
 }
 
 func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session string) (clonePlan, error) {
@@ -39,8 +45,9 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	}
 	clone := sanitizePod(original, session, req.Timeout)
 	clone.Name = cloneName(original.Name, session)
+	nsMetadata := namespaceLabels(ctx, c, req.Namespace)
 	warnings := cloneWarnings(req.Egress)
-	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource)...)
+	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource, nsMetadata)...)
 	if strings.EqualFold(req.Plan.Strategy, "fix-architecture") {
 		platformSource := original
 		if platformSource.Spec.NodeName == "" && strings.TrimSpace(req.Finding.PodName) != "" {
@@ -60,7 +67,20 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 		return clonePlan{}, err
 	}
 	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
-	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings}, nil
+	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceMetadata: nsMetadata}, nil
+}
+
+// namespaceLabels reads source namespace metadata for mesh-injection detection;
+// a read failure is non-fatal (empty metadata -> no namespace mesh warning).
+func namespaceLabels(ctx context.Context, c *kube.TypedClient, namespace string) namespaceMetadata {
+	if c == nil || c.Clientset == nil || namespace == "" {
+		return namespaceMetadata{}
+	}
+	ns, err := c.Clientset.CoreV1().Namespaces().Get(ctx, namespace, metav1.GetOptions{})
+	if err != nil {
+		return namespaceMetadata{}
+	}
+	return namespaceMetadata{Labels: ns.Labels, Annotations: ns.Annotations}
 }
 
 func podTemplateForResource(ctx context.Context, c *kube.TypedClient, namespace, resource, podHint string) (*corev1.Pod, error) {
@@ -314,7 +334,7 @@ func hasServiceAccountToken(volume corev1.Volume) bool {
 	return false
 }
 
-func cloneFidelityWarnings(original *corev1.Pod, resource string) []string {
+func cloneFidelityWarnings(original *corev1.Pod, resource string, namespace namespaceMetadata) []string {
 	var warnings []string
 	kind, _ := splitResource(resource)
 	if !strings.EqualFold(kind, "pod") && !strings.EqualFold(kind, "pods") {
@@ -329,7 +349,61 @@ func cloneFidelityWarnings(original *corev1.Pod, resource string) []string {
 	if strings.EqualFold(kind, "statefulset") || strings.EqualFold(kind, "sts") {
 		warnings = append(warnings, "StatefulSet shadow verification does not prove ordinal identity, ordered rollout, or persistent storage behavior")
 	}
+	if sourceUsesMesh(original, namespace) {
+		warnings = append(warnings, "production injects a service-mesh sidecar; the shadow runs without it — readiness/mTLS may differ")
+	}
+	if isJobKind(kind) {
+		warnings = append(warnings, "shadow verification executes the Job/CronJob workload; a rerun may not be idempotent (it can repeat side effects such as writes, emails, or external calls)")
+	}
 	return warnings
+}
+
+func isJobKind(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "job", "jobs", "cronjob", "cronjobs", "cj":
+		return true
+	default:
+		return false
+	}
+}
+
+// sourceUsesMesh reports whether production would inject a service-mesh sidecar
+// (Istio or Linkerd) that the stripped shadow clone runs without.
+func sourceUsesMesh(original *corev1.Pod, namespace namespaceMetadata) bool {
+	if original != nil {
+		annotations := original.Annotations
+		if meshInjectionDisabled(annotations) {
+			return false
+		}
+		if meshInjectionEnabled(annotations) {
+			return true
+		}
+	}
+	return meshInjectionEnabled(namespace.Labels) || meshInjectionEnabled(namespace.Annotations)
+}
+
+func meshInjectionEnabled(values map[string]string) bool {
+	return strings.EqualFold(values["istio-injection"], "enabled") ||
+		strings.EqualFold(values["sidecar.istio.io/inject"], "true") ||
+		strings.EqualFold(values["linkerd.io/inject"], "enabled")
+}
+
+func meshInjectionDisabled(values map[string]string) bool {
+	return strings.EqualFold(values["sidecar.istio.io/inject"], "false") ||
+		strings.EqualFold(values["linkerd.io/inject"], "disabled")
+}
+
+// partialPassCaveats lists production surfaces a passing shadow did not actually
+// exercise. It only lowers stated confidence; it never feeds the apply gate.
+func partialPassCaveats(original *corev1.Pod, namespace namespaceMetadata) []string {
+	var caveats []string
+	if original == nil {
+		return caveats
+	}
+	if sourceUsesMesh(original, namespace) {
+		caveats = append(caveats, "production injects a service-mesh sidecar that the shadow did not run; mTLS and mesh-mediated traffic were not verified")
+	}
+	return caveats
 }
 
 func pinCloneToOriginalPlatform(ctx context.Context, c *kube.TypedClient, original, clone *corev1.Pod) (string, error) {

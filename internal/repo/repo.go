@@ -64,7 +64,12 @@ func Detect(path string) (Mode, error) {
 		base := filepath.Base(p)
 		if base == "Chart.yaml" {
 			mode.Type = "helm"
-			mode.HelmChart = p
+			// Prefer the shallowest Chart.yaml so an umbrella chart's root is
+			// kept rather than a subchart under charts/ (WalkDir would otherwise
+			// overwrite the root with a deeper subchart Chart.yaml).
+			if mode.HelmChart == "" || chartDepth(path, p) < chartDepth(path, mode.HelmChart) {
+				mode.HelmChart = p
+			}
 		}
 		if strings.HasPrefix(base, "values") && strings.HasSuffix(base, ".yaml") {
 			mode.ValuesFiles = append(mode.ValuesFiles, p)
@@ -81,6 +86,16 @@ func Detect(path string) (Mode, error) {
 		return nil
 	})
 	return mode, err
+}
+
+// chartDepth returns how many directory levels p sits below root, used to keep
+// the shallowest Chart.yaml when a chart tree contains subcharts.
+func chartDepth(root, p string) int {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return strings.Count(p, string(os.PathSeparator))
+	}
+	return strings.Count(rel, string(os.PathSeparator))
 }
 
 func Plan(ctx context.Context, repoPath string, finding analyzer.Finding, plan fix.Plan) (Mode, error) {
@@ -394,17 +409,16 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	result := SourcePatch{Mode: mode.Type, Preview: plan.PatchYAML()}
 	switch mode.Type {
 	case "helm":
-		loc, _ := IdentifyHelmSource(repoPath, finding)
+		loc, err := IdentifyHelmSource(repoPath, finding)
+		if err != nil {
+			return SourcePatch{}, err
+		}
 		result.HelmSource = &loc
 		firstValues := ""
 		if len(loc.ValuesFiles) > 0 {
 			firstValues = loc.ValuesFiles[0]
 		}
-		target := firstNonEmpty(outFile, firstValues, filepath.Join(repoPath, "values.yaml"))
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(repoPath, target)
-		}
-		result.Path = target
+		result.Path = resolveRepoPath(repoPath, firstNonEmpty(outFile, firstValues, "values.yaml"))
 		result.Actions = append(result.Actions, "identified Helm source location for operator review")
 		if loc.Pinpointed {
 			owner := loc.OwningSubchart
@@ -549,4 +563,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func resolveRepoPath(repoPath, target string) string {
+	cleanTarget := filepath.Clean(target)
+	if filepath.IsAbs(cleanTarget) {
+		return cleanTarget
+	}
+	cleanRepo := filepath.Clean(repoPath)
+	if cleanRepo != "." && cleanRepo != "" {
+		rel, err := filepath.Rel(cleanRepo, cleanTarget)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			if abs, absErr := filepath.Abs(cleanTarget); absErr == nil {
+				return abs
+			}
+			return cleanTarget
+		}
+	}
+	joined := filepath.Join(repoPath, cleanTarget)
+	if abs, err := filepath.Abs(joined); err == nil {
+		return abs
+	}
+	return joined
 }

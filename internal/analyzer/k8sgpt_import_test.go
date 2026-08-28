@@ -133,6 +133,9 @@ func TestPVCAnalyzerImportsK8sGPTProvisioningAndStorageChecks(t *testing.T) {
 				pvcFixture("prod", "no-class", "Bound", map[string]any{"resources": map[string]any{"requests": map[string]any{"storage": "2Gi"}}}),
 				pvcFixture("prod", "healthy", "Bound", map[string]any{"storageClassName": "fast", "resources": map[string]any{"requests": map[string]any{"storage": "2Gi"}}}),
 			},
+			"storageclasses": {
+				{"metadata": map[string]any{"name": "fast"}},
+			},
 		},
 		events: []kube.Event{{
 			Metadata:       kube.ObjectMeta{Namespace: "prod"},

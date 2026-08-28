@@ -147,8 +147,9 @@ type ScanEnvelope struct {
 }
 
 type SkippedCheck struct {
-	Name   string `json:"name"`
-	Reason string `json:"reason"`
+	Name        string `json:"name"`
+	Reason      string `json:"reason"`
+	RBACBlocked bool   `json:"rbacBlocked,omitempty"`
 }
 
 type ScanSummary struct {

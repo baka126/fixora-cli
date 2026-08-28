@@ -512,11 +512,30 @@ func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
 	assertNoFindingForResource(t, findings, "api")
 }
 
+func TestScanReportLabelsForbiddenEventsAsRBAC(t *testing.T) {
+	reader := fakeReader{eventsErr: fmt.Errorf("Error from server (Forbidden): events is forbidden")}
+	report := New(reader, Options{}).ScanReport(context.Background())
+	found := false
+	for _, s := range report.Skipped {
+		if s.Name == "events" {
+			found = true
+			if !s.RBACBlocked {
+				t.Fatalf("forbidden events read must be labeled RBACBlocked, got %#v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected an events skip entry")
+	}
+}
+
 type fakeReader struct {
 	pods             kube.PodList
+	podsErr          error
 	events           []kube.Event
 	resource         map[string]any
 	items            map[string][]map[string]any
+	itemErrs         map[string]error
 	runErr           error
 	eventsErr        error
 	logFn            func()
@@ -529,7 +548,7 @@ type fakeReader struct {
 }
 
 func (f fakeReader) GetPods(context.Context, string, bool) (kube.PodList, error) {
-	return f.pods, nil
+	return f.pods, f.podsErr
 }
 
 func (f fakeReader) GetPod(context.Context, string, string) (kube.Pod, error) {
@@ -547,6 +566,9 @@ func (f fakeReader) GetResource(context.Context, string, string) (map[string]any
 }
 
 func (f fakeReader) GetResourceItems(_ context.Context, _ string, _ bool, resource string) ([]map[string]any, error) {
+	if f.itemErrs != nil && f.itemErrs[resource] != nil {
+		return nil, f.itemErrs[resource]
+	}
 	if f.items != nil {
 		return f.items[resource], nil
 	}

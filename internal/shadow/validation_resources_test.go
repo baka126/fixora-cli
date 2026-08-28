@@ -98,3 +98,23 @@ func TestResourceCeilingBadCPUQuantityProducesReason(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateProjectedDiffRestartPolicyExplains(t *testing.T) {
+	podSpec := func(extra map[string]any) map[string]any {
+		spec := map[string]any{"containers": []any{map[string]any{"name": "app", "resources": map[string]any{}}}}
+		for k, v := range extra {
+			spec[k] = v
+		}
+		return map[string]any{"spec": map[string]any{"template": map[string]any{"spec": spec}}}
+	}
+	reasons := validateProjectedDiff(podSpec(nil), podSpec(map[string]any{"restartPolicy": "OnFailure"}), "resources")
+	found := false
+	for _, r := range reasons {
+		if strings.Contains(r, "restartPolicy") && strings.Contains(r, "restart semantics") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a restart-semantics explanation for a restartPolicy change, got %v", reasons)
+	}
+}

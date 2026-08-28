@@ -20,15 +20,15 @@ var helmTemplateTimeout = 30 * time.Second
 // HelmSourceLocation describes where a rendered Kubernetes resource came from
 // inside a Helm chart tree.
 type HelmSourceLocation struct {
-	Chart          string
-	ChartPath      string
-	OwningSubchart string
-	TemplateFile   string
-	Release        string
-	Namespace      string
-	ValuesFiles    []string
-	Pinpointed     bool
-	Notes          []string
+	Chart          string   `json:"chart"`
+	ChartPath      string   `json:"chartPath"`
+	OwningSubchart string   `json:"owningSubchart"`
+	TemplateFile   string   `json:"templateFile"`
+	Release        string   `json:"release"`
+	Namespace      string   `json:"namespace"`
+	ValuesFiles    []string `json:"valuesFiles"`
+	Pinpointed     bool     `json:"pinpointed"`
+	Notes          []string `json:"notes,omitempty"`
 }
 
 // helmSourceMatches scans helm template output (renderedOutput) and returns
@@ -173,7 +173,8 @@ func IdentifyHelmSource(repoPath string, finding analyzer.Finding) (HelmSourceLo
 		loc.Notes = append(loc.Notes, "no Helm release label on the resource; confirm it is Helm-managed")
 	}
 
-	// Step 4: pinpoint via helm template.
+	// Step 4: pinpoint via helm template (timeout + error handling live in
+	// renderChart).
 	out, renderErr := renderChart(loc.ChartPath, loc.Release)
 	if renderErr != nil {
 		loc.Notes = append(loc.Notes, "cannot pinpoint template: "+renderErr.Error())
@@ -297,7 +298,7 @@ func nameMatches(rendered, name, release string) bool {
 		// rendered has release- prefix and name as the remainder after it.
 		if strings.HasPrefix(rendered, release+"-") {
 			remainder := strings.TrimPrefix(rendered, release+"-")
-			if remainder == name {
+			if remainder == name || strings.HasSuffix(remainder, "-"+name) {
 				return true
 			}
 		}

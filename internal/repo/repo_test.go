@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,7 +183,96 @@ func TestWriteSourcePatchHelmMode(t *testing.T) {
 		t.Fatalf("expected HelmSource populated, got nil")
 	}
 	// Warnings must guide operator toward helm template verification
-	if len(result.Warnings) == 0 {
-		t.Fatalf("expected warnings, got none")
+	if !containsString(result.Warnings, "helm template") {
+		t.Fatalf("expected helm template warning, got %v", result.Warnings)
+	}
+}
+
+func TestSourcePatchHelmSourceJSONTags(t *testing.T) {
+	patch := SourcePatch{
+		Path: "values.yaml",
+		Mode: "helm",
+		HelmSource: &HelmSourceLocation{
+			Chart:          "api",
+			ChartPath:      "charts/api",
+			OwningSubchart: "worker",
+			TemplateFile:   "templates/deployment.yaml",
+			Release:        "rel",
+			Namespace:      "prod",
+			ValuesFiles:    []string{"values.yaml"},
+			Pinpointed:     true,
+		},
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`"helmSource"`,
+		`"chartPath":"charts/api"`,
+		`"owningSubchart":"worker"`,
+		`"templateFile":"templates/deployment.yaml"`,
+		`"valuesFiles":["values.yaml"]`,
+		`"pinpointed":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %s in JSON, got %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{`"ChartPath"`, `"OwningSubchart"`, `"TemplateFile"`, `"ValuesFiles"`, `"Notes"`} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("unexpected Go field name %s in JSON: %s", unwanted, got)
+		}
+	}
+}
+
+func TestResolveRepoPathDoesNotDoublePrefixRelativeRepo(t *testing.T) {
+	dir := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWD)
+	})
+	if err := os.Mkdir("chart", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := resolveRepoPath("chart", filepath.Join("chart", "values.yaml"))
+	want, err := filepath.Abs(filepath.Join("chart", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestDetectPrefersRootChartOverSubchart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Chart.yaml"), []byte("apiVersion: v2\nname: umbrella\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "charts", "redis")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "Chart.yaml"), []byte("apiVersion: v2\nname: redis\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mode, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Type != "helm" {
+		t.Fatalf("type: got %q want helm", mode.Type)
+	}
+	want := filepath.Join(dir, "Chart.yaml")
+	if mode.HelmChart != want {
+		t.Fatalf("HelmChart: got %q, want the root chart %q", mode.HelmChart, want)
 	}
 }

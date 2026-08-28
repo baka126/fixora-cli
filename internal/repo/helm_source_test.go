@@ -54,6 +54,20 @@ func TestHelmSourceMatchesExactName(t *testing.T) {
 	}
 }
 
+func TestHelmSourceMatchesReleaseChartSuffix(t *testing.T) {
+	rendered := `---
+# Source: api/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rel-chart-api
+`
+	got, ok := helmSourceMatches(rendered, "Deployment", "api", "rel")
+	if !ok || got != "api/templates/deployment.yaml" {
+		t.Fatalf("got %q ok=%v", got, ok)
+	}
+}
+
 func TestHelmSourceMatchesNoMatch(t *testing.T) {
 	if _, ok := helmSourceMatches(sampleRender, "ConfigMap", "nope", "rel"); ok {
 		t.Fatal("expected no match")
@@ -110,8 +124,8 @@ func TestIdentifyHelmSourceEnumeratesValuesAndDegrades(t *testing.T) {
 	if loc.Pinpointed {
 		t.Fatal("expected Pinpointed=false when helm absent")
 	}
-	if len(loc.Notes) == 0 {
-		t.Fatal("expected a degrade note")
+	if !containsString(loc.Notes, "helm not found") {
+		t.Fatalf("expected helm-not-found degrade note, got %v", loc.Notes)
 	}
 }
 
@@ -140,10 +154,7 @@ func TestIdentifyHelmSourceEmptyRelease(t *testing.T) {
 	}
 }
 
-func TestRenderChartTimeoutDegrades(t *testing.T) {
-	dir := t.TempDir()
-	writeFixtureChart(t, dir)
-
+func TestRenderChartTimesOut(t *testing.T) {
 	binDir := t.TempDir()
 	helmPath := filepath.Join(binDir, "helm")
 	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
@@ -155,31 +166,9 @@ func TestRenderChartTimeoutDegrades(t *testing.T) {
 	helmTemplateTimeout = 20 * time.Millisecond
 	t.Cleanup(func() { helmTemplateTimeout = old })
 
-	if _, err := renderChart(dir, "rel"); err == nil || !strings.Contains(err.Error(), "timed out") {
+	if _, err := renderChart(t.TempDir(), "rel"); err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected a timeout error, got %v", err)
 	}
-
-	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
-	f.GitOps.HelmRelease = "rel"
-	loc, err := IdentifyHelmSource(dir, f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loc.Pinpointed {
-		t.Fatalf("timeout must degrade without pinpointing, got %+v", loc)
-	}
-	if !containsNote(loc.Notes, "timed out") {
-		t.Fatalf("expected a timeout note, got %v", loc.Notes)
-	}
-}
-
-func containsNote(notes []string, want string) bool {
-	for _, n := range notes {
-		if strings.Contains(n, want) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestRenderChartPreservesExecErrorWithNoOutput(t *testing.T) {
@@ -216,4 +205,44 @@ func TestIdentifyHelmSourcePinpointEndToEnd(t *testing.T) {
 	if loc.TemplateFile != want {
 		t.Fatalf("TemplateFile: got %q, want %q", loc.TemplateFile, want)
 	}
+}
+
+func TestIdentifyHelmSourceTemplateTimeoutDegrades(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+
+	binDir := t.TempDir()
+	helmPath := filepath.Join(binDir, "helm")
+	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	oldTimeout := helmTemplateTimeout
+	helmTemplateTimeout = 10 * time.Millisecond
+	t.Cleanup(func() {
+		helmTemplateTimeout = oldTimeout
+	})
+
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
+	f.GitOps.HelmRelease = "rel"
+	loc, err := IdentifyHelmSource(dir, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.Pinpointed {
+		t.Fatalf("expected timeout to degrade without pinpointing, got %+v", loc)
+	}
+	if !containsString(loc.Notes, "helm template timed out") {
+		t.Fatalf("expected timeout note, got %v", loc.Notes)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }
