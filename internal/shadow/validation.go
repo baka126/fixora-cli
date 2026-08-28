@@ -223,6 +223,10 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 	allowed := allowedSpecKeys(strategy)
 	for key := range revSpec {
 		if !allowed[key] {
+			if key == "restartPolicy" {
+				reasons = append(reasons, "spec.restartPolicy changes restart semantics — review carefully; not allowed for strategy "+strategy)
+				continue
+			}
 			reasons = append(reasons, "spec."+key+" is not allowed for strategy "+strategy)
 		}
 	}

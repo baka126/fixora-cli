@@ -71,8 +71,10 @@ type options struct {
 	forceRisky      bool
 	typedClient     bool
 	checkSecretKeys bool
+	checkCertExpiry bool
 	tui             bool
 	repoPath        string
+	from            string
 	strategy        string
 	branch          string
 	commit          bool
@@ -211,6 +213,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		Filters:         filters,
 		LabelSelector:   opts.labelSelector,
 		CheckSecretKeys: opts.checkSecretKeys,
+		CheckCertExpiry: opts.checkCertExpiry,
 	})
 
 	switch cmd {
@@ -232,7 +235,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -246,7 +249,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		err := server.Serve(ctx, server.Options{
 			Addr:        addr,
 			Kubectl:     k,
-			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys},
+			AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry},
 			Token:       os.Getenv("FIXORA_SERVE_TOKEN"),
 		})
 		if err != nil {
@@ -347,6 +350,31 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
+	case "coordinate":
+		if opts.from != "" {
+			if len(rest) > 0 {
+				fmt.Fprintln(stderr, "error: --from auto-derives the set; do not also pass explicit resources")
+				return 2
+			}
+			analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
+			defer analysisCancel()
+			return runCoordinateFrom(analysisCtx, stdout, stderr, opts, a, k, opts.from)
+		}
+		if len(rest) < 2 {
+			fmt.Fprintln(stderr, "error: coordinate requires two or more resources (kind/name ...) to apply together")
+			return 2
+		}
+		analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
+		defer analysisCancel()
+		steps, err := buildCoordinateSteps(analysisCtx, a, opts, rest)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		in := inputFor(opts)
+		confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(steps), in, stderr)
+		deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
+		return runCoordinateSteps(analysisCtx, stdout, stderr, steps, deps, confirmApply, confirmRollback)
 	case "graph":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: graph requires a resource")
@@ -555,6 +583,7 @@ func parseFlags(args []string) (options, []string, error) {
 		namespace:       "default",
 		redact:          cfg.Redact,
 		paranoid:        cfg.Paranoid,
+		checkCertExpiry: cfg.CheckCertExpiry,
 		timeout:         timeout,
 		logTail:         cfg.LogTail,
 		maxLogBytes:     cfg.MaxLogBytes,
@@ -595,11 +624,13 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
 	fs.BoolVar(&opts.checkSecretKeys, "secret-keys", opts.checkSecretKeys, "check Secret key presence and base64 validity without printing Secret values")
+	fs.BoolVar(&opts.checkCertExpiry, "cert-expiry", opts.checkCertExpiry, "check Ingress TLS certificate expiry (reads only the public tls.crt, never the private key)")
 	fs.BoolVar(&opts.tui, "tui", false, "enable interactive terminal dashboard for the ui command")
 	fs.BoolVar(&opts.quick, "quick", false, "use fast incident defaults")
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
+	fs.StringVar(&opts.from, "from", "", "coordinate: auto-derive the related resource set from this root <kind/name>")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
@@ -681,6 +712,8 @@ func normalizeCommand(cmd string, rest []string) (string, []string, error) {
 		return "fix", rest, nil
 	case "dashboard":
 		return "cluster", rest, nil
+	case "fix-set":
+		return "coordinate", rest, nil
 	case "debug":
 		if len(rest) == 0 {
 			return "", rest, fmt.Errorf("debug requires one of: trace, graph, storage, rbac, dns, security, node-pressure, changes, readiness, rollback")
@@ -2600,6 +2633,8 @@ Fast incident workflow:
     --delivery                 How to ship a verified fix: patch, cluster, or pr (default: patch).
     --yes                      Confirm non-interactive cluster/PR delivery.
                                (--apply, --source-patch, --gitops are deprecated aliases.)
+  coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure.
+                               Interactive on a TTY; pass --yes for scripted/non-interactive runs.
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
   doctor                       Validate access, RBAC, logs, events, metrics, Helm/GitOps CRDs

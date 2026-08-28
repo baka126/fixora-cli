@@ -2,7 +2,6 @@ package analyzer
 
 import (
 	"encoding/base64"
-	"sort"
 	"strings"
 )
 
@@ -196,13 +195,4 @@ func secretFindingID(namespace, name, status, severity, discriminator, evidence,
 			SafeByDefault: false,
 		}},
 	}
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -33,6 +33,7 @@ type Config struct {
 	Paranoid               bool                `json:"paranoid,omitempty"`
 	ApplyDryRun            bool                `json:"applyRequiresDryRun"`
 	CustomAnalyzers        []string            `json:"customAnalyzers,omitempty"`
+	CheckCertExpiry        bool                `json:"checkCertExpiry,omitempty"`
 	AllowedImageRegistries []string            `json:"allowedImageRegistries,omitempty"`
 	MaxPatchMemory         string              `json:"maxPatchMemory,omitempty"`
 	MaxPatchCPU            string              `json:"maxPatchCPU,omitempty"`
@@ -155,6 +156,8 @@ func Public(cfg Config) map[string]any {
 		"paranoid":               cfg.Paranoid,
 		"applyDryRun":            cfg.ApplyDryRun,
 		"customAnalyzers":        cfg.CustomAnalyzers,
+		"checkCertExpiry":        cfg.CheckCertExpiry,
+		"checkSecretKeys":        cfg.CheckSecretKeys,
 		"allowedImageRegistries": cfg.AllowedImageRegistries,
 		"maxPatchMemory":         cfg.MaxPatchMemory,
 		"maxPatchCPU":            cfg.MaxPatchCPU,
@@ -215,6 +218,8 @@ func Resolved() (map[string]ResolvedValue, error) {
 	add("paranoid", cfg.Paranoid, sourceFor(raw, "paranoid"))
 	add("applyDryRun", cfg.ApplyDryRun, sourceFor(raw, "applyRequiresDryRun"))
 	add("customAnalyzers", cfg.CustomAnalyzers, sourceFor(raw, "customAnalyzers"))
+	add("checkCertExpiry", cfg.CheckCertExpiry, sourceFor(raw, "checkCertExpiry"))
+	add("checkSecretKeys", cfg.CheckSecretKeys, sourceFor(raw, "checkSecretKeys"))
 	add("allowedImageRegistries", cfg.AllowedImageRegistries, sourceFor(raw, "allowedImageRegistries"))
 	add("maxPatchMemory", cfg.MaxPatchMemory, sourceFor(raw, "maxPatchMemory"))
 	add("maxPatchCPU", cfg.MaxPatchCPU, sourceFor(raw, "maxPatchCPU"))

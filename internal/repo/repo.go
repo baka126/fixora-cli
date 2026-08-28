@@ -23,11 +23,13 @@ type Mode struct {
 }
 
 type SourcePatch struct {
-	Path     string   `json:"path"`
-	Mode     string   `json:"mode"`
-	Actions  []string `json:"actions"`
-	Warnings []string `json:"warnings,omitempty"`
-	Preview  string   `json:"preview,omitempty"`
+	Path             string              `json:"path"`
+	Mode             string              `json:"mode"`
+	Actions          []string            `json:"actions"`
+	Warnings         []string            `json:"warnings,omitempty"`
+	Preview          string              `json:"preview,omitempty"`
+	HelmSource       *HelmSourceLocation `json:"helmSource,omitempty"`
+	RenderValidation *RenderValidation   `json:"renderValidation,omitempty"`
 }
 
 type PullRequest struct {
@@ -62,7 +64,12 @@ func Detect(path string) (Mode, error) {
 		base := filepath.Base(p)
 		if base == "Chart.yaml" {
 			mode.Type = "helm"
-			mode.HelmChart = p
+			// Prefer the shallowest Chart.yaml so an umbrella chart's root is
+			// kept rather than a subchart under charts/ (WalkDir would otherwise
+			// overwrite the root with a deeper subchart Chart.yaml).
+			if mode.HelmChart == "" || chartDepth(path, p) < chartDepth(path, mode.HelmChart) {
+				mode.HelmChart = p
+			}
 		}
 		if strings.HasPrefix(base, "values") && strings.HasSuffix(base, ".yaml") {
 			mode.ValuesFiles = append(mode.ValuesFiles, p)
@@ -79,6 +86,16 @@ func Detect(path string) (Mode, error) {
 		return nil
 	})
 	return mode, err
+}
+
+// chartDepth returns how many directory levels p sits below root, used to keep
+// the shallowest Chart.yaml when a chart tree contains subcharts.
+func chartDepth(root, p string) int {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return strings.Count(p, string(os.PathSeparator))
+	}
+	return strings.Count(rel, string(os.PathSeparator))
 }
 
 func Plan(ctx context.Context, repoPath string, finding analyzer.Finding, plan fix.Plan) (Mode, error) {
@@ -354,7 +371,7 @@ func WriteSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan f
 	}
 	switch result.Mode {
 	case "helm":
-		return result, appendYAMLBlock(result.Path, "fixoraSuggestedPatch", plan.PatchYAML())
+		return result, nil
 	case "kustomize":
 		patchData := plan.PatchYAML()
 		if len(patchData) > 0 && !strings.HasSuffix(patchData, "\n") {
@@ -392,14 +409,55 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	result := SourcePatch{Mode: mode.Type, Preview: plan.PatchYAML()}
 	switch mode.Type {
 	case "helm":
-		target := firstNonEmpty(outFile, firstValuesFile(mode), filepath.Join(repoPath, "values.yaml"))
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(repoPath, target)
+		loc, err := IdentifyHelmSource(repoPath, finding)
+		if err != nil {
+			return SourcePatch{}, err
 		}
-		result.Path = target
-		result.Actions = append(result.Actions, "appended advisory fixoraSuggestedPatch notes to Helm values for operator review")
-		result.Warnings = append(result.Warnings, "Helm output is advisory only: fixoraSuggestedPatch is not chart-native and may not change rendered manifests.")
-		result.Warnings = append(result.Warnings, "Translate this patch into the chart's supported values schema, then verify with helm template and server dry-run before merge.")
+		result.HelmSource = &loc
+		firstValues := ""
+		if len(loc.ValuesFiles) > 0 {
+			firstValues = loc.ValuesFiles[0]
+		}
+		result.Path = resolveRepoPath(repoPath, firstNonEmpty(outFile, firstValues, "values.yaml"))
+		result.Actions = append(result.Actions, "identified Helm source location for operator review")
+		if loc.Pinpointed {
+			owner := loc.OwningSubchart
+			if owner == "" {
+				owner = loc.Chart
+			}
+			result.Actions = append(result.Actions, "resource rendered by "+owner+"/"+loc.TemplateFile)
+		}
+		if len(loc.ValuesFiles) > 0 {
+			result.Warnings = append(result.Warnings, "candidate values files: "+strings.Join(loc.ValuesFiles, ", "))
+		}
+		result.Warnings = append(result.Warnings, "translate the intended change into the chart's values schema")
+		result.Warnings = append(result.Warnings, "verify with helm template and server dry-run before merge")
+		for _, note := range loc.Notes {
+			result.Warnings = append(result.Warnings, note)
+		}
+		if loc.Pinpointed && strings.TrimSpace(plan.PatchYAML()) != "" {
+			rv := ValidateAgainstRender(loc, finding, plan.PatchYAML())
+			for _, fv := range rv.Fields {
+				if fv.Class == "managed-divergent" {
+					result.Warnings = append(result.Warnings, "field "+fv.Path+" is set by the chart template; a direct patch will be reverted on Helm sync — change it in values")
+				}
+			}
+			result.Warnings = append(result.Warnings, rv.Notes...)
+			rv.Suggestions = SuggestValuesKeys(loc, rv)
+			result.RenderValidation = &rv
+			for _, s := range rv.Suggestions {
+				switch s.Confidence {
+				case "pinpointed", "likely":
+					result.Warnings = append(result.Warnings, "field "+s.FieldPath+" → set values key "+strings.Join(s.Candidates, " or ")+" ("+s.Confidence+")")
+				case "uncertain":
+					result.Warnings = append(result.Warnings, "field "+s.FieldPath+" → candidate values keys: "+strings.Join(s.Candidates, ", ")+" (uncertain)")
+				case "unmapped":
+					if s.Note != "" {
+						result.Warnings = append(result.Warnings, s.Note)
+					}
+				}
+			}
+		}
 		return result, nil
 	case "kustomize":
 		target := firstNonEmpty(outFile, "fixora-patch.yaml")
@@ -426,13 +484,6 @@ func PreviewSourcePatch(repoPath, outFile string, finding analyzer.Finding, plan
 	}
 }
 
-func firstValuesFile(mode Mode) string {
-	if len(mode.ValuesFiles) > 0 {
-		return mode.ValuesFiles[0]
-	}
-	return ""
-}
-
 func appendYAMLDocument(path, patch string) error {
 	existing, err := os.ReadFile(path)
 	if err != nil {
@@ -445,24 +496,6 @@ func appendYAMLDocument(path, patch string) error {
 	}
 	b.WriteString("\n---\n")
 	b.WriteString(patch)
-	return os.WriteFile(path, []byte(b.String()), 0o600)
-}
-
-func appendYAMLBlock(path, key, patch string) error {
-	existing, _ := os.ReadFile(path)
-	var b strings.Builder
-	b.Write(existing)
-	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(key)
-	b.WriteString(": |\n")
-	for _, line := range strings.Split(strings.TrimRight(patch, "\n"), "\n") {
-		b.WriteString("  ")
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -530,4 +563,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func resolveRepoPath(repoPath, target string) string {
+	cleanTarget := filepath.Clean(target)
+	if filepath.IsAbs(cleanTarget) {
+		return cleanTarget
+	}
+	cleanRepo := filepath.Clean(repoPath)
+	if cleanRepo != "." && cleanRepo != "" {
+		rel, err := filepath.Rel(cleanRepo, cleanTarget)
+		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
+			if abs, absErr := filepath.Abs(cleanTarget); absErr == nil {
+				return abs
+			}
+			return cleanTarget
+		}
+	}
+	joined := filepath.Join(repoPath, cleanTarget)
+	if abs, err := filepath.Abs(joined); err == nil {
+		return abs
+	}
+	return joined
 }
