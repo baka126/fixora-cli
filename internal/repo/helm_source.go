@@ -2,14 +2,20 @@ package repo
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
+
+// helmTemplateTimeout bounds a single `helm template` invocation so a hanging
+// helm process can't stall the fix pipeline. Overridable in tests.
+var helmTemplateTimeout = 30 * time.Second
 
 // HelmSourceLocation describes where a rendered Kubernetes resource came from
 // inside a Helm chart tree.
@@ -106,9 +112,11 @@ func helmSourceMatches(renderedOutput, kind, name, release string) (sourcePath s
 	return "", false
 }
 
-// renderChart runs `helm template [release] chartPath` and returns the rendered
-// manifest stream. It wraps the two failure modes callers degrade on: helm not
-// on PATH, and a non-zero helm exit (whose combined output carries the reason).
+// renderChart runs `helm template [release] chartPath` under helmTemplateTimeout
+// and returns the rendered manifest stream. It wraps the failure modes callers
+// degrade on: helm not on PATH, a render that exceeds the timeout, and a
+// non-zero helm exit (whose combined output carries the reason, with the exec
+// error preserved when helm produced no output).
 func renderChart(chartPath, release string) (string, error) {
 	helmPath, err := exec.LookPath("helm")
 	if err != nil {
@@ -119,9 +127,18 @@ func renderChart(chartPath, release string) (string, error) {
 		args = append(args, release)
 	}
 	args = append(args, chartPath)
-	out, err := exec.Command(helmPath, args...).CombinedOutput()
+
+	ctx, cancel := context.WithTimeout(context.Background(), helmTemplateTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, helmPath, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("helm template timed out after %s", helmTemplateTimeout)
+	}
 	if err != nil {
-		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+		if detail := strings.TrimSpace(string(out)); detail != "" {
+			return "", fmt.Errorf("helm template failed: %s", detail)
+		}
+		return "", fmt.Errorf("helm template failed: %w", err)
 	}
 	return string(out), nil
 }

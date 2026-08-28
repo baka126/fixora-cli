@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
@@ -136,6 +137,63 @@ func TestIdentifyHelmSourceEmptyRelease(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected an empty-release note mentioning the release, got %v", loc.Notes)
+	}
+}
+
+func TestRenderChartTimeoutDegrades(t *testing.T) {
+	dir := t.TempDir()
+	writeFixtureChart(t, dir)
+
+	binDir := t.TempDir()
+	helmPath := filepath.Join(binDir, "helm")
+	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	old := helmTemplateTimeout
+	helmTemplateTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { helmTemplateTimeout = old })
+
+	if _, err := renderChart(dir, "rel"); err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected a timeout error, got %v", err)
+	}
+
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "myapp", Namespace: "default"}
+	f.GitOps.HelmRelease = "rel"
+	loc, err := IdentifyHelmSource(dir, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.Pinpointed {
+		t.Fatalf("timeout must degrade without pinpointing, got %+v", loc)
+	}
+	if !containsNote(loc.Notes, "timed out") {
+		t.Fatalf("expected a timeout note, got %v", loc.Notes)
+	}
+}
+
+func containsNote(notes []string, want string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRenderChartPreservesExecErrorWithNoOutput(t *testing.T) {
+	binDir := t.TempDir()
+	helmPath := filepath.Join(binDir, "helm")
+	// Exit non-zero, emit nothing: the exec error must not be dropped.
+	if err := os.WriteFile(helmPath, []byte("#!/bin/sh\nexit 3\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	_, err := renderChart(t.TempDir(), "rel")
+	if err == nil || err.Error() == "helm template failed: " {
+		t.Fatalf("expected a non-empty failure message, got %v", err)
 	}
 }
 

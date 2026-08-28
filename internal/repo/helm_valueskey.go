@@ -37,17 +37,28 @@ func valuesRefsInTemplate(templateText string) []string {
 	return out
 }
 
-// templateLineForField returns the .Values refs on the first template line
-// whose (trimmed) YAML key equals leafKey. found is true when such a line
-// exists even if it carries no refs (a statically-set field).
+// templateLineForField returns the union of .Values refs across every template
+// line whose (trimmed) YAML key equals leafKey. found is true when at least one
+// such line exists even if none carry refs (a statically-set field). Scanning
+// all matches (not just the first) means a leaf that repeats in different scopes
+// — e.g. `image:` on several containers — surfaces every candidate key, so the
+// caller downgrades confidence instead of pinpointing the wrong one.
 func templateLineForField(templateText, leafKey string) (refs []string, found bool) {
+	seen := map[string]bool{}
 	for _, line := range strings.Split(templateText, "\n") {
 		trimmed := strings.TrimLeft(line, " \t")
-		if strings.HasPrefix(trimmed, leafKey+":") {
-			return valuesRefsInTemplate(line), true
+		if !strings.HasPrefix(trimmed, leafKey+":") {
+			continue
+		}
+		found = true
+		for _, r := range valuesRefsInTemplate(line) {
+			if !seen[r] {
+				seen[r] = true
+				refs = append(refs, r)
+			}
 		}
 	}
-	return nil, false
+	return refs, found
 }
 
 // valuesFileLookup walks the dotted key across each values file in order and
@@ -123,7 +134,7 @@ func suggestForField(fv FieldVerdict, templateText string, allRefs []string, loc
 	if i := strings.LastIndexByte(fv.Path, '.'); i >= 0 {
 		leaf = fv.Path[i+1:]
 	}
-	lineRefs, _ := templateLineForField(templateText, leaf)
+	lineRefs, lineFound := templateLineForField(templateText, leaf)
 
 	switch {
 	case len(lineRefs) == 1:
@@ -141,7 +152,16 @@ func suggestForField(fv FieldVerdict, templateText string, allRefs []string, loc
 		return s
 	}
 
-	// No usable line refs: fall back to value-match over all template refs.
+	if lineFound {
+		// The field's line exists but references no .Values key: it is set
+		// statically in the template, not driven by values. Guessing a key
+		// from unrelated refs would just mislead.
+		s.Confidence = "unmapped"
+		s.Note = "field " + fv.Path + " is set statically in template " + loc.TemplateFile + "; not derived from a values key"
+		return s
+	}
+
+	// No matching template line: fall back to value-match over all template refs.
 	if m := valueMatched(allRefs, fv.RenderedValue, loc.ValuesFiles); len(m) == 1 {
 		s.Confidence = "likely"
 		s.Candidates = m

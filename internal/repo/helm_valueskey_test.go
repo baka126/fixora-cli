@@ -52,6 +52,47 @@ func TestTemplateLineForField(t *testing.T) {
 	if _, found := templateLineForField(text, "missing"); found {
 		t.Fatal("missing key should not be found")
 	}
+
+	// Repeated leaf key in different scopes: every candidate ref is unioned,
+	// de-duplicated, so the caller can downgrade instead of pinpointing wrong.
+	multi := "containers:\n" +
+		"  - name: app\n" +
+		"    image: {{ .Values.app.image }}\n" +
+		"  - name: sidecar\n" +
+		"    image: {{ .Values.sidecar.image }}\n" +
+		"  - name: app2\n" +
+		"    image: {{ .Values.app.image }}\n"
+	refs, found = templateLineForField(multi, "image")
+	if !found || len(refs) != 2 || refs[0] != "app.image" || refs[1] != "sidecar.image" {
+		t.Fatalf("multi-container image: found=%v refs=%v", found, refs)
+	}
+}
+
+func TestSuggestValuesKeysStaticFieldUnmapped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "templates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// paused is hardcoded — no .Values ref on its line.
+	tmpl := "spec:\n  replicas: {{ .Values.replicaCount }}\n  paused: false\n"
+	if err := os.WriteFile(filepath.Join(dir, "templates", "deployment.yaml"), []byte(tmpl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vf := filepath.Join(dir, "values.yaml")
+	if err := os.WriteFile(vf, []byte("replicaCount: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loc := HelmSourceLocation{ChartPath: dir, TemplateFile: "myapp/templates/deployment.yaml", ValuesFiles: []string{vf}}
+	rv := RenderValidation{Fields: []FieldVerdict{
+		{Path: "spec.paused", Class: "managed-divergent", RenderedValue: "false", IntendedValue: "true"},
+	}}
+	s, _ := suggestionFor(SuggestValuesKeys(loc, rv), "spec.paused")
+	if s.Confidence != "unmapped" || len(s.Candidates) != 0 {
+		t.Fatalf("statically-set field must be unmapped with no candidates, got %#v", s)
+	}
+	if !strings.Contains(s.Note, "statically") {
+		t.Fatalf("note should explain the field is static, got %q", s.Note)
+	}
 }
 
 func TestValuesFileLookup(t *testing.T) {
