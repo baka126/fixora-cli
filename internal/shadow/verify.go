@@ -111,16 +111,13 @@ func updateAttemptFromPod(result *Attempt, pod *corev1.Pod) {
 }
 
 func podReady(pod *corev1.Pod) bool {
-	hasReadyCondition := false
+	// A PodReady condition is authoritative: return its status directly.
 	for _, cond := range pod.Status.Conditions {
 		if cond.Type == corev1.PodReady {
-			hasReadyCondition = true
 			return cond.Status == corev1.ConditionTrue
 		}
 	}
-	if hasReadyCondition {
-		return false
-	}
+	// No PodReady condition — fall back to per-container readiness.
 	statuses := append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...)
 	if len(statuses) == 0 {
 		return false
