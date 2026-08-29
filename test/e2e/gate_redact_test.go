@@ -77,17 +77,37 @@ func TestMaliciousAIPatchRejected(t *testing.T) {
 
 	const original = "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: busybox:1.36\n"
 
-	malicious := map[string]string{
-		"hostNetwork": "spec:\n  template:\n    spec:\n      hostNetwork: true\n      containers:\n      - name: api\n        image: busybox:1.36\n",
-		"privileged":  "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: busybox:1.36\n        securityContext:\n          privileged: true\n",
-		"multiDoc":    original + "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: exfil\n",
+	// Each case asserts the SPECIFIC rejection reason, not merely that an error
+	// came back. Under the "image" strategy, validateProjectedDiff also rejects
+	// spec.hostNetwork and containers[].securityContext as out-of-scope changes,
+	// independently of the dedicated safety rules — so an err != nil assertion
+	// would stay green even if the real rule were deleted. The wanted substrings
+	// come from internal/shadow/validation.go:189, :209 and :124.
+	malicious := map[string]struct{ patch, want string }{
+		"hostNetwork": {
+			patch: "spec:\n  template:\n    spec:\n      hostNetwork: true\n      containers:\n      - name: api\n        image: busybox:1.36\n",
+			want:  "spec.hostNetwork is not allowed",
+		},
+		"privileged": {
+			patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: busybox:1.36\n        securityContext:\n          privileged: true\n",
+			want:  "securityContext.privileged is not allowed",
+		},
+		"multiDoc": {
+			patch: original + "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: exfil\n",
+			want:  "multi-document YAML is not allowed",
+		},
 	}
 
-	for name, patch := range malicious {
+	for name, tc := range malicious {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if err := shadow.ValidateRevisedPatch(original, patch, "image"); err == nil {
-				t.Fatalf("validator accepted a %s patch it must reject:\n%s", name, patch)
+			err := shadow.ValidateRevisedPatch(original, tc.patch, "image")
+			if err == nil {
+				t.Fatalf("validator accepted a %s patch it must reject:\n%s", name, tc.patch)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s rejected for the wrong reason — want a reason containing %q, got: %v",
+					name, tc.want, err)
 			}
 		})
 	}

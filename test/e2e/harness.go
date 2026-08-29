@@ -163,14 +163,26 @@ func requireUnchanged(t *testing.T, ns, ref, before string) {
 	}
 }
 
-// waitForNotReady blocks until a deployment reports zero available replicas,
-// which is the state fixora's analyzers key off.
-func waitForNotReady(t *testing.T, ns, deploy string) {
+// waitForImagePullFailure blocks until a pod owned by deploy reports a
+// container waiting on ImagePullBackOff or ErrImagePull.
+//
+// It deliberately does NOT poll the Deployment's .status.availableReplicas:
+// kubectl jsonpath uses allowMissingKeys=true, so a Deployment created
+// milliseconds earlier — status still {} — satisfies an "is empty" check on
+// the first poll and the wait becomes a no-op. Tests would then race pod
+// creation and analyse a Pending pod instead of an image-pull failure, which
+// makes a negative test pass while asserting against the wrong plan.
+func waitForImagePullFailure(t *testing.T, ns, deploy string) {
 	t.Helper()
-	waitFor(t, 90*time.Second, deploy+" to report unavailable replicas", func() bool {
-		out, _, code := run(t, "kubectl", "--context", kubeContext, "get",
-			"deployment/"+deploy, "-n", ns, "-o", "jsonpath={.status.availableReplicas}")
-		return code == 0 && strings.TrimSpace(out) == ""
+	waitFor(t, 120*time.Second, deploy+" pods to report ImagePullBackOff/ErrImagePull", func() bool {
+		out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pods",
+			"-n", ns, "-l", "app="+deploy,
+			"-o", "jsonpath={.items[*].status.containerStatuses[*].state.waiting.reason}")
+		if code != 0 {
+			return false
+		}
+		reasons := strings.TrimSpace(out)
+		return strings.Contains(reasons, "ImagePullBackOff") || strings.Contains(reasons, "ErrImagePull")
 	})
 }
 

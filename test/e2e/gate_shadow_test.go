@@ -20,7 +20,7 @@ func TestShadowCleansUpOnFailure(t *testing.T) {
 	t.Parallel()
 	ns := newNamespace(t)
 	applyDeployWithMeta(t, ns, "shadow-target", nil, nil)
-	waitForNotReady(t, ns, "shadow-target")
+	waitForImagePullFailure(t, ns, "shadow-target")
 
 	before := specOf(t, ns, "deployment/shadow-target")
 	c := typedClient(t)
@@ -93,7 +93,7 @@ func TestShadowLeavesProductionUntouched(t *testing.T) {
 	t.Parallel()
 	ns := newNamespace(t)
 	applyDeployWithMeta(t, ns, "shadow-prod", nil, nil)
-	waitForNotReady(t, ns, "shadow-prod")
+	waitForImagePullFailure(t, ns, "shadow-prod")
 
 	before := specOf(t, ns, "deployment/shadow-prod")
 	c := typedClient(t)
@@ -108,10 +108,10 @@ func TestShadowLeavesProductionUntouched(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	_, err := shadow.Run(ctx, c, shadow.Request{
+	res, err := shadow.Run(ctx, c, shadow.Request{
 		Namespace: ns,
 		Resource:  "deployment/shadow-prod",
-		Patch:     "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: public.ecr.aws/docker/library/busybox:1.36\n",
+		Patch:     "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: registry.k8s.io/pause:3.9\n",
 		Finding:   finding,
 		Plan:      fix.BuildPlan(finding),
 		Timeout:   60 * time.Second,
@@ -119,6 +119,11 @@ func TestShadowLeavesProductionUntouched(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("shadow.Run errored: %v", err)
+	}
+	// Without this the test would pass on a no-op run that never built a clone,
+	// proving nothing about whether production was left alone.
+	if res.CloneName == "" {
+		t.Fatal("shadow.Run produced no clone; the untouched-production assertion proves nothing")
 	}
 
 	requireUnchanged(t, ns, "deployment/shadow-prod", before)

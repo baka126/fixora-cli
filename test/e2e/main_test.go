@@ -70,6 +70,17 @@ func setupAndRun(m *testing.M) (int, error) {
 	if err := os.WriteFile(kubeconfig, out, 0o600); err != nil {
 		return 0, err
 	}
+	// Set it on the TEST process too, not just on exec'd children. The
+	// in-process typed client used by the shadow tests resolves its config
+	// through client-go's default loading rules, which read $KUBECONFIG from
+	// this process (internal/kube/typed.go). Without this the shadow tests
+	// silently fall back to ~/.kube/config — which happens to work right after
+	// `kind create cluster` merges an entry there, but breaks on the
+	// FIXORA_E2E_KEEP=1 reuse path where no create ever runs, and contradicts
+	// this harness's promise not to touch the developer's default context.
+	if err := os.Setenv("KUBECONFIG", kubeconfig); err != nil {
+		return 0, err
+	}
 
 	return m.Run(), nil
 }

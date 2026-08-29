@@ -49,7 +49,7 @@ func TestHelmGateRefusesDirectApply(t *testing.T) {
 			t.Parallel()
 			ns := newNamespace(t)
 			applyDeployWithMeta(t, ns, "broken-api", tc.labels, tc.annotations)
-			waitForNotReady(t, ns, "broken-api")
+			waitForImagePullFailure(t, ns, "broken-api")
 
 			before := specOf(t, ns, "deployment/broken-api")
 
@@ -58,7 +58,8 @@ func TestHelmGateRefusesDirectApply(t *testing.T) {
 			// Helm block — not the eligibility gate — is what failed.
 			stdout, stderr, code := fixora(t, "fix", "deployment/broken-api",
 				"-n", ns, "--quick", "--no-ai", "--delivery", "cluster", "--yes",
-				"--container", "api", "--image", "public.ecr.aws/docker/library/busybox:1.36")
+				"--out", patchOut(t),
+				"--container", "api", "--image", readyImage)
 
 			if code == 0 {
 				t.Fatalf("source-managed workload must not apply directly; stderr=%s", stderr)
@@ -81,13 +82,14 @@ func TestHelmGateAllowsUnmanagedWorkload(t *testing.T) {
 	t.Parallel()
 	ns := newNamespace(t)
 	applyDeployWithMeta(t, ns, "broken-api", nil, nil)
-	waitForNotReady(t, ns, "broken-api")
+	waitForImagePullFailure(t, ns, "broken-api")
 
 	before := specOf(t, ns, "deployment/broken-api")
 
 	_, stderr, code := fixora(t, "fix", "deployment/broken-api",
 		"-n", ns, "--quick", "--no-ai", "--delivery", "cluster", "--yes",
-		"--container", "api", "--image", "public.ecr.aws/docker/library/busybox:1.36")
+		"--out", patchOut(t),
+		"--container", "api", "--image", readyImage)
 
 	if code != 0 {
 		t.Fatalf("unmarked workload should apply; exit=%d stderr=%s", code, stderr)
