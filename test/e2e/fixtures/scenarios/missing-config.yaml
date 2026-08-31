@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: missing-config-demo
+  labels:
+    app: missing-config-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: missing-config-demo
+  template:
+    metadata:
+      labels:
+        app: missing-config-demo
+    spec:
+      containers:
+      - name: config-consumer
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: ["sh", "-c", "echo Value: $REQUIRED_ENV; sleep 3600"]
+        env:
+        - name: REQUIRED_ENV
+          valueFrom:
+            secretKeyRef:
+              name: fixora-non-existent-secret
+              key: some-key

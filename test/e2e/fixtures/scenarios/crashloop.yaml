@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashloop-demo
+  labels:
+    app: crashloop-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashloop-demo
+  template:
+    metadata:
+      labels:
+        app: crashloop-demo
+    spec:
+      containers:
+      - name: broken-app
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: ["sh", "-c", "echo Starting application...; sleep 5; echo Unexpected error occurred!; exit 1"]

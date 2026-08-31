@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-demo
+  labels:
+    app: security-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-demo
+  template:
+    metadata:
+      labels:
+        app: security-demo
+    spec:
+      containers:
+      - name: restricted-app
+        image: public.ecr.aws/docker/library/alpine:3.20
+        command: ["sh", "-c", "echo attempting cache write; if ! touch /var/cache/app.tmp 2>/dev/null; then echo 'permission denied: cannot write cache'; exit 1; fi; sleep 3600"]
+        securityContext:
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000

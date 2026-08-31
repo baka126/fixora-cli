@@ -1,0 +1,42 @@
+name: E2E delivery (full fix)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  delivery:
+    name: Scenario delivery
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require AI config
+        env:
+          KEY: ${{ secrets.FIXORA_AI_API_KEY }}
+          PROVIDER: ${{ vars.FIXORA_AI_PROVIDER }}
+        run: |
+          if [ -z "$KEY" ]; then echo "::error::set the FIXORA_AI_API_KEY repository secret"; exit 1; fi
+          if [ -z "$PROVIDER" ]; then echo "::error::set the FIXORA_AI_PROVIDER repository variable"; exit 1; fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Run scenario delivery suite
+        env:
+          FIXORA_AI_PROVIDER: ${{ vars.FIXORA_AI_PROVIDER }}
+          FIXORA_AI_MODEL: ${{ vars.FIXORA_AI_MODEL }}
+          FIXORA_AI_BASE_URL: ${{ vars.FIXORA_AI_BASE_URL }}
+          FIXORA_AI_API_KEY: ${{ secrets.FIXORA_AI_API_KEY }}
+        run: go test -tags "e2e e2e_delivery" -timeout 25m -v -parallel 8 -run 'TestScenarioDelivery' ./test/e2e/...
+
+      - name: Tear down cluster
+        if: always()
+        run: kind delete cluster --name fixora-e2e || true

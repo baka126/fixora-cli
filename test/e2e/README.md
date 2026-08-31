@@ -81,3 +81,39 @@ afterwards.
 Every mutation must be reverted and `go build ./...` confirmed clean afterwards.
 A test that cannot fail is worse than no test, because it reports safety that is
 not there.
+
+## Scenario diagnosis (`scenario_test.go`, `e2e` tag)
+
+Runs in the merge-gate `e2e.yml` job alongside the safety gates. For each
+curated failure manifest in `fixtures/scenarios/`, it applies the Deployment,
+waits for the real failure state, and asserts — via `why <deploy> -o json` —
+that fixora's finding status and plan strategy match the archetype:
+
+| scenario | status contains | plan strategy |
+|---|---|---|
+| imagepull | `ImagePull` | `image` |
+| crashloop | `CrashLoopBackOff` | `runtime` |
+| missing-config | `CreateContainerConfigError` | `env` |
+| pending | (any non-empty scheduling status) | (any actionable strategy) |
+| security | `PermissionDenied` | `security` |
+
+It never mutates the cluster. `oomkilled` is covered only by the delivery
+suite — a real OOM under a 20Mi limit is slow and occasionally flaky.
+
+## Scenario delivery (`scenario_delivery_test.go`, `e2e_delivery` tag)
+
+Runs **only** via `.github/workflows/e2e-delivery.yml` on `workflow_dispatch`.
+Not a merge gate. For all eight scenarios it runs the real pipeline —
+`fix --delivery cluster --yes` (diagnose → AI patch → shadow-verify → apply) —
+and asserts the Deployment reaches full availability.
+
+Requires:
+- secret `FIXORA_AI_API_KEY`
+- variable `FIXORA_AI_PROVIDER` (e.g. `gemini`)
+- optional variables `FIXORA_AI_MODEL`, `FIXORA_AI_BASE_URL`
+
+A red run for one scenario means fixora's fix for that archetype does not
+currently work end to end. Locally:
+
+    export FIXORA_AI_PROVIDER=gemini FIXORA_AI_API_KEY=<key> FIXORA_AI_MODEL=gemini-2.0-flash
+    go test -tags "e2e e2e_delivery" -timeout 25m ./test/e2e/... -run TestScenarioDelivery
