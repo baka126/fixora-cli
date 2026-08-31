@@ -3,8 +3,13 @@ kind: Pod
 metadata:
   name: leaky
 spec:
-  restartPolicy: Never
+  # restartPolicy defaults to Always: the container crashes on a loop, kubelet
+  # reports CrashLoopBackOff, and each crashed run's stdout (the credential
+  # line) is retained as "previous" container logs. A one-shot restartPolicy:
+  # Never pod that exits 1 is not reliably surfaced as a failure — its
+  # terminated reason is "Error", which podProblem's switch does not match, and
+  # the phase->Failed transition races the test's readiness check.
   containers:
   - name: app
     image: public.ecr.aws/docker/library/busybox:1.36
-    command: ["sh", "-c", "echo password=hunter2supersecret; exit 1"]
+    command: ["sh", "-c", "echo password=hunter2supersecret; sleep 1; exit 1"]
