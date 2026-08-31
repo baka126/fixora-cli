@@ -139,6 +139,18 @@ func newNamespace(t *testing.T) string {
 		_, _, _ = run(t, "kubectl", "--context", kubeContext,
 			"delete", "namespace", ns, "--ignore-not-found=true", "--wait=false")
 	})
+
+	// Kubernetes provisions the namespace's default ServiceAccount
+	// asynchronously. A bare Pod is rejected at admission until it exists
+	// ("serviceaccount \"default\" not found"); Deployments dodge this because
+	// their pods are created later by the ReplicaSet controller. Wait for it so
+	// any test may apply a Pod fixture immediately.
+	waitFor(t, 30*time.Second, "default ServiceAccount in "+ns, func() bool {
+		_, _, code := run(t, "kubectl", "--context", kubeContext,
+			"get", "serviceaccount", "default", "-n", ns)
+		return code == 0
+	})
+
 	return ns
 }
 
