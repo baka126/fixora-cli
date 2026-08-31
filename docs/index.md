@@ -1,71 +1,145 @@
 ---
 layout: default
-title: Fixora CLI Enterprise Documentation
-description: Advanced Kubernetes diagnostic, shadow-verification, and auto-remediation tool.
+title: Fixora CLI Documentation
+description: Local Kubernetes diagnostics, shadow verification, and gated remediation as a kubectl plugin.
 ---
 
-# fixora-cli: Enterprise Documentation Suite
+# kubectl-fixora
 
-## 1. Introduction & Overview
+`kubectl-fixora` is a standalone kubectl plugin for local Kubernetes incident
+diagnosis and remediation. It runs entirely from your machine against the
+current `kubeconfig`, does not talk to any Fixora backend, and can optionally
+call an AI provider with redacted evidence for explanations.
 
-`fixora-cli` is an advanced Kubernetes diagnostic and remediation tool designed specifically for Site Reliability Engineers (SREs), DevOps practitioners, and Platform Engineers. Built on the robust `antigravity` CLI framework, it operates locally to analyze cluster state, diagnose complex failures, and safely propose—or execute—fixes without requiring a persistent cloud backend.
-
-While it shares diagnostic similarities with tools like `k8sgpt`, `fixora-cli` differentiates itself through **extended, secure-by-default execution capabilities**. It goes beyond mere observation, offering autonomous, AI-driven remediation securely gated by enterprise-grade verification systems.
-
-### Key Features
-* **AI-Driven Diagnostics:** Leverages leading LLMs (Gemini, OpenAI, Anthropic, etc.) to analyze Kubernetes events, pod states, and logs to identify root causes.
-* **Shadow Verification:** Safely tests generated patches against isolated clones of production workloads before applying them to live environments.
-* **Strict Payload Redaction:** Ensures zero sensitive data (Secrets, tokens, PII) is transmitted to AI backends through structural YAML redaction.
-* **Automated Rollbacks:** Intelligent rollback generation and execution to instantly undo problematic deployments.
-* **OpenTelemetry (OTel) Tracing:** Fully instrumented distributed tracing for high-observability incident debugging.
+For install and quick-start, see the [repository README](https://github.com/baka126/fixora-cli#readme).
+This page covers architecture, the security model, and the full command surface.
 
 ---
 
-## 2. Architecture & Operational Flow
+## 1. What it does
 
-`fixora-cli` is built to be stateless, highly concurrent, and deeply integrated with the Kubernetes control plane via `client-go`.
+* **Incident discovery** — reads Pods, Events, owner references, bounded logs,
+  GitOps annotations, node metadata, and a k8sgpt-style analyzer catalog, and
+  reports failing workloads with a root cause, proof, and rollback hint.
+* **AI-assisted explanation** — routes a redacted finding to your configured
+  provider (`openai`, `anthropic`, `gemini`, `ollama`, Azure/Bedrock/Vertex
+  gateways, or `noop`) and never sends Secret values.
+* **Gated remediation** — builds a concrete patch for image, resource, runtime,
+  env/config, and scheduling issues, verifies it in an isolated shadow clone,
+  then delivers it as a local patch, a cluster apply, or a GitOps pull request.
+* **Coordinated fixes** — `coordinate` applies an ordered set of single-resource
+  fixes as one transaction with consent-gated partial rollback.
 
-### System Architecture
-1. **API Interaction:** The CLI uses the local `kubeconfig` to interact directly with the Kubernetes API and etcd. It relies on a fallback mechanism: attempting to use a highly efficient, typed `client-go` implementation, falling back to structured `kubectl` shell executions if necessary.
-2. **Analysis Engine:** An internal worker pool concurrently processes cluster namespaces, retrieving Pods, Events, and configurations. 
-3. **LLM Backend Integration:** Diagnostics and remediation plans are securely routed to external LLM gateways using the user's configured API provider (e.g., Gemini, Azure OpenAI). All outgoing context is strictly redacted.
-
-### The Diagnostic Flow
-1. **Data Fetching:** The `Analyzer` fetches workloads and Kubernetes Events using efficient paginated requests (pinning `ResourceVersion` to ensure etcd consistency).
-2. **Context Assembly:** Logs are chunked, stripped of noise, and bundled with pod status and related events.
-3. **Redaction:** The engine recursively scrubs mapped secret values, environment variables, and high-entropy strings, preserving only the keys and structure.
-4. **AI Prompt Construction:** A specialized prompt is sent to the AI backend, returning a structured JSON or YAML response.
-
-### The Remediation Flow
-1. **Patch Generation:** The AI proposes a `strategic-merge` patch.
-2. **Shadow Cloning:** If requested, `fixora-cli` strips the failing workload of its identity (`UID`, node affinity, active labels) and deploys an isolated "shadow clone" labeled `fixora.io/sandbox=true`.
-3. **Validation Gates:** A strict `NetworkPolicy` isolates the clone (denying ingress/egress). The engine validates the patch locally, completely blocking privilege escalation attempts (e.g., `hostPath`, `secret` mounts).
-4. **Verification & Deployment:** The patch is applied to the shadow clone. If it reaches `Ready` state, `fixora-cli` tears down the clone and executes the final patch on the production controller.
+It differs from pure observers like `k8sgpt` by adding the shadow-verification
+and delivery layer — every mutating path is gated by
+`fix.Plan.ApplyEligible`, a server dry-run, and (for AI-revised patches) a
+narrow safe-strategy allowlist.
 
 ---
 
-## 3. Security & Compliance (Enterprise Guardrails)
+## 2. Architecture
 
-Security is the foundational principle of `fixora-cli`. It enforces a strict **"do no harm"** operational model.
+`kubectl-fixora` is stateless and concurrent. It has no daemon and no database.
 
-### Data Privacy & Strict Redaction
-By default, all data transmitted to AI providers is scrubbed. The redaction engine understands Kubernetes schemas:
-* **Secrets:** Values are stripped, but keys are retained to provide the AI with context (e.g., `DB_PASSWORD: <REDACTED>`).
-* **Environment Variables & Logs:** Standard Regex rules catch IPs, emails, hashes, and API keys.
+* **Cluster access** — uses the local `kubeconfig` against the Kubernetes API
+  server. The default path shells out to `kubectl`; `--typed-client` switches
+  to a `client-go` + controller-runtime stack (typed Pods, Events, Nodes,
+  logs, and dynamic resource reads) for large clusters. The `kubectl` path
+  stays as the compatible fallback.
+* **Analyzer pipeline** — a worker pool fans a finding request out to the
+  selected analyzers. Shared reads (pods, events, nodes, resource items) are
+  cached behind a mutex so concurrent analyzers do not duplicate API calls.
+  Missing CRDs or denied reads become `SkippedCheck` entries, not errors.
+* **AI** — the finding is JSON-marshalled, redacted, and POSTed to the provider
+  endpoint. AI is off unless `--ai` is passed, and requires `--redact`
+  (default for incident commands) or an explicit `--unsafe-ai-no-redact`.
 
-### Execution Guardrails
-Before any AI-generated patch touches a cluster (even a shadow sandbox), it must pass cryptographic validation constraints:
-* **Privilege Dropping:** Automatically rejects patches attempting to introduce `hostPath`, `hostNetwork`, `hostPID`, or `privileged: true` contexts.
-* **Mount Blocks:** Explicitly blocks the addition of new `secret` or `downwardAPI` volume mounts to prevent exfiltration.
-* **Identity Preservation:** Patches cannot mutate `metadata.name`, `metadata.namespace`, or core workload selectors.
+### Diagnostic flow
 
-### RBAC Requirements
-To comply with the Principle of Least Privilege, the CLI splits operational needs:
-* **Diagnostics (Read-Only):** Requires only `get`, `list`, `watch` on standard resources (Pods, Events, Deployments).
-* **Shadow Verification:** Requires explicit `create` and `delete` permissions for `pods` and `networking.k8s.io/networkpolicies`.
+1. Fetch the target workload (and its owned failing Pod) plus namespace Events.
+2. Collect bounded logs when `--include-logs` is set; classify them with a
+   deterministic log-signal matcher (permission-denied, exec-format, OOM,
+   DNS, TLS, DB-unreachable, panic, …).
+3. Assemble evidence, redact it, and — with `--ai` — request a structured
+   root-cause and remediation.
+
+### Remediation flow
+
+1. **Plan** — `BuildPlan` maps the finding status to a strategy
+   (`image`, `resources`, `runtime`, `env`, `fix-architecture`, `security`,
+   `repair-selector`, `hpa`, `pdb`, …) and a patch template.
+2. **Concretize** — `--container`, `--image`, `--memory-request`, etc. fill the
+   template. A plan that still contains a `TODO_` placeholder is not
+   apply-eligible.
+3. **Shadow verify** (`--shadow`, default for `fix`) — clone the target Pod or
+   the workload's pod template, strip identity (`UID`, `ownerReferences`,
+   finalizers, status, node pinning, original labels), inject
+   `fixora.io/sandbox=true` plus session/expiry labels, attach an
+   ingress-deny NetworkPolicy, apply the patch to the clone, wait for
+   readiness, report parity, then tear the clone and NetworkPolicy down.
+4. **Deliver** (`--delivery`) — `patch` writes a verified local file, `cluster`
+   runs a server-side dry-run then a server-side apply, `pr` commits the
+   source patch and opens a GitHub PR / GitLab MR from `--repo`.
+5. **Post-apply health gate** — after a cluster apply, Fixora watches the
+   rollout (or Job/CronJob completion). If it does not become healthy it
+   prints events and cause hints, then offers a deterministic `kubectl` /
+   `helm` rollback — never run automatically under `--yes`.
+
+---
+
+## 3. Security model
+
+The plugin is conservative by default.
+
+### Redaction
+
+All evidence sent to an AI provider is scrubbed. The redactor understands
+Kubernetes structure:
+
+* **Secrets** — values are removed, keys kept for context
+  (`DB_PASSWORD: [REDACTED]`). Fixora does not read Secret `data` unless
+  `--secret-keys` is passed, and even then only checks key presence and
+  base64 validity.
+* **Logs, env, annotations** — regex rules replace URLs with embedded
+  credentials, bearer tokens, JWTs, emails, and connection strings.
+* `--paranoid` (default for `fix`) forces the strictest redaction.
+
+### Execution guardrails
+
+Before any patch touches a cluster or a shadow sandbox:
+
+* `fix.Plan.ApplyEligible` must be true — concrete, safe, high-confidence,
+  no blocked reasons.
+* A **server dry-run** must pass.
+* AI-revised retry patches must match a narrow strategy allowlist and must
+  **not** change identity, metadata (labels/annotations/ownerReferences),
+  selectors, scheduling, service accounts, `privileged`, host
+  networking/PID/IPC, or volumes.
+* Helm/GitOps-managed workloads **refuse direct cluster apply** and are
+  routed to `--delivery pr`. For Helm, Fixora render-validates the patch
+  against `helm template` and names the `values` key(s) controlling each
+  divergent field.
+* Shadow NetworkPolicies deny ingress; egress is allowed by default for
+  parity and can be blocked with `--shadow-egress deny`.
+* Rollback execution is limited to structured `kubectl` / `helm` commands;
+  advisory rollback text is never executed.
+* `--ai-budget-tokens` caps prompt size; `--timeout`, `--log-tail`, and
+  `--max-logs-bytes` bound scans.
+
+### RBAC
+
+Split grants by capability:
+
+* **Diagnostics (read-only)** — `get`, `list`, `watch` on Pods, Events,
+  workloads, and the optional CRDs you use.
+* **Shadow verification** — `create` / `delete` on `pods` and
+  `networking.k8s.io/networkpolicies`.
+* **Apply / `coordinate`** — workload write permissions; limit to an
+  operator group. `coordinate` mutates more than one resource per run, so
+  restrict it to operators already trusted to apply each fix individually.
 
 ```yaml
-# Required explicit Shadow Role (example)
+# Explicit shadow-verification Role (example)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -79,107 +153,153 @@ rules:
     verbs: ["create", "delete", "get", "list", "watch"]
 ```
 
+A minimal read-only diagnostics Role is in `docs/rbac.yaml`.
+
 ---
 
-## 4. Installation & Setup
+## 4. Setup
 
 ### Prerequisites
-* `kubectl` installed and configured.
-* A valid `kubeconfig` pointing to your target cluster.
-* API key for your chosen LLM provider (if using AI features).
 
-### Installation Commands
-Install via the automated script:
+* `kubectl` on `PATH` with a valid `kubeconfig`.
+* `helm` and/or `kustomize` locally only if you use `--repo` GitOps delivery.
+* An AI provider API key only if you use `--ai`.
+* Go 1.26+ to build from source.
+
+### Install
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/baka126/fixora-cli/main/scripts/install.sh | sh
-```
-Or build from source using Go 1.21+:
-```bash
-go build -trimpath -o kubectl-fixora ./cmd/kubectl-fixora
-sudo mv kubectl-fixora /usr/local/bin/
+kubectl fixora version
 ```
 
-### Environment Configuration
-Export your preferred AI provider configurations (e.g., Gemini):
+```bash
+# from source
+go build -trimpath -o kubectl-fixora ./cmd/kubectl-fixora
+install -m 0755 kubectl-fixora /usr/local/bin/kubectl-fixora
+```
+
+### Environment
+
 ```bash
 export FIXORA_AI_PROVIDER="gemini"
-export FIXORA_AI_API_KEY="AIzaSy..."
-export FIXORA_AI_MODEL="gemini-1.5-flash"
+export FIXORA_AI_API_KEY="..."
+export FIXORA_AI_MODEL="gemini-2.0-flash"          # provider default is dated
+# export FIXORA_AI_BASE_URL="..."                  # Azure / gateways only
+
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"   # optional tracing
 ```
-To enable OpenTelemetry tracing to a local collector:
-```bash
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
-```
+
+Configuration precedence: CLI flags > environment > config file > defaults.
+`kubectl fixora config view` never prints the API key; `config export` redacts
+it. Prefer `FIXORA_AI_API_KEY` over `auth set` for production.
 
 ---
 
-## 5. CLI Usage & Command Reference
+## 5. Command reference
 
-The CLI utilizes the intuitive structures provided by the `antigravity` framework.
+There is no Cobra; commands dispatch through a `switch` after manual flag
+parsing. `kubectl fixora help` shows the incident-focused surface;
+`help --advanced` shows everything.
 
-### Global Flags
-* `-n, --namespace`: Target a specific namespace.
-* `-A, --all-namespaces`: Scan the entire cluster.
-* `--ai`: Explicitly enable AI integrations.
-* `--shadow`: Execute fixes against isolated sandboxes instead of live targets.
+### Fast incident workflow
 
-### Core Commands
+| Command | Purpose |
+|---|---|
+| `scan` (alias `incidents`) | List failing workloads with bounded logs, typed reads, and redaction on by default. |
+| `why <kind/name>` | Root cause, proof, confidence, rollback hint, next step. `-o json` prints the plan. |
+| `fix <kind/name>` | Guided walkthrough: RCA → concrete patch → shadow verify → deliver. Auto-enables `--ai`, `--shadow`, `--paranoid`. |
+| `coordinate <kind/name>...` (alias `fix-set`) | Apply an ordered set of fixes as one transaction; fail-closed preflight; consent-gated reverse rollback. `--from <root>` derives the set. |
+| `doctor` | Validate access, RBAC, logs, events, metrics, and Helm/GitOps CRDs. |
+| `ui` / `ui --tui` | Compact incident dashboard / full-screen Bubble Tea triage view. |
+| `cluster` | Full-screen cluster dashboard (also the no-argument default). |
 
-#### `fixora analyze`
-Scans a resource or namespace, performs local heuristic checks, and optionally invokes the AI for a root-cause summary.
-**Syntax:**
 ```bash
-kubectl fixora analyze [resource] [flags]
-```
-**Example:**
-```bash
-# Analyze a specific deployment with AI insights
-kubectl fixora analyze deployment/payments-api -n prod --ai --include-logs
-```
-
-#### `fixora patch` & `fixora fix`
-Generates a remediation patch. When combined with `--shadow`, it enables autonomous sandbox verification.
-**Syntax:**
-```bash
-kubectl fixora fix [resource] [flags]
-```
-**Example:**
-```bash
-# Safely verify an AI-generated fix in a shadow pod before applying
-kubectl fixora fix pod/payments-api-1234 -n prod --ai --shadow --delivery patch
+kubectl fixora scan -A
+kubectl fixora why deployment/payments-api -n prod
+kubectl fixora fix deployment/payments-api -n prod --container api --image ghcr.io/acme/api:v1.2.3
+kubectl fixora fix deployment/payments-api -n prod --repo ./charts/api --delivery pr --yes
+kubectl fixora coordinate deployment/payments-api configmap/payments-config -n prod
 ```
 
-#### `fixora rollback`
-Provides instant deployment rollbacks by parsing controller revisions.
-**Syntax:**
-```bash
-kubectl fixora rollback [resource] [flags]
-```
-**Example:**
-```bash
-# Preview the exact shell rollback command
-kubectl fixora rollback deployment/payments-api -n prod --preview
+### Delivery
 
-# Apply the rollback immediately
-kubectl fixora rollback deployment/payments-api -n prod --apply
+`--delivery patch` (default) leaves a verified local patch. `--delivery
+cluster` runs the dry-run and apply, then the health gate. `--delivery pr`
+requires `--yes`, commits only the generated patch, pushes it, and opens a
+PR/MR when the matching CLI is installed. `--apply`, `--source-patch`, and
+`--gitops` are deprecated aliases.
+
+### Specialist workflows
+
+| Group | Tools |
+|---|---|
+| `debug <tool>` | `trace`, `graph` (text/json/yaml/mermaid), `storage`, `rbac`, `dns`, `security`, `node-pressure`, `changes`, `readiness`, `rollback` |
+| `source <tool>` | `repo`, `validate`, `lint`, `preflight`, `policy-check` |
+
+```bash
+kubectl fixora debug trace service/payments-api -n prod
+kubectl fixora debug graph deployment/payments-api -n prod -o mermaid
+kubectl fixora debug rollback deployment/payments-api -n prod --preview
+kubectl fixora source validate ./charts/api
+kubectl fixora source lint -f manifests/deployment.yaml
 ```
+
+### Analyzer selection
+
+Fixora picks the right analyzer set automatically (`why service/x` → networking,
+`why pvc/x` → storage). `kubectl fixora filters` lists the catalog; `--filter`
+forces a set. Two analyzers are off by default because they inspect
+Secret/TLS material:
+
+```bash
+kubectl fixora incidents -n prod --secret-keys   # key presence + base64; never values
+kubectl fixora incidents -n prod --cert-expiry   # Ingress TLS expiry from public tls.crt only
+```
+
+### Setup, output, and integrations
+
+| Command | Purpose |
+|---|---|
+| `auth` | Configure AI provider credentials interactively or directly. |
+| `config` | `view` / `set` / `unset` / `validate` / `export`, plus named `profile`s and per-`context` overrides. |
+| `ai doctor` | AI provider pre-flight checks. |
+| `serve --mcp` | Local MCP stdio server (tools: `analyze`, `incidents`, `health`, `runbook`, `plan-fix`, `preview-fix`, `validate-fix`, `list-resources`, `get-resource`, `get-logs`, `list-events`, `list-filters`, `config`; prompts: `troubleshoot-pod/-deployment/-cluster`, `incident-runbook`). |
+| `serve <addr>` | Local HTTP API (`/healthz`, `/analyzers`, `/incidents`, `/analyze/<kind/name>`); set `FIXORA_SERVE_TOKEN` for bearer auth. |
+| `integrations` | Detect local Prometheus, EKS, Kyverno, KEDA from cluster objects. |
+| `custom-analyzers` | Register and run explicit local analyzer executables (never automatic). |
+| `bundle --profile incident\|network\|storage\|security` | Scoped, redacted audit bundle. |
+| `watch incidents` | Poll incident state until interrupted. |
+
+Structured incident output (`-o json\|yaml\|markdown\|sarif\|junit\|prometheus`)
+uses a stable `AnalysisReport` envelope: `status`, `provider`, `problems`,
+`results`, `skipped`, `warnings`, `summary`.
 
 ---
 
-## 6. Observability & Troubleshooting
+## 6. Observability & troubleshooting
 
-### OpenTelemetry Integration
-`fixora-cli` emits rich, context-aware OpenTelemetry (OTel) traces. When the analyzer's worker pool evaluates resources, nested spans are generated:
-* Trace names format as `AnalyzePod`.
-* Spans are heavily attributed with `pod.namespace` and `pod.name`, ensuring debugging sessions can be directly correlated in tools like Jaeger, Datadog, or Honeycomb.
+### OpenTelemetry
 
-### Structured Logging
-If a shadow verification fails, or if the API rate limits are hit (resulting in pagination re-fetches), the CLI outputs structured logs directly to `stderr`. 
-* **Shadow Cleanup Failures:** Look for `[WARN] Failed to delete shadow sandbox...` if the namespace RBAC denies deletion.
-* **Pagination Consistency:** Log traces indicate when etcd `ResourceVersion` caching successfully stabilizes highly concurrent API requests.
+The analyzer worker pool emits nested spans (e.g. `AnalyzePod`) attributed with
+`pod.namespace` / `pod.name`, so an incident session correlates directly in
+Jaeger, Datadog, or Honeycomb. Set `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-### Common Errors and Solutions
-* **Error:** `helm template failed` or `kustomize build failed`.
-  * **Solution:** Ensure `helm` and `kustomize` binaries are installed locally if utilizing GitOps `--repo` targeting.
-* **Error:** `volume changes are not allowed` during shadow verify.
-  * **Solution:** The AI generated a patch attempting to mount a blocked volume type (`secret` or `hostPath`). Review the generated patch via `--preview` and manually apply safe constraints.
+### Structured logs
+
+Warnings and non-fatal failures go to `stderr`:
+
+* `cleanup failed for pod/… : …` — the namespace RBAC denied shadow deletion;
+  the clone carries `fixora.io/expires-at` for manual cleanup.
+* Skipped-check lines — an optional analyzer's read was forbidden or the CRD
+  is absent; the scan continues with partial results.
+
+### Common errors
+
+| Error | Cause / fix |
+|---|---|
+| `helm template failed` / `kustomize build failed` | `helm` / `kustomize` not on `PATH`, or the chart/overlay is invalid. Only needed for `--repo` delivery. |
+| `direct cluster delivery is blocked for Helm/GitOps-managed resources` | The workload has Helm/Argo/Flux markers. Use `--delivery pr --repo <path>`. |
+| `… is not allowed` during shadow verify | The AI patch touched a blocked field (volumes, `privileged`, host networking, selectors, …). Review with `--preview`. |
+| `coordinated apply aborted; no changes were made` (exit 2) | A step failed preflight (not apply-eligible, source-managed, or dry-run rejected). Nothing was mutated. |
+| `FIXORA_AI_API_KEY is not set` | `--ai` was passed without a configured provider key. |
