@@ -69,6 +69,16 @@ func TestScenarioDiagnosis(t *testing.T) {
 				// collects the log, and classifyLogSignal upgrades the status to
 				// PermissionDenied. Wait for the CrashLoopBackOff reason.
 				waitForPodReason(t, ns, "security-demo", "CrashLoopBackOff")
+			case c.deploy == "crashloop-demo":
+				// The container runs 5s then exits 1. A single CrashLoopBackOff
+				// read races the container re-run window; gate on a couple of
+				// restarts so the backoff interval has grown before `why` scans.
+				waitForPodReason(t, ns, "crashloop-demo", "CrashLoopBackOff")
+				waitForRestarts(t, ns, "crashloop-demo", 2)
+			case c.deploy == "pending-demo":
+				// Phase Pending matches any pod still scheduling or pulling. Wait
+				// for the real signal: the PodScheduled=Unschedulable condition.
+				waitForUnschedulable(t, ns, "pending-demo")
 			case c.podReason != "":
 				waitForPodReason(t, ns, c.deploy, c.podReason)
 			case c.phase != "":

@@ -66,6 +66,7 @@ func TestScenarioDelivery(t *testing.T) {
 			_, stderr, code := fixora(t, "fix", "deployment/"+c.deploy,
 				"-n", ns, "--container", c.container,
 				"--delivery", "cluster", "--yes",
+				"--out", patchOut(t),
 				"--shadow-timeout", "90s")
 
 			if code != 0 {
