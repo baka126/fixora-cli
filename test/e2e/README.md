@@ -31,6 +31,7 @@ hermetic and needs no cluster.
 | `gate_helm_test.go` | Each of six source-management markers (managed-by label, Helm release annotation, instance label, chart label, Argo CD tracking-id, Flux annotation) blocks direct cluster apply; the refusal points the operator at source delivery | A byte-identical deployment with no markers applies and is mutated |
 | `gate_shadow_test.go` | A never-ready clone: `shadow.Run` takes the failure path yet still deletes the clone pod and the ingress-deny NetworkPolicy, and the production workload is unchanged | The production workload is never touched regardless of verification outcome (`TestShadowLeavesProductionUntouched`) |
 | `gate_redact_test.go` | `why --ai --redact --include-logs`: the leaked secret appears in neither the request bodies the AI stub recorded nor the command output; `ValidateRevisedPatch` rejects hostNetwork, privileged, and multi-document patches | A benign resources-shaped patch passes `ValidateRevisedPatch` (`TestBenignAIPatchAccepted`) |
+| `gate_coordinate_test.go` | A source-managed step makes preflight abort the whole set at exit 2 with neither resource mutated | A failed health check rolls the applied prefix back: the failed image is gone and the original is restored. Note this test omits `--yes`, because `--yes` deliberately disables auto-rollback so a non-interactive run never silently reverts production |
 
 Every gate has a positive case on purpose. A gate that refuses *everything* is
 completely broken yet would pass a refusal-only suite — the positive case is what
