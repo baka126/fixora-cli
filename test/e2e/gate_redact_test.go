@@ -20,11 +20,23 @@ func TestRedactionHoldsAtEgress(t *testing.T) {
 	t.Parallel()
 	ns := newNamespace(t)
 	applyFixture(t, ns, "leaky-pod.yaml")
-	waitFor(t, 90*time.Second, "leaky pod to log and exit", func() bool {
-		out, _, code := run(t, "kubectl", "--context", kubeContext, "logs",
-			"pod/leaky", "-n", ns)
-		return code == 0 && strings.Contains(out, leakedSecret)
+
+	// Wait for CrashLoopBackOff specifically. That is the state fixora
+	// classifies as a failure (podProblem), and it guarantees a "previous"
+	// container run whose stdout holds the credential line — which is what
+	// --include-logs collects and redacts. Just seeing the log via kubectl is
+	// not enough: the analyzer must also see the pod as broken.
+	waitFor(t, 150*time.Second, "leaky pod to reach CrashLoopBackOff", func() bool {
+		out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pod/leaky",
+			"-n", ns, "-o", "jsonpath={.status.containerStatuses[*].state.waiting.reason}")
+		return code == 0 && strings.Contains(out, "CrashLoopBackOff")
 	})
+	// Sanity: the crashed run's stdout really does carry the secret.
+	logs, _, _ := run(t, "kubectl", "--context", kubeContext, "logs", "pod/leaky",
+		"-n", ns, "--previous")
+	if !strings.Contains(logs, leakedSecret) {
+		t.Fatalf("previous container logs missing the seeded secret; got: %q", logs)
+	}
 
 	stub := newAIStub(t, "")
 	stdout, stderr, _ := fixoraEnv(t, stub.Env(),
