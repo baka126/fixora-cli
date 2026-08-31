@@ -1,0 +1,31 @@
+name: E2E
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: Safety gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Run safety-gate e2e suite
+        run: go test -tags e2e -timeout 20m -v ./test/e2e/...
+
+      - name: Tear down cluster
+        if: always()
+        run: kind delete cluster --name fixora-e2e || true

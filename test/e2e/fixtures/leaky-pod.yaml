@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: leaky
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: ["sh", "-c", "echo password=hunter2supersecret; exit 1"]
