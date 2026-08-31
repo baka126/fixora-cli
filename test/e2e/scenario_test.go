@@ -63,10 +63,12 @@ func TestScenarioDiagnosis(t *testing.T) {
 
 			switch {
 			case c.deploy == "security-demo":
-				// readOnlyRootFilesystem makes `touch` fail; the container logs
-				// "permission denied" and exits. The classifier keys off that
-				// exact substring, so wait for it before running fixora.
-				waitForLog(t, ns, "security-demo", "permission denied")
+				// readOnlyRootFilesystem makes `touch` fail; the container echoes
+				// "permission denied" and exits 1, so the pod reaches
+				// CrashLoopBackOff. podProblem then builds a finding, --include-logs
+				// collects the log, and classifyLogSignal upgrades the status to
+				// PermissionDenied. Wait for the CrashLoopBackOff reason.
+				waitForPodReason(t, ns, "security-demo", "CrashLoopBackOff")
 			case c.podReason != "":
 				waitForPodReason(t, ns, c.deploy, c.podReason)
 			case c.phase != "":
