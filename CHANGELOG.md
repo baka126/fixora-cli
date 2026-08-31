@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `coordinate` command (alias `fix-set`): apply an ordered set of single-resource fixes as one transaction, with fail-closed preflight over the whole set and consent-gated reverse-order rollback of the applied prefix on the first failure. `coordinate --from <root kind/name>` derives the related set from the root workload's referenced ConfigMaps, Secrets, mounted PVCs, and selector-matched Services.
+- Post-apply health gate: after a `--delivery cluster` apply, Fixora verifies rollout or Job/CronJob completion health, reports events and cause hints on failure, and offers a deterministic `kubectl`/`helm` rollback (never automatic under `--yes`).
+- `--secret-keys`: opt-in analyzer for Secret key presence, base64 validity, missing `secretKeyRef`/`envFrom`/`volume` targets, and `imagePullSecrets` type resolution. Never prints Secret values.
+- `--cert-expiry`: opt-in Ingress TLS certificate-expiry check that reads only the public `tls.crt`.
+- Stuck-`Terminating` Pod detection with the blocking cause attributed to finalizers, a slow preStop hook, a failing volume detach, or an unreachable node.
+- Helm delivery now render-validates the intended patch against `helm template` output, classifies each field (managed-divergent / managed-match / unmanaged), and suggests the chart `values` key(s) controlling each divergent field with a `pinpointed` / `likely` / `uncertain` / `unmapped` confidence.
+- End-to-end test suites under `test/e2e/` (safety gates + demo scenarios), behind `e2e` / `e2e_delivery` build tags so `make test` stays cluster-free.
+
+### Changed
+- Cluster and shadow delivery use server-side apply, so a partial patch merges only the fields it names and never deletes the rest.
+- Migrated the core workload analyzers (`ConfigMap`, `DaemonSet`, `StatefulSet`, `PVC`, `Job`, `CronJob`) to the native precision framework.
+- `--apply`, `--source-patch`, and `--gitops` are now deprecated aliases for `--delivery cluster` / `--delivery pr`.
+
+### Fixed
+- RBAC-denied reads are labelled with a structured `SkippedCheck` field instead of a generic error.
+
+## [0.8.0]
+
+### Added
+- Promoted `doctor` and config profiles to top-level commands.
+- Interactive terminal UI (dashboard) is now the default when no arguments are provided.
+- `fix` is now fully interactive when run without arguments.
+- Typed Kubernetes client stack.
+- Production auto-fix workflow hardening.
+- Local MCP stdio server for AI assistants.
+- CI configuration for govulncheck and a macOS runner.
+- CONTRIBUTING.md, SECURITY.md, and this changelog.
+- Configurable maximum findings in watch mode.
+- Progress indicators.
+
+### Changed
+- Drastically simplified the CLI by removing redundant subcommands (`plan`, `diff`, `patch`, `report`, etc.) in favor of the unified `fix` and TUI workflows.
+- Improved watch mode output and fixed timeout zero-value flag logic.
+- Graceful shutdown with signal contexts; Makefile lint and coverage targets.
+
+### Fixed
+- Short flags interspersed with positional arguments (e.g. `kubectl-fixora fix deployment/api -n prod`) were mis-parsed; migrated to `pflag`.
+- Filtered system resources from the RBAC and webhook analyzers to reduce noise.
+
 ## [0.7.5]
 
 ### Added
@@ -43,30 +85,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed missing trailing newline on repository patch writes.
 - Fixed inconsistent etcd pagination by pinning `ResourceVersion`.
 
-## [Unreleased]
-
-## [0.8.0]
-
-### Added
-- Promoted `doctor` and `profiles` to top-level commands.
-- Interactive terminal UI (dashboard) is now the default when no arguments are provided.
-- `fix` command is now fully interactive when run without arguments.
-- Typed Kubernetes client stack
-- Production auto-fix workflow hardening
-- Local MCP stdio server for AI assistants
-- CI configuration for govulncheck and macOS runner
-- CONTRIBUTING.md, SECURITY.md, and CHANGELOG.md
-- Configurable maximum findings in watch mode
-- Progress indicators
-
-### Changed
-- Drastically simplified the CLI by removing redundant subcommands (`plan`, `diff`, `patch`, `report`, etc.) in favor of the unified `fix` and TUI workflows.
-- Improved watch mode output
-- Fixed timeout zero-value flag logic
-- Update install-local.sh build flags
-- Graceful shutdown with signal contexts
-- Makefile lint and code coverage targets
-
-### Fixed
-- Fixed bug where short flags interspersed with positional arguments (e.g., `kubectl-fixora fix deployment/api -n prod`) were incorrectly parsed, by migrating to `pflag`.
-- Filtered system resources from RBAC and webhook analyzers to significantly reduce noise.
