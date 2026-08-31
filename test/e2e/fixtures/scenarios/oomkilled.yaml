@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oomkilled-demo
+  labels:
+    app: oomkilled-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oomkilled-demo
+  template:
+    metadata:
+      labels:
+        app: oomkilled-demo
+    spec:
+      containers:
+      - name: memory-hog
+        image: polinux/stress
+        resources:
+          limits:
+            memory: "20Mi"
+        args: ["--vm", "1", "--vm-bytes", "100M", "--vm-hang", "1"]

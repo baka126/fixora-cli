@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dependency-demo
+  labels:
+    app: dependency-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dependency-demo
+  template:
+    metadata:
+      labels:
+        app: dependency-demo
+    spec:
+      containers:
+      - name: db-client
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: ["sh", "-c", "echo connecting to $DB_HOST:$DB_PORT; nc -w 3 $DB_HOST $DB_PORT || (echo connection refused; exit 1)"]
+        env:
+        - name: DB_HOST
+          value: "wrong-postgres-host"
+        - name: DB_PORT
+          value: "1234"
