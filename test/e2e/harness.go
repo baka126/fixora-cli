@@ -186,16 +186,7 @@ func requireUnchanged(t *testing.T, ns, ref, before string) {
 // makes a negative test pass while asserting against the wrong plan.
 func waitForImagePullFailure(t *testing.T, ns, deploy string) {
 	t.Helper()
-	waitFor(t, 120*time.Second, deploy+" pods to report ImagePullBackOff/ErrImagePull", func() bool {
-		out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pods",
-			"-n", ns, "-l", "app="+deploy,
-			"-o", "jsonpath={.items[*].status.containerStatuses[*].state.waiting.reason}")
-		if code != 0 {
-			return false
-		}
-		reasons := strings.TrimSpace(out)
-		return strings.Contains(reasons, "ImagePullBackOff") || strings.Contains(reasons, "ErrImagePull")
-	})
+	waitForPodReason(t, ns, deploy, "ImagePullBackOff")
 }
 
 // applyDeployWithMeta applies the broken deployment with caller-supplied
