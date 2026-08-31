@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -60,8 +61,21 @@ func TestRedactionHoldsAtEgress(t *testing.T) {
 		}
 	}
 	if !redacted {
-		t.Fatal("no AI request carried the redacted log line \"password=[REDACTED]\"; " +
-			"the pod log evidence never reached the AI payload, so the redaction assertion proved nothing")
+		// Dump what fixora actually sent so the next CI run shows whether the
+		// log was collected at all: --include-logs means the redacted log line
+		// belongs in the AI payload, so its absence is either "logs never
+		// collected" (finding carried only metadata) or "collected but dropped
+		// before the payload". Both are product bugs, not test bugs.
+		var dump strings.Builder
+		for i, body := range sent {
+			if len(body) > 4000 {
+				body = body[:4000] + "…(truncated)"
+			}
+			fmt.Fprintf(&dump, "\n--- AI request %d ---\n%s\n", i, body)
+		}
+		t.Fatalf("no AI request carried the redacted log line \"password=[REDACTED]\"; "+
+			"the pod log evidence never reached the AI payload, so the redaction "+
+			"assertion proved nothing.\nfixora stderr:\n%s%s", stderr, dump.String())
 	}
 }
 
