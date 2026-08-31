@@ -14,3 +14,4 @@ fixora-patch.yaml
 
 # Go build cache (Codex/local)
 .codex-go-cache/
+fixora-demo

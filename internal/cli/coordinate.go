@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/coordinate"
 	"github.com/fixora/kubectl-fixora/internal/fix"
@@ -35,7 +37,52 @@ func (d coordinateDeps) Capture(ctx context.Context, kind, name, namespace strin
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	return d.k.Run(ctx, args...)
+	raw, err := d.k.Run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	return sanitizeCapturedManifest(raw)
+}
+
+// sanitizeCapturedManifest strips server-owned metadata from a captured object
+// so Restore can replay it as a rollback.
+//
+// `kubectl get -o yaml` returns fields the API server owns and will not accept
+// back. resourceVersion is the dangerous one: fixora's own apply bumps it, so
+// by rollback time the captured value is stale and optimistic concurrency
+// rejects the restore — the rollback fails precisely when it is needed.
+// managedFields is rejected outright by server-side apply, and status belongs
+// to a subresource that apply does not own.
+//
+// It deliberately keeps everything that describes desired state — spec, labels,
+// annotations, name, namespace — because a rollback that restores the wrong
+// state is worse than one that does not run.
+func sanitizeCapturedManifest(manifest []byte) ([]byte, error) {
+	if strings.TrimSpace(string(manifest)) == "" {
+		return nil, fmt.Errorf("captured manifest is empty; refusing to restore a no-op")
+	}
+	var obj map[string]any
+	if err := yaml.Unmarshal(manifest, &obj); err != nil {
+		return nil, fmt.Errorf("captured manifest is not valid YAML: %w", err)
+	}
+	if len(obj) == 0 {
+		return nil, fmt.Errorf("captured manifest decoded to nothing; refusing to restore a no-op")
+	}
+
+	delete(obj, "status")
+	if meta, ok := obj["metadata"].(map[string]any); ok {
+		for _, key := range []string{
+			"resourceVersion",
+			"uid",
+			"managedFields",
+			"creationTimestamp",
+			"generation",
+			"selfLink",
+		} {
+			delete(meta, key)
+		}
+	}
+	return yaml.Marshal(obj)
 }
 
 func (d coordinateDeps) Restore(ctx context.Context, manifest []byte) error {

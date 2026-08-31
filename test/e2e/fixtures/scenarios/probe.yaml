@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: probe-demo
+  labels:
+    app: probe-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: probe-demo
+  template:
+    metadata:
+      labels:
+        app: probe-demo
+    spec:
+      containers:
+      - name: web-app
+        image: python:3.9-slim
+        command: ["python", "-m", "http.server", "8080"]
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5

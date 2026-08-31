@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imagepull-demo
+  labels:
+    app: imagepull-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: imagepull-demo
+  template:
+    metadata:
+      labels:
+        app: imagepull-demo
+    spec:
+      containers:
+      - name: typo-container
+        image: nginx:1.25-typo-non-existent

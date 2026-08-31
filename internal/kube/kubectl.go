@@ -182,13 +182,36 @@ func (k Kubectl) Logs(ctx context.Context, namespace, pod string, previous bool)
 	return string(out), err
 }
 
+// applyArgs builds the argument list shared by Apply and DryRunApply so the
+// preflight can never diverge from the mutation it gates.
+//
+// Server-side apply is required, not a preference. Fixora writes a PARTIAL
+// manifest carrying only the fields it intends to change (see
+// fix.workloadPatchTemplate — it omits spec.selector and
+// spec.template.metadata.labels). A client-side apply three-way-merges that
+// against last-applied-configuration and computes a DELETION for every field
+// present there but absent from the file, so against any workload created with
+// `kubectl apply` the API server rejects the result with
+// "spec.selector: Invalid value: null: field is immutable".
+//
+// --force-conflicts is needed because those fields are owned by the
+// kubectl-client-side-apply field manager; without it every apply to a
+// kubectl-managed workload fails with a conflict instead.
+func applyArgs(file string, dryRun bool) []string {
+	args := []string{"apply", "--server-side", "--force-conflicts"}
+	if dryRun {
+		args = append(args, "--dry-run=server")
+	}
+	return append(args, "-f", file)
+}
+
 func (k Kubectl) Apply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, "apply", "-f", file)
+	_, err := k.Run(ctx, applyArgs(file, false)...)
 	return err
 }
 
 func (k Kubectl) DryRunApply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, "apply", "--dry-run=server", "-f", file)
+	_, err := k.Run(ctx, applyArgs(file, true)...)
 	return err
 }
 

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: leaky
+spec:
+  # restartPolicy: Never — the container prints the credential line and exits
+  # non-zero exactly once, so the pod settles into phase: Failed within a few
+  # seconds. That is a state podProblem recognises (its phase == "Failed"
+  # branch), and the terminated container's stdout is retained as current
+  # logs. The test must wait for phase: Failed, not merely for the log to be
+  # readable — the two race.
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: ["sh", "-c", "echo password=hunter2supersecret; exit 1"]

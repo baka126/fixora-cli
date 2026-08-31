@@ -341,6 +341,9 @@ func (c *TypedClient) GetResourceItems(ctx context.Context, namespace string, al
 }
 
 func (c *TypedClient) Logs(ctx context.Context, namespace, pod string, previous bool) (string, error) {
+	if c.Clientset == nil {
+		return c.Fallback.Logs(ctx, namespace, pod, previous)
+	}
 	tail := int64(c.LogTail)
 	if tail <= 0 {
 		tail = 120
