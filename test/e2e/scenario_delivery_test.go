@@ -56,18 +56,23 @@ func TestScenarioDelivery(t *testing.T) {
 						"-n", ns, "-l", "app=probe-demo",
 						"-o", "jsonpath={.items[*].status.containerStatuses[*].ready}")
 					return code == 0 && strings.Contains(out, "false")
-				})
+				}, func() { dumpScenario(t, ns, "probe-demo") })
 			case c.podReason != "":
 				waitForPodReason(t, ns, c.deploy, c.podReason)
 			case c.phase != "":
 				waitForPhase(t, ns, c.deploy, c.phase)
 			}
 
-			_, stderr, code := fixora(t, "fix", "deployment/"+c.deploy,
+			stdout, stderr, code := fixora(t, "fix", "deployment/"+c.deploy,
 				"-n", ns, "--container", c.container,
-				"--delivery", "cluster", "--yes",
+				"--delivery", "cluster", "--yes", "--verbose",
 				"--out", patchOut(t),
 				"--shadow-timeout", "90s")
+
+			// Always surface the fix output: a zero exit does not mean the
+			// workload recovered (advice-only outcomes, silent AI failures),
+			// and this is the only window into the diagnose→patch→apply path.
+			t.Logf("fix %s (exit %d)\n--- stdout ---\n%s\n--- stderr ---\n%s", c.deploy, code, stdout, stderr)
 
 			if code != 0 {
 				t.Fatalf("fix could not deliver a working patch for %s (exit %d):\n%s", c.deploy, code, stderr)

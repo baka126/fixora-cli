@@ -665,6 +665,19 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 				return reason, "runtime", "high"
 			}
 		}
+		if term, ok := cs.State["terminated"]; ok {
+			switch {
+			case strings.Contains(term.Reason, "OOMKilled"):
+				return "OOMKilled", "resources", "high"
+			case cs.RestartCount >= 1 && (term.ExitCode != 0 || term.Reason == "Error"):
+				// A container currently reported as terminated with a non-zero
+				// exit that has already restarted is crash-looping. Recent
+				// kubelet reports this state for most of the back-off period
+				// instead of waiting: CrashLoopBackOff, so keying only off the
+				// waiting reason misses an active crash loop between restarts.
+				return "CrashLoopBackOff", "runtime", "critical"
+			}
+		}
 		for _, state := range cs.LastState {
 			if strings.Contains(state.Reason, "OOMKilled") {
 				return "OOMKilled", "resources", "high"
