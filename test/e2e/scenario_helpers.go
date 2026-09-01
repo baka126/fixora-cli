@@ -43,6 +43,22 @@ func planJSON(t *testing.T, ns, ref string, extraArgs ...string) planView {
 	return parsePlanView(t, []byte(stdout))
 }
 
+// planJSONUntil re-runs `why <ref> -o json` until the plan Status contains
+// want, or the deadline passes. A crash-looping pod spends most of each cycle
+// in CrashLoopBackOff backoff but briefly re-runs its container; a lone scan
+// can land in that window and see a healthy pod (OwnedPodsHealthy) or only the
+// structural ReplicasMismatch. Retrying rides out the window, the same way
+// waitForPodReason polls for a container state.
+func planJSONUntil(t *testing.T, ns, ref, want string, extraArgs ...string) planView {
+	t.Helper()
+	var pv planView
+	waitFor(t, 90*time.Second, ref+" plan Status to contain "+strconv.Quote(want), func() bool {
+		pv = planJSON(t, ns, ref, extraArgs...)
+		return strings.Contains(pv.Status, want)
+	}, func() { t.Logf("last plan: %+v", pv) })
+	return pv
+}
+
 // waitForPodReason polls until a pod labelled app=<deploy> reports reason in a
 // container's current waiting/terminated state or its last-terminated state.
 // lastState matters for reasons like OOMKilled that only sit in the current

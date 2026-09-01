@@ -59,6 +59,11 @@ func TestScenarioDiagnosis(t *testing.T) {
 		t.Run(strings.TrimSuffix(c.fixture, ".yaml"), func(t *testing.T) {
 			t.Parallel()
 			ns := newNamespace(t)
+			t.Cleanup(func() {
+				if t.Failed() {
+					dumpScenario(t, ns, c.deploy)
+				}
+			})
 			applyFixture(t, ns, "scenarios/"+c.fixture)
 
 			switch {
@@ -86,7 +91,12 @@ func TestScenarioDiagnosis(t *testing.T) {
 				waitForPhase(t, ns, c.deploy, c.phase)
 			}
 
-			plan := planJSON(t, ns, "deployment/"+c.deploy, c.concrete...)
+			var plan planView
+			if c.wantStatus != "" {
+				plan = planJSONUntil(t, ns, "deployment/"+c.deploy, c.wantStatus, c.concrete...)
+			} else {
+				plan = planJSON(t, ns, "deployment/"+c.deploy, c.concrete...)
+			}
 
 			if c.deploy == "pending-demo" {
 				// pending has no single canonical status string across k8s
