@@ -33,9 +33,10 @@ jobs:
         env:
           FIXORA_AI_PROVIDER: ${{ vars.FIXORA_AI_PROVIDER }}
           FIXORA_AI_MODEL: ${{ vars.FIXORA_AI_MODEL }}
+          FIXORA_E2E_FALLBACK_MODEL: ${{ vars.FIXORA_E2E_FALLBACK_MODEL }}
           FIXORA_AI_BASE_URL: ${{ vars.FIXORA_AI_BASE_URL }}
           FIXORA_AI_API_KEY: ${{ secrets.FIXORA_AI_API_KEY }}
-        run: go test -tags "e2e e2e_delivery" -timeout 25m -v -parallel 8 -run 'TestScenarioDelivery' ./test/e2e/...
+        run: go test -tags "e2e e2e_delivery" -timeout 45m -v -parallel 1 -run 'TestScenarioDelivery' ./test/e2e/...
 
       - name: Tear down cluster
         if: always()

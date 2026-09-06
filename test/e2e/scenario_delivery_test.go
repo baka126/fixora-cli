@@ -63,11 +63,7 @@ func TestScenarioDelivery(t *testing.T) {
 				waitForPhase(t, ns, c.deploy, c.phase)
 			}
 
-			stdout, stderr, code := fixora(t, "fix", "deployment/"+c.deploy,
-				"-n", ns, "--container", c.container,
-				"--delivery", "cluster", "--yes", "--verbose",
-				"--out", patchOut(t),
-				"--shadow-timeout", "90s")
+			stdout, stderr, code := fixWithModelFallback(t, ns, c.deploy, c.container, patchOut(t))
 
 			// Always surface the fix output: a zero exit does not mean the
 			// workload recovered (advice-only outcomes, silent AI failures),
@@ -81,4 +77,40 @@ func TestScenarioDelivery(t *testing.T) {
 			waitForRollout(t, ns, c.deploy, 4*time.Minute)
 		})
 	}
+}
+
+// fixWithModelFallback runs the real `fix` pipeline for one scenario. Gemini's
+// free-tier request quota is per-project *and per-model*, so when the primary
+// model is rate-limited (HTTP 429 / RESOURCE_EXHAUSTED) a lower-traffic model
+// still has budget. If FIXORA_E2E_FALLBACK_MODEL is set and the first attempt
+// was throttled, it retries once with FIXORA_AI_MODEL overridden to that model.
+// With the variable unset it is a plain single `fix` call.
+func fixWithModelFallback(t *testing.T, ns, deploy, container, out string) (string, string, int) {
+	t.Helper()
+	args := []string{
+		"fix", "deployment/" + deploy,
+		"-n", ns, "--container", container,
+		"--delivery", "cluster", "--yes", "--verbose",
+		"--out", out,
+		"--shadow-timeout", "90s",
+	}
+	stdout, stderr, code := fixora(t, args...)
+
+	fallback := strings.TrimSpace(os.Getenv("FIXORA_E2E_FALLBACK_MODEL"))
+	if fallback == "" || !aiRateLimited(stderr) {
+		return stdout, stderr, code
+	}
+	t.Logf("AI rate-limited for %s; retrying on fallback model %q", deploy, fallback)
+	time.Sleep(5 * time.Second)
+	return fixoraEnv(t, []string{"FIXORA_AI_MODEL=" + fallback}, args...)
+}
+
+// aiRateLimited reports whether fix's stderr shows the AI provider refused the
+// call for quota or rate-limit reasons rather than a genuine analysis outcome.
+func aiRateLimited(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "http 429") ||
+		strings.Contains(s, "resource_exhausted") ||
+		strings.Contains(s, "quota") ||
+		strings.Contains(s, "rate limit")
 }
