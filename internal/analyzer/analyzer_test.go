@@ -864,3 +864,53 @@ func TestPodProblemIgnoresReadyPod(t *testing.T) {
 		t.Fatalf("healthy pod must produce no status, got %q", status)
 	}
 }
+
+func runningNotReadyPod(created time.Time, probe map[string]any) kube.Pod {
+	pod := kube.Pod{}
+	pod.Metadata.CreationTimestamp = created.UTC().Format(time.RFC3339)
+	pod.Spec.Containers = []kube.Container{{Name: "web-app", ReadinessProbe: probe}}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name: "web-app", Ready: false, State: map[string]kube.StatusState{"running": {}},
+	}}
+	return pod
+}
+
+func TestProbeFailureNotClassifiedInsideProbeWindow(t *testing.T) {
+	// Probe declares 5s delay + 5s period × 3 failures = 20s window.
+	pod := runningNotReadyPod(time.Now().Add(-8*time.Second), map[string]any{
+		"initialDelaySeconds": 5, "periodSeconds": 5, "failureThreshold": 3,
+	})
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("pod still inside its probe window must not be classified, got %q", status)
+	}
+}
+
+func TestProbeFailureClassifiedPastProbeWindow(t *testing.T) {
+	pod := runningNotReadyPod(time.Now().Add(-60*time.Second), map[string]any{
+		"initialDelaySeconds": 5, "periodSeconds": 5, "failureThreshold": 3,
+	})
+	if status, _, _ := podProblem(pod); status != "ProbeFailure" {
+		t.Fatalf("pod past its probe window must be ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureSkipsTerminatingPod(t *testing.T) {
+	pod := runningNotReadyPod(time.Now().Add(-10*time.Minute), nil)
+	pod.Metadata.DeletionTimestamp = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("terminating pod must not be classified as ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureDefaultWindowWhenProbeHasNoTimings(t *testing.T) {
+	// No probe timings => 30s default. 20s old => inside; 40s old => past.
+	young := runningNotReadyPod(time.Now().Add(-20*time.Second), map[string]any{})
+	if status, _, _ := podProblem(young); status != "" {
+		t.Fatalf("within default 30s window must not be classified, got %q", status)
+	}
+	old := runningNotReadyPod(time.Now().Add(-40*time.Second), map[string]any{})
+	if status, _, _ := podProblem(old); status != "ProbeFailure" {
+		t.Fatalf("past default 30s window must be ProbeFailure, got %q", status)
+	}
+}

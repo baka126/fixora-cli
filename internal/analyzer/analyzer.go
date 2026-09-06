@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -829,10 +830,14 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 	// Running but never Ready is a failing readiness probe. Checked after the
 	// container-state switches above so a crash-looping or image-pull-failing
 	// container keeps its own classification — those are also never Ready.
+	// Gated on the container's own probe window so a pod still inside its
+	// startup delay, or one shutting down, is not misread as a misconfiguration.
 	if pod.Status.Phase == "Running" {
 		for _, cs := range pod.Status.ContainerStatuses {
 			if _, running := cs.State["running"]; running && !cs.Ready {
-				return "ProbeFailure", "runtime", "high"
+				if probeFailureConfirmed(pod, cs.Name, time.Now()) {
+					return "ProbeFailure", "runtime", "high"
+				}
 			}
 		}
 	}
@@ -844,6 +849,57 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 		}
 	}
 	return "", "", ""
+}
+
+// probeFailureConfirmed reports whether a Running, not-Ready container has had
+// long enough for its own readiness probe to have failed for a real reason
+// rather than the pod still being inside its startup window. A pod whose
+// deletion has been requested is excluded: a not-Ready container there is
+// usually a preStop hook draining, not a misconfiguration.
+func probeFailureConfirmed(pod kube.Pod, container string, now time.Time) bool {
+	if strings.TrimSpace(pod.Metadata.DeletionTimestamp) != "" {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339, pod.Metadata.CreationTimestamp)
+	if err != nil {
+		// No parseable creation time (synthetic or broken object): cannot
+		// age-gate, so fall back to classifying.
+		return true
+	}
+	return now.Sub(created) >= probeReadyWindow(pod, container)
+}
+
+// probeReadyWindow is how long the container's readiness probe is allowed to
+// keep failing before a persistent not-Ready state counts as a
+// misconfiguration: initialDelaySeconds + periodSeconds × failureThreshold read
+// from the container's own readinessProbe. Unset fields fall back to the
+// Kubernetes probe defaults (period 10, failureThreshold 3), so a probe with no
+// timings — or no probe at all — yields the 30s default.
+func probeReadyWindow(pod kube.Pod, container string) time.Duration {
+	initial, period, failures := 0, 10, 3
+	for _, c := range pod.Spec.Containers {
+		if c.Name != container {
+			continue
+		}
+		if p := c.ReadinessProbe; len(p) > 0 {
+			initial = probeInt(p, "initialDelaySeconds", initial)
+			period = probeInt(p, "periodSeconds", period)
+			failures = probeInt(p, "failureThreshold", failures)
+		}
+		break
+	}
+	w := time.Duration(initial+period*failures) * time.Second
+	if w <= 0 {
+		return 30 * time.Second
+	}
+	return w
+}
+
+func probeInt(probe map[string]any, key string, def int) int {
+	if _, ok := probe[key]; !ok {
+		return def
+	}
+	return intValue(probe[key])
 }
 
 func recommendationsForStatus(status string, pod kube.Pod) []Recommendation {

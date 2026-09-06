@@ -246,10 +246,14 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		// Probe fields cannot change identity, escalate privilege, read
 		// secrets, alter scheduling, or override the container command. Their
 		// only effect is on readiness — exactly what shadow measures — so a
-		// wrong probe fails the clone directly.
+		// wrong probe fails the clone directly. But that argument only holds
+		// for the network probes: an exec probe *adds* a periodically executed
+		// command that shadow cannot see (an exec probe that exits 0 still
+		// makes the clone Ready), so the handler must be allowlisted too.
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{
 			"name": true, "readinessProbe": true, "livenessProbe": true, "startupProbe": true,
 		}, strategy)...)
+		reasons = append(reasons, validateProbeHandlers(revSpec)...)
 	}
 	if reflect.DeepEqual(origSpec, revSpec) {
 		reasons = append(reasons, "revised patch does not change the original patch")
@@ -302,6 +306,46 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 			for key := range c {
 				if !allowed[key] {
 					reasons = append(reasons, section+"."+key+" is not allowed for strategy "+strategy)
+				}
+			}
+		}
+	}
+	return reasons
+}
+
+// validateProbeHandlers restricts probe handlers under the probe strategy to the
+// two the kubelet issues without executing anything in the container. exec and
+// grpc (and any unknown handler) are rejected; `host` is rejected inside either
+// permitted handler because it points the kubelet's request at an arbitrary
+// destination rather than the pod itself.
+func validateProbeHandlers(revised map[string]any) []string {
+	timingKeys := map[string]bool{
+		"initialDelaySeconds": true, "timeoutSeconds": true, "periodSeconds": true,
+		"successThreshold": true, "failureThreshold": true, "terminationGracePeriodSeconds": true,
+	}
+	var reasons []string
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(revised[section]) {
+			name := stringValue(c["name"])
+			for _, probeKey := range []string{"readinessProbe", "livenessProbe", "startupProbe"} {
+				probe, ok := nestedMap(c, probeKey)
+				if !ok {
+					continue
+				}
+				for handler := range probe {
+					prefix := section + "." + name + "." + probeKey + "." + handler
+					switch {
+					case handler == "httpGet" || handler == "tcpSocket":
+						if h, ok := nestedMap(probe, handler); ok {
+							if _, hasHost := h["host"]; hasHost {
+								reasons = append(reasons, prefix+".host is not allowed for strategy probe")
+							}
+						}
+					case timingKeys[handler]:
+						// probe timing field, allowed
+					default:
+						reasons = append(reasons, prefix+" probe handler is not allowed for strategy probe; only httpGet and tcpSocket are permitted")
+					}
 				}
 			}
 		}
