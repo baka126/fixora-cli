@@ -29,20 +29,25 @@ func configMap(name string, keys ...string) map[string]any {
 	}
 }
 
-func envFinding(event string) analyzer.Finding {
+// envFinding mirrors what internal/analyzer's envRefEvidence really attaches
+// for a CreateContainerConfigError pod: the env var name and key, plus the
+// referenced object's kind and name. No hand-injected event text — the real
+// analyzer filters kubelet events that lack the pod name.
+func envFinding(refKind, refName string) analyzer.Finding {
 	return analyzer.Finding{
 		Status: "CreateContainerConfigError",
 		Evidence: []analyzer.Evidence{
 			{Label: "Container image config-consumer", Value: "busybox:1.36"},
-			{Label: "Event Failed", Value: event},
 			{Label: "Env reference name", Value: "REQUIRED_ENV"},
 			{Label: "Env reference key", Value: "some-key"},
+			{Label: "Env reference kind", Value: refKind},
+			{Label: "Env reference object", Value: refName},
 		},
 	}
 }
 
 func TestEnvInferrerCorrectsTypoedConfigMap(t *testing.T) {
-	f := envFinding(`Error: configmap "app-confg" not found`)
+	f := envFinding("ConfigMap", "app-confg")
 	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}
 	res, ok, err := envInferrer{}.Infer(context.Background(), r, f, fix.Plan{Strategy: "env"})
 	if err != nil || !ok {
@@ -66,7 +71,7 @@ func TestEnvInferrerRefusesSecrets(t *testing.T) {
 	// shadow/clone.go blocks every Secret-referencing pod, so a Secret patch
 	// can never be shadow-verified and must never reach apply — even when a
 	// near-match Secret exists in the namespace.
-	f := envFinding(`Error: secret "app-secret" not found`)
+	f := envFinding("Secret", "app-secret")
 	r := fakeConfigReader{items: []map[string]any{configMap("app-secret", "some-key")}}
 	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
 		t.Fatal("Secret references must always be declined")
@@ -74,7 +79,7 @@ func TestEnvInferrerRefusesSecrets(t *testing.T) {
 }
 
 func TestEnvInferrerDeclinesOnAmbiguity(t *testing.T) {
-	f := envFinding(`Error: configmap "app-confg" not found`)
+	f := envFinding("ConfigMap", "app-confg")
 	r := fakeConfigReader{items: []map[string]any{
 		configMap("app-config", "some-key"),
 		configMap("app-confug", "some-key"),
@@ -85,7 +90,7 @@ func TestEnvInferrerDeclinesOnAmbiguity(t *testing.T) {
 }
 
 func TestEnvInferrerDeclinesWhenKeyAbsent(t *testing.T) {
-	f := envFinding(`Error: configmap "app-confg" not found`)
+	f := envFinding("ConfigMap", "app-confg")
 	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "other-key")}}
 	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
 		t.Fatal("candidate without the referenced key must be declined")
@@ -93,10 +98,21 @@ func TestEnvInferrerDeclinesWhenKeyAbsent(t *testing.T) {
 }
 
 func TestEnvInferrerDeclinesWhenNothingSimilar(t *testing.T) {
-	f := envFinding(`Error: configmap "fixora-non-existent" not found`)
+	f := envFinding("ConfigMap", "fixora-non-existent")
 	r := fakeConfigReader{items: []map[string]any{configMap("totally-different", "some-key")}}
 	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
 		t.Fatal("no near match must decline")
+	}
+}
+
+func TestEnvInferrerDeclinesOnSelfMatch(t *testing.T) {
+	// The referenced name equals an existing ConfigMap: the reference already
+	// resolves, so a distance-0 self-match would emit a no-op patch that
+	// passes shadow while fixing nothing.
+	f := envFinding("ConfigMap", "app-config")
+	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}
+	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
+		t.Fatal("a name equal to the reference must decline, not self-match")
 	}
 }
 
@@ -105,12 +121,30 @@ func TestEnvInferrerDeclinesWithoutKeyEvidence(t *testing.T) {
 		Status: "CreateContainerConfigError",
 		Evidence: []analyzer.Evidence{
 			{Label: "Container image config-consumer", Value: "busybox:1.36"},
-			{Label: "Event Failed", Value: `Error: configmap "app-confg" not found`},
+			{Label: "Env reference name", Value: "REQUIRED_ENV"},
+			{Label: "Env reference kind", Value: "ConfigMap"},
+			{Label: "Env reference object", Value: "app-confg"},
 		},
 	}
 	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}
 	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
 		t.Fatal("no env-key evidence must decline")
+	}
+}
+
+func TestEnvInferrerDeclinesWithoutReferenceEvidence(t *testing.T) {
+	// Without the analyzer's kind/object evidence there is nothing to match.
+	f := analyzer.Finding{
+		Status: "CreateContainerConfigError",
+		Evidence: []analyzer.Evidence{
+			{Label: "Container image config-consumer", Value: "busybox:1.36"},
+			{Label: "Env reference name", Value: "REQUIRED_ENV"},
+			{Label: "Env reference key", Value: "some-key"},
+		},
+	}
+	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}
+	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
+		t.Fatal("no reference kind/object evidence must decline")
 	}
 }
 
@@ -138,9 +172,10 @@ func TestEnvInferrerConcretePlanIsApplyEligible(t *testing.T) {
 		Status: "CreateContainerConfigError",
 		Evidence: []analyzer.Evidence{
 			{Label: "Container image config-consumer", Value: "busybox:1.36"},
-			{Label: "Event Failed", Value: `Error: configmap "app-confg" not found`},
 			{Label: "Env reference name", Value: "REQUIRED_ENV"},
 			{Label: "Env reference key", Value: "some-key"},
+			{Label: "Env reference kind", Value: "ConfigMap"},
+			{Label: "Env reference object", Value: "app-confg"},
 		},
 	}
 	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}

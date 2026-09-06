@@ -626,9 +626,16 @@ func envRefEvidence(pod kube.Pod) []Evidence {
 					continue
 				}
 				key, _ := ref["key"].(string)
+				name, _ := ref["name"].(string)
+				kind := "ConfigMap"
+				if refKind == "secretKeyRef" {
+					kind = "Secret"
+				}
 				return []Evidence{
 					{Label: "Env reference name", Value: env.Name},
 					{Label: "Env reference key", Value: key},
+					{Label: "Env reference kind", Value: kind},
+					{Label: "Env reference object", Value: name},
 				}
 			}
 		}

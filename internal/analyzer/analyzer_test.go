@@ -780,8 +780,14 @@ func TestEnvRefEvidenceReadsConfigMapKeyRef(t *testing.T) {
 		}},
 	}}
 	got := envRefEvidence(pod)
-	if len(got) != 2 || got[0].Value != "REQUIRED_ENV" || got[1].Value != "some-key" {
+	if len(got) != 4 || got[0].Value != "REQUIRED_ENV" || got[1].Value != "some-key" {
 		t.Fatalf("unexpected evidence: %+v", got)
+	}
+	if got[2].Label != "Env reference kind" || got[2].Value != "ConfigMap" {
+		t.Fatalf("want ConfigMap kind, got %+v", got[2])
+	}
+	if got[3].Label != "Env reference object" || got[3].Value != "app-confg" {
+		t.Fatalf("want app-confg object, got %+v", got[3])
 	}
 }
 
@@ -796,8 +802,12 @@ func TestEnvRefEvidenceReadsSecretKeyRef(t *testing.T) {
 			},
 		}},
 	}}
-	if got := envRefEvidence(pod); len(got) != 2 {
+	got := envRefEvidence(pod)
+	if len(got) != 4 {
 		t.Fatalf("secret refs must also be described: %+v", got)
+	}
+	if got[2].Value != "Secret" || got[3].Value != "app-secret" {
+		t.Fatalf("want Secret/app-secret, got %+v %+v", got[2], got[3])
 	}
 }
 

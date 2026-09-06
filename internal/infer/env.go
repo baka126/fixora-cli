@@ -3,7 +3,6 @@ package infer
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -14,8 +13,6 @@ import (
 // reference and still be treated as the intended target. Deliberately narrow:
 // a wrong-but-plausible name is the failure shadow catches least reliably.
 const maxNameDistance = 2
-
-var missingRefPattern = regexp.MustCompile(`(?i)(configmap|secret)\s+"([^"]+)"\s+not found`)
 
 func init() { register(envInferrer{}) }
 
@@ -58,7 +55,10 @@ func (envInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Finding, 
 	match := ""
 	for _, item := range items {
 		name := configMapName(item)
-		if name == "" || levenshtein(name, missing) > maxNameDistance {
+		if name == "" || name == missing || levenshtein(name, missing) > maxNameDistance {
+			// A name equal to the reference means the reference already
+			// resolves; matching it would emit a no-op patch that passes
+			// shadow while delivering nothing.
 			continue
 		}
 		if !configMapHasKey(item, key) {
@@ -85,15 +85,17 @@ func (envInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Finding, 
 	}, true, nil
 }
 
-// missingRef pulls the kind and name of the absent object out of the kubelet
-// event text.
+// missingRef reads the kind and name of the unresolved object from the
+// evidence the pod analyzer attaches (envRefEvidence), rather than parsing
+// kubelet event prose — the event message never carries the pod name, so the
+// analyzer's per-pod event filter drops it before it reaches a Finding.
 func missingRef(f analyzer.Finding) (string, string, bool) {
-	for _, evidence := range f.Evidence {
-		if m := missingRefPattern.FindStringSubmatch(evidence.Value); m != nil {
-			return m[1], m[2], true
-		}
+	kind := EvidenceValue(f, "Env reference kind")
+	name := EvidenceValue(f, "Env reference object")
+	if kind == "" || name == "" {
+		return "", "", false
 	}
-	return "", "", false
+	return kind, name, true
 }
 
 func configMapName(item map[string]any) string {
