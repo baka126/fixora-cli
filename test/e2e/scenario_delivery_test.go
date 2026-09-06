@@ -60,7 +60,7 @@ func TestScenarioDelivery(t *testing.T) {
 	}
 
 	cases := []tc{
-		{"imagepull.yaml", "imagepull-demo", "ImagePullBackOff", "", "typo-container", adviceOnly},
+		{"imagepull.yaml", "imagepull-demo", "ImagePullBackOff", "", "typo-container", delivered},
 		{"crashloop.yaml", "crashloop-demo", "CrashLoopBackOff", "", "broken-app", adviceOnly},
 		{"missing-config.yaml", "missing-config-demo", "CreateContainerConfigError", "", "config-consumer", adviceOnly},
 		{"pending.yaml", "pending-demo", "", "Pending", "greedy-container", adviceOnly},

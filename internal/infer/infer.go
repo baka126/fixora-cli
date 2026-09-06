@@ -14,7 +14,6 @@ type kubeReader = kube.Reader
 // Result is one inferrer's proposal plus the provenance shown to the user.
 type Result struct {
 	Options   fix.ConcreteOptions
-	Source    string // human-readable provenance
 	Guardrail string // guardrail token added to the plan
 	Warning   string // surfaced in the plan and reviewed before shadow
 }

@@ -334,10 +334,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if !plan.ApplyEligible && opts.useAI {
 			plan = applyAIPatchIfSafe(analysisCtx, plan, finding, stderr, opts.verbose)
 		}
-		if !plan.ApplyEligible {
-			plan = applyTrustedImageCandidate(analysisCtx, plan, finding, stderr, opts.verbose)
-		}
-		if inferred || containsString(plan.Guardrails, "trusted-public-image-candidate") {
+		if inferred {
 			opts.shadowVerify = true
 		}
 		if opts.repoPath != "" {
@@ -1641,7 +1638,7 @@ func enrichFindingForAI(ctx context.Context, reader kube.Reader, k kube.Kubectl,
 	for _, evidence := range collectMetricsEvidence(ctx, k, opts, finding) {
 		finding.Evidence = append(finding.Evidence, evidence)
 	}
-	if strings.EqualFold(finding.Status, "ExecFormatError") {
+	if isImageStatus(finding.Status) {
 		finding.Evidence = append(finding.Evidence, inspectCurrentImagePlatforms(ctx, finding)...)
 	}
 	finding.Evidence = boundEvidence(finding.Evidence, 40)
@@ -1762,6 +1759,10 @@ func inspectCurrentImagePlatforms(ctx context.Context, finding analyzer.Finding)
 		result, err := image.Inspect(ctx, reference)
 		if err != nil {
 			out = append(out, analyzer.Evidence{Label: "Image manifest " + reference, Value: trimEvidence(err.Error(), 320)})
+			// The image does not resolve at all — the ordinary ImagePullBackOff.
+			// Discovery still works from the repository name, so look for a
+			// trusted replacement instead of giving up here.
+			out = append(out, discoverCandidates(ctx, reference, platform)...)
 			continue
 		}
 		platforms := make([]string, 0, len(result.Platforms))
@@ -1773,20 +1774,30 @@ func inspectCurrentImagePlatforms(ctx context.Context, finding analyzer.Finding)
 			value += " | supports target " + platform.String()
 		} else {
 			value += " | does not support target " + platform.String()
-			if candidates, err := image.DiscoverTrusted(ctx, reference, platform, 5); err == nil {
-				candidateRefs := make([]string, 0, len(candidates))
-				for _, candidate := range candidates {
-					candidateRefs = append(candidateRefs, candidate.Reference)
-					findingLabel := fmt.Sprintf("Ranked public image candidate (score %d)", candidate.TrustScore)
-					out = append(out, analyzer.Evidence{Label: findingLabel, Value: candidate.Reference + " | " + candidate.TrustReason})
-				}
-				out = append(out, analyzer.Evidence{Label: "Verified compatible image candidates", Value: strings.Join(candidateRefs, ", ")})
-			} else {
-				out = append(out, analyzer.Evidence{Label: "Compatible image candidate lookup", Value: trimEvidence(err.Error(), 240)})
-			}
+			out = append(out, discoverCandidates(ctx, reference, platform)...)
 		}
 		out = append(out, analyzer.Evidence{Label: "Image manifest " + reference, Value: value})
 	}
+	return out
+}
+
+// discoverCandidates asks the fixed image catalog for platform-compatible,
+// digest-pinned replacements for reference and renders them as ranked evidence.
+func discoverCandidates(ctx context.Context, reference string, platform image.Platform) []analyzer.Evidence {
+	candidates, err := image.DiscoverTrusted(ctx, reference, platform, 5)
+	if err != nil {
+		return []analyzer.Evidence{{Label: "Compatible image candidate lookup", Value: trimEvidence(err.Error(), 240)}}
+	}
+	out := []analyzer.Evidence{}
+	refs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		refs = append(refs, candidate.Reference)
+		out = append(out, analyzer.Evidence{
+			Label: fmt.Sprintf("Ranked public image candidate (score %d)", candidate.TrustScore),
+			Value: candidate.Reference + " | " + candidate.TrustReason,
+		})
+	}
+	out = append(out, analyzer.Evidence{Label: "Verified compatible image candidates", Value: strings.Join(refs, ", ")})
 	return out
 }
 
@@ -1906,57 +1917,6 @@ func applyAIPatchIfSafe(ctx context.Context, plan fix.Plan, finding analyzer.Fin
 	return plan
 }
 
-func applyTrustedImageCandidate(ctx context.Context, plan fix.Plan, finding analyzer.Finding, stderr io.Writer, verbose bool) fix.Plan {
-	if !strings.EqualFold(plan.Strategy, "fix-architecture") || plan.ApplyEligible {
-		return plan
-	}
-	candidate, score := bestTrustedImageCandidate(finding)
-	if candidate == "" || score < 65 {
-		return plan
-	}
-	if !strings.Contains(candidate, "@sha256:") {
-		return plan
-	}
-	container := findingContainerName(finding)
-	if container == "" {
-		return plan
-	}
-	proposed := fix.Concretize(plan, fix.ConcreteOptions{Container: container, Image: candidate})
-	if !proposed.ApplyEligible {
-		return plan
-	}
-	// Candidates are produced only after the fixed catalog discovery path confirms
-	// their platform and pins the manifest digest. Avoid a second registry request.
-	proposed.Warnings = appendUniqueString(proposed.Warnings, fmt.Sprintf("Fixora selected ranked public image candidate %s (trust score %d); review the diff and shadow result before delivery.", candidate, score))
-	proposed.Guardrails = appendUniqueString(proposed.Guardrails, "trusted-public-image-candidate")
-	return proposed
-}
-
-func bestTrustedImageCandidate(finding analyzer.Finding) (string, int) {
-	best, bestScore := "", 0
-	for _, evidence := range finding.Evidence {
-		var score int
-		if _, err := fmt.Sscanf(evidence.Label, "Ranked public image candidate (score %d)", &score); err != nil {
-			continue
-		}
-		reference := strings.TrimSpace(strings.SplitN(evidence.Value, "|", 2)[0])
-		if reference != "" && score > bestScore {
-			best, bestScore = reference, score
-		}
-	}
-	return best, bestScore
-}
-
-func findingContainerName(finding analyzer.Finding) string {
-	for _, evidence := range finding.Evidence {
-		const prefix = "container image "
-		if strings.HasPrefix(strings.ToLower(evidence.Label), prefix) {
-			return strings.TrimSpace(evidence.Label[len(prefix):])
-		}
-	}
-	return ""
-}
-
 func verifyArchitecturePatch(ctx context.Context, finding analyzer.Finding, patch string) error {
 	platform, ok := nodePlatformFromFinding(finding)
 	if !ok {
@@ -2037,6 +1997,20 @@ func nodePlatformFromFinding(finding analyzer.Finding) (image.Platform, bool) {
 		return image.Platform{OS: parts[0], Architecture: parts[1]}, true
 	}
 	return image.Platform{}, false
+}
+
+// isImageStatus reports whether a finding's status warrants registry
+// inspection. ImagePullBackOff needs it as much as ExecFormatError does: the
+// AI and the image inferrer both depend on candidate evidence, and without
+// this neither ever sees a replacement image.
+func isImageStatus(status string) bool {
+	switch {
+	case strings.EqualFold(status, "ExecFormatError"),
+		strings.Contains(status, "ImagePull"),
+		strings.Contains(status, "ErrImagePull"):
+		return true
+	}
+	return false
 }
 
 func findingContainerImages(finding analyzer.Finding, limit int) []string {
@@ -2177,15 +2151,6 @@ func appendUniqueString(values []string, next string) []string {
 		}
 	}
 	return append(values, next)
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func runAIDoctor(args []string, stdout, stderr io.Writer) int {
