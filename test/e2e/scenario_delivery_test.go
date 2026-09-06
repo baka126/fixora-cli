@@ -65,7 +65,7 @@ func TestScenarioDelivery(t *testing.T) {
 		{"missing-config.yaml", "missing-config-demo", "CreateContainerConfigError", "", "config-consumer", adviceOnly},
 		{"pending.yaml", "pending-demo", "", "Pending", "greedy-container", adviceOnly},
 		{"security.yaml", "security-demo", "", "", "restricted-app", adviceOnly},
-		{"oomkilled.yaml", "oomkilled-demo", "", "", "memory-hog", adviceOnly},
+		{"oomkilled.yaml", "oomkilled-demo", "", "", "memory-hog", delivered},
 		{"probe.yaml", "probe-demo", "", "", "web-app", adviceOnly},
 		{"dependency.yaml", "dependency-demo", "CrashLoopBackOff", "", "db-client", adviceOnly},
 	}
