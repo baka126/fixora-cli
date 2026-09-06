@@ -488,6 +488,13 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
+	// A CreateContainerConfigError pod references a ConfigMap or Secret that
+	// does not resolve. Name the env var and key behind the reference so the
+	// env inferrer can rebuild it once it identifies the intended object.
+	if status == "CreateContainerConfigError" {
+		f.Evidence = append(f.Evidence, envRefEvidence(pod)...)
+	}
+
 	// An ImagePullBackOff pod never starts a container, so there are no logs to
 	// classify and the log-driven ExecFormatError path below never runs for it.
 	// The image inferrer and the AI patch path both need node-platform evidence
@@ -605,6 +612,28 @@ func (a Analyzer) allocatableShortfall(ctx context.Context, sctx *ScanContext, p
 		Value: fmt.Sprintf("requested memory=%dMi cpu=%dm; largest node allocatable memory=%dMi cpu=%dm",
 			reqMem, reqCPU, largestMem, largestCPU),
 	}, true
+}
+
+// envRefEvidence names the env var and key behind a ConfigMap or Secret
+// reference, so the env inferrer can rebuild the reference once it identifies
+// the intended object.
+func envRefEvidence(pod kube.Pod) []Evidence {
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		for _, env := range container.Env {
+			for _, refKind := range []string{"configMapKeyRef", "secretKeyRef"} {
+				ref, ok := env.ValueFrom[refKind].(map[string]any)
+				if !ok {
+					continue
+				}
+				key, _ := ref["key"].(string)
+				return []Evidence{
+					{Label: "Env reference name", Value: env.Name},
+					{Label: "Env reference key", Value: key},
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // quantityMi converts a Kubernetes memory quantity (Ki/Mi/Gi) to mebibytes.

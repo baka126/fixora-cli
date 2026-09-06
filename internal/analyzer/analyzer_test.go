@@ -767,3 +767,47 @@ func TestCrashLoopFindingHasNoNodePlatformEvidence(t *testing.T) {
 		t.Fatalf("CrashLoopBackOff must not trigger node-platform lookup, got %q", value)
 	}
 }
+
+func TestEnvRefEvidenceReadsConfigMapKeyRef(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "config-consumer",
+		Env: []kube.EnvVar{{
+			Name: "REQUIRED_ENV",
+			ValueFrom: map[string]any{
+				"configMapKeyRef": map[string]any{"name": "app-confg", "key": "some-key"},
+			},
+		}},
+	}}
+	got := envRefEvidence(pod)
+	if len(got) != 2 || got[0].Value != "REQUIRED_ENV" || got[1].Value != "some-key" {
+		t.Fatalf("unexpected evidence: %+v", got)
+	}
+}
+
+func TestEnvRefEvidenceReadsSecretKeyRef(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "config-consumer",
+		Env: []kube.EnvVar{{
+			Name: "REQUIRED_ENV",
+			ValueFrom: map[string]any{
+				"secretKeyRef": map[string]any{"name": "app-secret", "key": "some-key"},
+			},
+		}},
+	}}
+	if got := envRefEvidence(pod); len(got) != 2 {
+		t.Fatalf("secret refs must also be described: %+v", got)
+	}
+}
+
+func TestEnvRefEvidenceEmptyWithoutValueFrom(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "app",
+		Env:  []kube.EnvVar{{Name: "PLAIN", Value: "literal"}},
+	}}
+	if got := envRefEvidence(pod); got != nil {
+		t.Fatalf("plain env vars produce no reference evidence: %+v", got)
+	}
+}
