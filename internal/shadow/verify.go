@@ -34,11 +34,6 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 			enrichFailure(c, namespace, name, &result)
 			return result
 		}
-		if pod.Status.Phase == corev1.PodRunning && podReady(pod) {
-			result.Ready = true
-			result.Message = "shadow pod is running and ready"
-			return result
-		}
 	}
 	watcher, err := c.WatchPod(ctx, namespace, name)
 	if err != nil {
@@ -47,11 +42,20 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 	}
 	defer watcher.Stop()
 
+	soak := soakWindow(timeout, allowCompletion)
+	var readyAt time.Time
+	baselineRestarts := 0
+	var soakDone <-chan time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
 			result.Message = "verification timed out"
 			enrichFailure(c, namespace, name, &result)
+			return result
+		case <-soakDone:
+			result.Ready = true
+			result.Message = fmt.Sprintf("shadow pod stayed ready for %s (%d restarts)", soak, result.Restarts-baselineRestarts)
 			return result
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
@@ -74,21 +78,71 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 				enrichFailure(c, namespace, name, &result)
 				return result
 			}
-			if terminalFailure(result.ExitReason) {
+			if !readyAt.IsZero() {
+				// Soaking: any regression fails the attempt outright.
+				if reason, stable := stillStable(pod, baselineRestarts); !stable {
+					result.Ready = false
+					result.Message = "shadow pod did not stay ready: " + reason
+					enrichFailure(c, namespace, name, &result)
+					return result
+				}
+				continue
+			}
+			if terminalFailure(result.ExitReason) || pod.Status.Phase == corev1.PodFailed {
 				enrichFailure(c, namespace, name, &result)
 				return result
 			}
 			if pod.Status.Phase == corev1.PodRunning && podReady(pod) {
-				result.Ready = true
-				result.Message = "shadow pod is running and ready"
-				return result
-			}
-			if pod.Status.Phase == corev1.PodFailed {
-				enrichFailure(c, namespace, name, &result)
-				return result
+				if soak == 0 {
+					result.Ready = true
+					result.Message = "shadow pod is running and ready"
+					return result
+				}
+				readyAt = time.Now()
+				baselineRestarts = result.Restarts
+				soakDone = time.After(soak)
 			}
 		}
 	}
+}
+
+// soakWindow is how long a shadow clone must stay ready before the attempt
+// passes. A clone with no readiness probe reports Ready the instant its
+// container starts, so a single observation cannot distinguish a working
+// patch from one that crashes seconds later. Batch workloads get no soak:
+// a Job clone legitimately reaches Succeeded and leaves Running.
+func soakWindow(timeout time.Duration, allowCompletion bool) time.Duration {
+	if allowCompletion {
+		return 0
+	}
+	window := timeout / 4
+	if window > 30*time.Second {
+		window = 30 * time.Second
+	}
+	return window
+}
+
+// stillStable reports whether an observation during the soak window still
+// counts as ready, given the restart count recorded at first-ready. The
+// returned string explains the break and is empty when stable.
+func stillStable(pod *corev1.Pod, baselineRestarts int) (string, bool) {
+	if pod.Status.Phase != corev1.PodRunning {
+		return "phase left Running: " + string(pod.Status.Phase), false
+	}
+	if !podReady(pod) {
+		return "pod stopped reporting Ready", false
+	}
+	restarts := 0
+	for _, status := range append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...) {
+		restarts += int(status.RestartCount)
+		if status.State.Terminated != nil && terminalFailure(status.State.Terminated.Reason) {
+			return "container terminated: " + status.State.Terminated.Reason, false
+		}
+	}
+	if restarts > baselineRestarts {
+		return fmt.Sprintf("container restarted during soak (%d -> %d)", baselineRestarts, restarts), false
+	}
+	return "", true
 }
 
 func updateAttemptFromPod(result *Attempt, pod *corev1.Pod) {
