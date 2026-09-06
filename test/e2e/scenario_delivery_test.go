@@ -9,6 +9,38 @@ import (
 	"time"
 )
 
+// outcome is what a scenario is expected to achieve. Three fixtures exist to
+// prove fixora refuses a fix it cannot make safely — asserting the refusal is
+// what catches a safety regression, which a uniform rollout assertion cannot.
+type outcome int
+
+const (
+	delivered  outcome = iota // patch applied, workload recovers
+	adviceOnly                // fix declines to mutate; assert the refusal
+)
+
+// refusalMarker is printed by runGuidedFix when the plan is not apply-eligible
+// (internal/cli/root.go). Its presence means no mutation was attempted.
+const refusalMarker = "No production mutation was attempted."
+
+func assertOutcome(t *testing.T, ns, deploy string, want outcome, stdout string) {
+	t.Helper()
+	refused := strings.Contains(stdout, refusalMarker)
+	switch want {
+	case delivered:
+		if refused {
+			// Fail immediately. Waiting out waitForRollout on a workload
+			// nothing patched costs four minutes and proves nothing.
+			t.Fatalf("%s: expected delivery but fix refused to mutate", deploy)
+		}
+		waitForRollout(t, ns, deploy, 4*time.Minute)
+	case adviceOnly:
+		if !refused {
+			t.Fatalf("%s: expected fix to refuse, but it attempted a mutation", deploy)
+		}
+	}
+}
+
 // TestScenarioDelivery runs the real fix pipeline — diagnose, AI patch,
 // shadow-verify, apply — against every curated failure scenario and asserts
 // the workload recovers. It mutates the cluster. It needs a real AI provider
@@ -24,17 +56,18 @@ func TestScenarioDelivery(t *testing.T) {
 		podReason string // "" => wait on phase
 		phase     string
 		container string // passed to `fix` so it knows which container; the AI supplies the fix
+		want      outcome
 	}
 
 	cases := []tc{
-		{"imagepull.yaml", "imagepull-demo", "ImagePullBackOff", "", "typo-container"},
-		{"crashloop.yaml", "crashloop-demo", "CrashLoopBackOff", "", "broken-app"},
-		{"missing-config.yaml", "missing-config-demo", "CreateContainerConfigError", "", "config-consumer"},
-		{"pending.yaml", "pending-demo", "", "Pending", "greedy-container"},
-		{"security.yaml", "security-demo", "", "", "restricted-app"},
-		{"oomkilled.yaml", "oomkilled-demo", "", "", "memory-hog"},
-		{"probe.yaml", "probe-demo", "", "", "web-app"},
-		{"dependency.yaml", "dependency-demo", "CrashLoopBackOff", "", "db-client"},
+		{"imagepull.yaml", "imagepull-demo", "ImagePullBackOff", "", "typo-container", adviceOnly},
+		{"crashloop.yaml", "crashloop-demo", "CrashLoopBackOff", "", "broken-app", adviceOnly},
+		{"missing-config.yaml", "missing-config-demo", "CreateContainerConfigError", "", "config-consumer", adviceOnly},
+		{"pending.yaml", "pending-demo", "", "Pending", "greedy-container", adviceOnly},
+		{"security.yaml", "security-demo", "", "", "restricted-app", adviceOnly},
+		{"oomkilled.yaml", "oomkilled-demo", "", "", "memory-hog", adviceOnly},
+		{"probe.yaml", "probe-demo", "", "", "web-app", adviceOnly},
+		{"dependency.yaml", "dependency-demo", "CrashLoopBackOff", "", "db-client", adviceOnly},
 	}
 
 	for _, c := range cases {
@@ -71,10 +104,9 @@ func TestScenarioDelivery(t *testing.T) {
 			t.Logf("fix %s (exit %d)\n--- stdout ---\n%s\n--- stderr ---\n%s", c.deploy, code, stdout, stderr)
 
 			if code != 0 {
-				t.Fatalf("fix could not deliver a working patch for %s (exit %d):\n%s", c.deploy, code, stderr)
+				t.Fatalf("fix exited %d for %s:\n%s", code, c.deploy, stderr)
 			}
-
-			waitForRollout(t, ns, c.deploy, 4*time.Minute)
+			assertOutcome(t, ns, c.deploy, c.want, stdout)
 		})
 	}
 }
