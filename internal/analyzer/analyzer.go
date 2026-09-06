@@ -476,6 +476,14 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
+	// An ImagePullBackOff pod never starts a container, so there are no logs to
+	// classify and the log-driven ExecFormatError path below never runs for it.
+	// The image inferrer and the AI patch path both need node-platform evidence
+	// to rank platform-compatible replacement images, so attach it here.
+	if strings.Contains(status, "ImagePull") {
+		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
+	}
+
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
 	f.RecentChanges = recent

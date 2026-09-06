@@ -613,3 +613,60 @@ func (f fakeReader) Run(context.Context, ...string) ([]byte, error) {
 	}
 	return []byte("secret/tls"), nil
 }
+
+func nodePlatformEvidence(f Finding) (string, bool) {
+	for _, e := range f.Evidence {
+		if e.Label == "Node platform" {
+			return e.Value, true
+		}
+	}
+	return "", false
+}
+
+// An ImagePullBackOff pod produces no container logs, so the log-driven
+// ExecFormatError branch never attaches node-platform evidence for it. The
+// image inferrer and AI patch path both need that evidence to rank
+// platform-compatible replacement images, so findingForPod attaches it directly
+// for image-pull statuses.
+func TestImagePullFindingCarriesNodePlatformEvidence(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "pull-0", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "app",
+				State: map[string]kube.StatusState{"waiting": {Reason: "ImagePullBackOff"}},
+			}}},
+		}}},
+		nodes: []kube.Node{{Metadata: kube.ObjectMeta{Name: "node-a", Labels: map[string]string{"kubernetes.io/arch": "arm64", "kubernetes.io/os": "linux"}}}},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(report.Findings))
+	}
+	value, ok := nodePlatformEvidence(report.Findings[0])
+	if !ok || value != "linux/arm64" {
+		t.Fatalf("expected Node platform evidence linux/arm64, got %q ok=%v", value, ok)
+	}
+}
+
+func TestCrashLoopFindingHasNoNodePlatformEvidence(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "crash-0", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "app",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		}}},
+		nodes: []kube.Node{{Metadata: kube.ObjectMeta{Name: "node-a", Labels: map[string]string{"kubernetes.io/arch": "arm64", "kubernetes.io/os": "linux"}}}},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(report.Findings))
+	}
+	if value, ok := nodePlatformEvidence(report.Findings[0]); ok {
+		t.Fatalf("CrashLoopBackOff must not trigger node-platform lookup, got %q", value)
+	}
+}
