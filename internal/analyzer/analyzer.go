@@ -826,6 +826,16 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 	if pod.Status.Phase == "Failed" || pod.Status.Reason != "" {
 		return firstNonEmpty(pod.Status.Reason, "PodFailed"), "runtime", "high"
 	}
+	// Running but never Ready is a failing readiness probe. Checked after the
+	// container-state switches above so a crash-looping or image-pull-failing
+	// container keeps its own classification — those are also never Ready.
+	if pod.Status.Phase == "Running" {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if _, running := cs.State["running"]; running && !cs.Ready {
+				return "ProbeFailure", "runtime", "high"
+			}
+		}
+	}
 	for _, condition := range pod.Status.Conditions {
 		if condition.Status == "False" && condition.Reason != "" {
 			if strings.Contains(condition.Reason, "Unschedulable") {
@@ -846,6 +856,8 @@ func recommendationsForStatus(status string, pod kube.Pod) []Recommendation {
 		return []Recommendation{{Title: "Inspect logs and probes", Description: "Review previous logs, command/args, env refs, config mounts, securityContext, and probe timing.", PatchType: "runtime", SafeByDefault: false}}
 	case strings.Contains(status, "Config"):
 		return []Recommendation{{Title: "Validate ConfigMap and Secret refs", Description: "Check env, envFrom, volumes, and required keys. Never print secret values.", PatchType: "env", SafeByDefault: true}}
+	case strings.Contains(status, "ProbeFailure"):
+		return []Recommendation{{Title: "Correct the readiness probe", Description: "Check the probe's port, path, scheme and timing against the port the container actually listens on.", PatchType: "probe", SafeByDefault: true}}
 	case strings.Contains(status, "Pending"), strings.Contains(status, "Unschedulable"):
 		return []Recommendation{{Title: "Review scheduling constraints", Description: "Check nodeSelector, affinity, taints, tolerations, PVC binding, and resource requests.", PatchType: "scheduling", SafeByDefault: false}}
 	default:

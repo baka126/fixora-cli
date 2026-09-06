@@ -47,6 +47,7 @@ type ConcreteOptions struct {
 	EnvName       string
 	ConfigMap     string
 	ConfigKey     string
+	ProbePort     string
 	Strategy      string
 	ForceRisky    bool
 }
@@ -166,6 +167,12 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Lower resource requests so the pod fits an available node.", Preview: plan.PatchTemplate})
 		plan.Confidence = 65
 		plan.Warnings = append(plan.Warnings, "Lowering requests changes scheduling and QoS class. Confirm the workload actually runs within the reduced request.")
+	case strings.Contains(finding.Status, "ProbeFailure"):
+		plan.Strategy = "probe"
+		plan.PatchTemplate = probePatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Point the readiness probe at the port the container actually listens on.", Preview: plan.PatchTemplate})
+		plan.Confidence = 80
+		plan.Warnings = append(plan.Warnings, "Confirm the container serves the probe path on the proposed port before applying.")
 	default:
 		plan.PatchTemplate = genericPatchTemplate(finding)
 		plan.BlockedReasons = append(plan.BlockedReasons, "No deterministic patch strategy matched this status.")
@@ -197,6 +204,7 @@ func Concretize(plan Plan, opts ConcreteOptions) Plan {
 		"TODO_ENV_NAME":                opts.EnvName,
 		"TODO_CONFIGMAP":               opts.ConfigMap,
 		"TODO_KEY":                     opts.ConfigKey,
+		"TODO_PROBE_PORT":              opts.ProbePort,
 	}
 	for key, value := range replacements {
 		if value != "" {
@@ -294,6 +302,11 @@ func validateConcretePatch(plan Plan) ([]string, []string) {
 			return nil, []string{"resources strategy requires concrete resource request or limit fields"}
 		}
 		return nil, nil
+	case "probe":
+		if !strings.Contains(patch, "readinessprobe") && !strings.Contains(patch, "livenessprobe") {
+			return nil, []string{"probe strategy requires a concrete readinessProbe or livenessProbe block"}
+		}
+		return nil, nil
 	case "repair-selector", "service", "webhook", "runtime", "scheduling", "pdb", "ingress", "hpa":
 		return []string{"strategy " + strategy + " remains review-only and is not auto-applied"}, []string{"strategy " + strategy + " is not apply-eligible by default"}
 	default:
@@ -381,6 +394,17 @@ func envPatchTemplate(f analyzer.Finding) string {
       configMapKeyRef:
         name: TODO_CONFIGMAP
         key: TODO_KEY
+`)
+}
+
+// probePatchTemplate patches only the probe's port. readinessProbe is a struct,
+// so a strategic merge keeps the existing path, scheme and timings.
+func probePatchTemplate(f analyzer.Finding) string {
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  readinessProbe:
+    httpGet:
+      port: TODO_PROBE_PORT
 `)
 }
 

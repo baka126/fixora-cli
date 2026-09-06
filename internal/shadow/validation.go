@@ -139,7 +139,7 @@ func parseSinglePatch(patch string) (map[string]any, error) {
 
 func allowedRevisionStrategy(strategy string) bool {
 	switch strategy {
-	case "image", "fix-architecture", "resources", "env":
+	case "image", "fix-architecture", "resources", "env", "probe":
 		return true
 	default:
 		return false
@@ -242,6 +242,14 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		reasons = append(reasons, validateResourceCeiling(revSpec, activePatchPolicy())...)
 	case "env":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "env": true, "envFrom": true}, strategy)...)
+	case "probe":
+		// Probe fields cannot change identity, escalate privilege, read
+		// secrets, alter scheduling, or override the container command. Their
+		// only effect is on readiness — exactly what shadow measures — so a
+		// wrong probe fails the clone directly.
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{
+			"name": true, "readinessProbe": true, "livenessProbe": true, "startupProbe": true,
+		}, strategy)...)
 	}
 	if reflect.DeepEqual(origSpec, revSpec) {
 		reasons = append(reasons, "revised patch does not change the original patch")
@@ -252,7 +260,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 
 func allowedSpecKeys(strategy string) map[string]bool {
 	switch strategy {
-	case "image", "fix-architecture", "resources", "env":
+	case "image", "fix-architecture", "resources", "env", "probe":
 		return map[string]bool{"containers": true, "initContainers": true}
 	default:
 		return map[string]bool{}

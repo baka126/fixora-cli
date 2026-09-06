@@ -176,3 +176,27 @@ func TestTier3StatusesDefaultToBuildPlan(t *testing.T) {
 		}
 	}
 }
+
+func TestProbeStrategyProducesProbeTemplate(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "probe-demo", Namespace: "ns",
+		Status: "ProbeFailure",
+	})
+	if plan.Strategy != "probe" {
+		t.Fatalf("want probe, got %q", plan.Strategy)
+	}
+	if !strings.Contains(plan.PatchTemplate, "TODO_PROBE_PORT") {
+		t.Fatalf("want a probe template, got:\n%s", plan.PatchTemplate)
+	}
+}
+
+func TestProbePlanBecomesApplyEligibleWhenConcretized(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "probe-demo", Namespace: "ns",
+		Status: "ProbeFailure",
+	})
+	got := Concretize(plan, ConcreteOptions{Container: "web-app", ProbePort: "8080"})
+	if !got.ApplyEligible {
+		t.Fatalf("concretized probe plan must be apply-eligible; blocked: %v", got.BlockedReasons)
+	}
+}

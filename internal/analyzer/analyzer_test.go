@@ -821,3 +821,46 @@ func TestEnvRefEvidenceEmptyWithoutValueFrom(t *testing.T) {
 		t.Fatalf("plain env vars produce no reference evidence: %+v", got)
 	}
 }
+
+func TestPodProblemClassifiesRunningNotReadyAsProbeFailure(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name:  "web-app",
+		Ready: false,
+		State: map[string]kube.StatusState{"running": {}},
+	}}
+	status, category, severity := podProblem(pod)
+	if status != "ProbeFailure" {
+		t.Fatalf("want ProbeFailure, got %q", status)
+	}
+	if category != "runtime" || severity != "high" {
+		t.Fatalf("unexpected category=%q severity=%q", category, severity)
+	}
+}
+
+func TestPodProblemPrefersCrashLoopOverProbeFailure(t *testing.T) {
+	// A crash-looping container is also never Ready. It must keep its crash
+	// classification rather than be relabelled a probe problem.
+	pod := kube.Pod{}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name:  "app",
+		Ready: false,
+		State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+	}}
+	if status, _, _ := podProblem(pod); status != "CrashLoopBackOff" {
+		t.Fatalf("want CrashLoopBackOff, got %q", status)
+	}
+}
+
+func TestPodProblemIgnoresReadyPod(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name: "app", Ready: true, State: map[string]kube.StatusState{"running": {}},
+	}}
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("healthy pod must produce no status, got %q", status)
+	}
+}
