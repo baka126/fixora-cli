@@ -139,6 +139,99 @@ func TestResourcesInferrerConcretePlanIsApplyEligible(t *testing.T) {
 	}
 }
 
+func allocatableFinding(evidence string) analyzer.Finding {
+	return analyzer.Finding{
+		Status: "Pending",
+		Evidence: []analyzer.Evidence{
+			{Label: "Container image greedy-container", Value: "busybox:1.36"},
+			{Label: "Requests exceed node allocatable", Value: evidence},
+		},
+	}
+}
+
+func TestResourcesInferrerFromAllocatable(t *testing.T) {
+	f := allocatableFinding("requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8000m")
+	res, ok, err := (resourcesInferrer{}).Infer(context.Background(), nil, f, fix.Plan{Strategy: "resources", Status: "Pending"})
+	if err != nil || !ok {
+		t.Fatalf("want accept, got ok=%v err=%v", ok, err)
+	}
+	// Half of 7936Mi is 3968Mi, already a multiple of 16.
+	if res.Options.MemoryRequest != "3968Mi" {
+		t.Fatalf("want 3968Mi, got %q", res.Options.MemoryRequest)
+	}
+	// An unschedulable pod has no observed usage: limit equals request (Guaranteed QoS).
+	if res.Options.MemoryLimit != "3968Mi" {
+		t.Fatalf("limit: want 3968Mi, got %q", res.Options.MemoryLimit)
+	}
+	// Half of 8000m is 4000m, well above the 10m floor.
+	if res.Options.CPURequest != "4000m" {
+		t.Fatalf("cpu request: want 4000m, got %q", res.Options.CPURequest)
+	}
+	if res.Options.Container != "greedy-container" {
+		t.Fatalf("container: got %q", res.Options.Container)
+	}
+	if res.Guardrail != "inferred-resources-from-allocatable" {
+		t.Fatalf("unexpected guardrail %q", res.Guardrail)
+	}
+}
+
+func TestResourcesInferrerAllocatableFloorsCPU(t *testing.T) {
+	// A single-milli node allocatable would halve below the 10m floor.
+	f := allocatableFinding("requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8m")
+	res, ok, _ := (resourcesInferrer{}).Infer(context.Background(), nil, f, fix.Plan{Strategy: "resources", Status: "Pending"})
+	if !ok {
+		t.Fatal("want accept")
+	}
+	if res.Options.CPURequest != "10m" {
+		t.Fatalf("cpu request: want 10m, got %q", res.Options.CPURequest)
+	}
+}
+
+func TestResourcesInferrerDeclinesOnUnparseableAllocatable(t *testing.T) {
+	f := allocatableFinding("requested memory=100Gi")
+	if _, ok, _ := (resourcesInferrer{}).Infer(context.Background(), nil, f, fix.Plan{Strategy: "resources", Status: "Pending"}); ok {
+		t.Fatal("evidence without a parseable allocatable figure must decline")
+	}
+}
+
+func TestParseAllocatable(t *testing.T) {
+	mem, cpu, ok := parseAllocatable("requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8000m")
+	if !ok || mem != 7936 || cpu != 8000 {
+		t.Fatalf("want 7936/8000, got %d/%d ok=%v", mem, cpu, ok)
+	}
+	if _, _, ok := parseAllocatable("nothing useful here"); ok {
+		t.Fatal("unparseable text must decline")
+	}
+}
+
+// TestResourcesInferrerAllocatablePlanIsApplyEligible builds a real Pending
+// finding carrying allocatable evidence, runs it through fix.BuildPlan then
+// infer.Concrete, and asserts the concretized plan comes back ApplyEligible
+// with every placeholder filled. A branch that leaves any of the four
+// resources tokens unfilled silently fails Concretize's validation gate and
+// concreteWith discards the whole Result — this is what catches that.
+func TestResourcesInferrerAllocatablePlanIsApplyEligible(t *testing.T) {
+	f := analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "pending-demo", Namespace: "default",
+		Status: "Pending",
+		Evidence: []analyzer.Evidence{
+			{Label: "Container image greedy-container", Value: "busybox:1.36"},
+			{Label: "Requests exceed node allocatable", Value: "requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8000m"},
+		},
+	}
+	plan := fix.BuildPlan(f)
+	got, ok := Concrete(context.Background(), nil, f, plan)
+	if !ok {
+		t.Fatalf("want a concretized plan, got ok=false (blocked: %v)", got.BlockedReasons)
+	}
+	if !got.ApplyEligible {
+		t.Fatalf("want ApplyEligible, got false (blocked: %v)", got.BlockedReasons)
+	}
+	if strings.Contains(got.PatchTemplate, "TODO_") {
+		t.Fatalf("patch still has an unsubstituted placeholder:\n%s", got.PatchTemplate)
+	}
+}
+
 func TestResourcesInferrerDeclinesWithoutMetrics(t *testing.T) {
 	f := analyzer.Finding{Status: "OOMKilled", Evidence: []analyzer.Evidence{
 		{Label: "Container image memory-hog", Value: "busybox:1.36"},

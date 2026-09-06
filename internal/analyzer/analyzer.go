@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -476,6 +477,17 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
+	// A Pending/Unschedulable pod whose summed requests exceed every node's
+	// allocatable is fixable by lowering the requests (the resources strategy).
+	// Taints, affinity and PVC binding are also Pending causes, are not fixed
+	// this way, and deliberately produce no evidence here so they keep falling
+	// through to the review-only scheduling strategy.
+	if status == "Pending" || status == "Unschedulable" {
+		if evidence, ok := a.allocatableShortfall(ctx, sctx, pod); ok {
+			f.Evidence = append(f.Evidence, evidence)
+		}
+	}
+
 	// An ImagePullBackOff pod never starts a container, so there are no logs to
 	// classify and the log-driven ExecFormatError path below never runs for it.
 	// The image inferrer and the AI patch path both need node-platform evidence
@@ -547,6 +559,86 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 	}
 
 	return f, true
+}
+
+// allocatableShortfall reports requests-exceed-allocatable evidence when no
+// node could satisfy the pod's summed memory or CPU requests. Only this
+// sub-case of Pending is fixable by lowering requests. The evidence value
+// carries both allocatable figures in a form internal/infer's parseAllocatable
+// can read back — keep the two in sync.
+func (a Analyzer) allocatableShortfall(ctx context.Context, sctx *ScanContext, pod kube.Pod) (Evidence, bool) {
+	var reqMem, reqCPU int64
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		if mi, ok := quantityMi(container.Resources.Requests["memory"]); ok {
+			reqMem += mi
+		}
+		if m, ok := milliCores(container.Resources.Requests["cpu"]); ok {
+			reqCPU += m
+		}
+	}
+	if reqMem == 0 && reqCPU == 0 {
+		return Evidence{}, false
+	}
+	nodes, err := a.nodeList(ctx, sctx)
+	if err != nil {
+		return Evidence{}, false
+	}
+	var largestMem, largestCPU int64
+	for _, node := range nodes {
+		if mi, ok := quantityMi(node.Status.Allocatable["memory"]); ok && mi > largestMem {
+			largestMem = mi
+		}
+		if m, ok := milliCores(node.Status.Allocatable["cpu"]); ok && m > largestCPU {
+			largestCPU = m
+		}
+	}
+	// Both figures are needed to size a complete patch; without either, the
+	// inferrer could not fill every placeholder, so decline here too.
+	if largestMem == 0 || largestCPU == 0 {
+		return Evidence{}, false
+	}
+	if reqMem <= largestMem && reqCPU <= largestCPU {
+		return Evidence{}, false
+	}
+	return Evidence{
+		Label: "Requests exceed node allocatable",
+		Value: fmt.Sprintf("requested memory=%dMi cpu=%dm; largest node allocatable memory=%dMi cpu=%dm",
+			reqMem, reqCPU, largestMem, largestCPU),
+	}, true
+}
+
+// quantityMi converts a Kubernetes memory quantity (Ki/Mi/Gi) to mebibytes.
+func quantityMi(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	switch {
+	case strings.HasSuffix(value, "Gi"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Gi"), 10, 64)
+		return n * 1024, err == nil
+	case strings.HasSuffix(value, "Mi"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Mi"), 10, 64)
+		return n, err == nil
+	case strings.HasSuffix(value, "Ki"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Ki"), 10, 64)
+		return n / 1024, err == nil
+	}
+	return 0, false
+}
+
+// milliCores converts a Kubernetes CPU quantity to millicores. It accepts a
+// millicore suffix ("100m"), a bare integer core count ("8", "100"), and a
+// fractional core count ("0.5").
+func milliCores(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	switch {
+	case value == "":
+		return 0, false
+	case strings.HasSuffix(value, "m"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "m"), 10, 64)
+		return n, err == nil && n >= 0
+	default:
+		cores, err := strconv.ParseFloat(value, 64)
+		return int64(cores * 1000), err == nil && cores >= 0
+	}
 }
 
 // totalRestarts sums restartCount across init and app container statuses.

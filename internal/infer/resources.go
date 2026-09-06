@@ -3,6 +3,7 @@ package infer
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -53,7 +54,50 @@ func (resourcesInferrer) Infer(_ context.Context, _ kubeReader, f analyzer.Findi
 			Warning:   fmt.Sprintf("Request and limit inferred from observed usage (%dMi) with %.1fx headroom; confirm against p95 before production.", observed, limitHeadroom),
 		}, true, nil
 	}
+	// Unschedulable: requests exceed every node's allocatable. The analyzer
+	// already computed the largest node's allocatable memory and CPU when it
+	// emitted this evidence, so size from that rather than recomputing here.
+	if shortfall := EvidenceValue(f, "Requests exceed node allocatable"); shortfall != "" {
+		mem, cpu, ok := parseAllocatable(shortfall)
+		if !ok {
+			return Result{}, false, nil
+		}
+		request := roundUpMi(mem / 2)
+		cpuRequest := max(cpu/2, cpuFloorMillicores)
+		return Result{
+			Options: fix.ConcreteOptions{
+				Container:     container,
+				MemoryRequest: fmt.Sprintf("%dMi", request),
+				// No observed usage justifies headroom; equal request and limit
+				// yields Guaranteed QoS, the conservative default with no data.
+				MemoryLimit: fmt.Sprintf("%dMi", request),
+				CPURequest:  fmt.Sprintf("%dm", cpuRequest),
+			},
+			Guardrail: "inferred-resources-from-allocatable",
+			Warning:   fmt.Sprintf("Requests lowered to half the largest node's allocatable (memory %dMi, CPU %dm) because no node could schedule the pod; confirm the workload runs within them.", mem, cpu),
+		}, true, nil
+	}
 	return Result{}, false, nil
+}
+
+// allocatablePattern extracts the figures the analyzer computed when it emitted
+// the "Requests exceed node allocatable" evidence. Producer and parser must
+// stay in sync — see allocatableShortfall in internal/analyzer/analyzer.go.
+var allocatablePattern = regexp.MustCompile(`largest node allocatable memory=(\d+)Mi cpu=(\d+)m`)
+
+// parseAllocatable reads the largest node's allocatable memory (mebibytes) and
+// CPU (millicores) out of that evidence value.
+func parseAllocatable(evidence string) (mem int64, cpu int64, ok bool) {
+	m := allocatablePattern.FindStringSubmatch(evidence)
+	if m == nil {
+		return 0, 0, false
+	}
+	mem, memErr := strconv.ParseInt(m[1], 10, 64)
+	cpu, cpuErr := strconv.ParseInt(m[2], 10, 64)
+	if memErr != nil || cpuErr != nil || mem <= 0 || cpu <= 0 {
+		return 0, 0, false
+	}
+	return mem, cpu, true
 }
 
 // parseTopMemory pulls a container's memory figure out of

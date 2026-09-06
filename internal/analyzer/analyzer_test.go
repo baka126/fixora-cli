@@ -292,6 +292,103 @@ func TestScanReportBoundsPodLogConcurrency(t *testing.T) {
 	}
 }
 
+func TestQuantityMi(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"100Gi", 102400, true},
+		{"7936Mi", 7936, true},
+		{"8126464Ki", 7936, true},
+		{"", 0, false},
+		{"100", 0, false},
+	} {
+		got, ok := quantityMi(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("quantityMi(%q) = %d,%v; want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestMilliCores(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"100m", 100, true},
+		{"100", 100000, true},
+		{"8", 8000, true},
+		{"0.5", 500, true},
+		{"", 0, false},
+		{"abc", 0, false},
+	} {
+		got, ok := milliCores(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("milliCores(%q) = %d,%v; want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func allocatableTestNode() kube.Node {
+	n := kube.Node{Metadata: kube.ObjectMeta{Name: "node-a"}}
+	n.Status.Allocatable = map[string]string{"memory": "8Gi", "cpu": "8"}
+	return n
+}
+
+func pendingPodWithRequests(name string, requests map[string]string) kube.Pod {
+	return kube.Pod{
+		Metadata: kube.ObjectMeta{Name: name, Namespace: "prod"},
+		Spec: kube.PodSpec{Containers: []kube.Container{{
+			Name: "greedy", Image: "busybox:1.36",
+			Resources: kube.ResourceRequirements{Requests: requests},
+		}}},
+		Status: kube.PodStatus{Phase: "Pending"},
+	}
+}
+
+func findingEvidence(f Finding, label string) (string, bool) {
+	for _, e := range f.Evidence {
+		if e.Label == label {
+			return e.Value, true
+		}
+	}
+	return "", false
+}
+
+func TestAllocatableShortfallEvidenceEmittedWhenRequestsExceedNode(t *testing.T) {
+	reader := fakeReader{
+		pods:  kube.PodList{Items: []kube.Pod{pendingPodWithRequests("greedy-0", map[string]string{"cpu": "100", "memory": "100Gi"})}},
+		nodes: []kube.Node{allocatableTestNode()},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(report.Findings))
+	}
+	value, ok := findingEvidence(report.Findings[0], "Requests exceed node allocatable")
+	if !ok {
+		t.Fatalf("expected allocatable-shortfall evidence, got %+v", report.Findings[0].Evidence)
+	}
+	if want := "requested memory=102400Mi cpu=100000m; largest node allocatable memory=8192Mi cpu=8000m"; value != want {
+		t.Fatalf("evidence value = %q, want %q", value, want)
+	}
+}
+
+func TestAllocatableShortfallSilentWhenPodFits(t *testing.T) {
+	reader := fakeReader{
+		pods:  kube.PodList{Items: []kube.Pod{pendingPodWithRequests("modest-0", map[string]string{"cpu": "100m", "memory": "64Mi"})}},
+		nodes: []kube.Node{allocatableTestNode()},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(report.Findings))
+	}
+	if _, ok := findingEvidence(report.Findings[0], "Requests exceed node allocatable"); ok {
+		t.Fatal("a pod that fits an available node must not get allocatable-shortfall evidence")
+	}
+}
+
 func TestScanReportStopsWorkersOnContextCancellation(t *testing.T) {
 	var pods []kube.Pod
 	for i := 0; i < 100; i++ {

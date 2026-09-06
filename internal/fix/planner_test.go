@@ -127,6 +127,38 @@ func TestWorkloadPatchTemplatesUseControllerPodTemplateShape(t *testing.T) {
 // TestTier3StatusesDefaultToBuildPlan verifies that the new tier-3 review-only
 // statuses (JobRetrying, CronJobOverlap) fall through to BuildPlan's default
 // branch and do not accidentally match an existing apply-eligible switch case.
+func TestPendingWithExcessiveRequestsUsesResourcesStrategy(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "pending-demo", Namespace: "ns",
+		Status: "Pending",
+		Evidence: []analyzer.Evidence{
+			{Label: "Requests exceed node allocatable", Value: "requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8000m"},
+		},
+	})
+	if plan.Strategy != "resources" {
+		t.Fatalf("want resources strategy, got %q", plan.Strategy)
+	}
+	if !strings.Contains(plan.PatchTemplate, "TODO_OBSERVED_REQUEST") {
+		t.Fatalf("want a resources template, got:\n%s", plan.PatchTemplate)
+	}
+}
+
+func TestPendingWithoutAllocatableEvidenceStaysScheduling(t *testing.T) {
+	// Taints, affinity and PVC binding are also Pending causes and none of
+	// them are fixed by lowering requests, so they must stay review-only.
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "pending-demo", Namespace: "ns",
+		Status:          "Pending",
+		Recommendations: []analyzer.Recommendation{{PatchType: "scheduling"}},
+	})
+	if plan.Strategy == "resources" {
+		t.Fatal("scheduling failures without allocatable evidence must not claim the resources strategy")
+	}
+	if plan.ApplyEligible {
+		t.Fatal("must stay review-only")
+	}
+}
+
 func TestTier3StatusesDefaultToBuildPlan(t *testing.T) {
 	for _, status := range []string{"JobRetrying", "CronJobOverlap"} {
 		plan := BuildPlan(analyzer.Finding{Status: status, Namespace: "prod", ResourceKind: "Job", ResourceName: "batch"})
