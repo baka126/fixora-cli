@@ -28,6 +28,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/graph"
 	"github.com/fixora/kubectl-fixora/internal/image"
+	"github.com/fixora/kubectl-fixora/internal/infer"
 	"github.com/fixora/kubectl-fixora/internal/integration"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/mcp"
@@ -326,13 +327,17 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		plan := fix.BuildPlan(finding)
 		plan = fix.Concretize(plan, concreteOptions(opts))
-		if opts.useAI {
+		inferred := false
+		if !plan.ApplyEligible {
+			plan, inferred = infer.Concrete(analysisCtx, reader, finding, plan)
+		}
+		if !plan.ApplyEligible && opts.useAI {
 			plan = applyAIPatchIfSafe(analysisCtx, plan, finding, stderr, opts.verbose)
 		}
 		if !plan.ApplyEligible {
 			plan = applyTrustedImageCandidate(analysisCtx, plan, finding, stderr, opts.verbose)
 		}
-		if containsString(plan.Guardrails, "trusted-public-image-candidate") {
+		if inferred || containsString(plan.Guardrails, "trusted-public-image-candidate") {
 			opts.shadowVerify = true
 		}
 		if opts.repoPath != "" {
