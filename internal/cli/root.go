@@ -324,6 +324,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.useAI {
 			finding = enrichFindingForAI(analysisCtx, reader, k, opts, rest[0], finding)
 			augmentWithAI(analysisCtx, &finding, opts, stderr)
+		} else {
+			// The infer package fills patch placeholders from `kubectl top` and
+			// registry evidence. That evidence used to be gathered only inside
+			// enrichFindingForAI, so under --no-ai the image and OOMKilled-metrics
+			// inferrers always declined. Collect it here regardless of --ai.
+			finding = collectDeliveryEvidence(analysisCtx, k, opts, finding)
 		}
 		plan := fix.BuildPlan(finding)
 		plan = fix.Concretize(plan, concreteOptions(opts))
@@ -1635,14 +1641,34 @@ func enrichFindingForAI(ctx context.Context, reader kube.Reader, k kube.Kubectl,
 			finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "Analyzer skipped " + skipped.Name, Value: trimEvidence(skipped.Reason, 220)})
 		}
 	}
-	for _, evidence := range collectMetricsEvidence(ctx, k, opts, finding) {
-		finding.Evidence = append(finding.Evidence, evidence)
-	}
-	if isImageStatus(finding.Status) {
-		finding.Evidence = append(finding.Evidence, inspectCurrentImagePlatforms(ctx, finding)...)
-	}
+	finding.Evidence = append(finding.Evidence, deliveryEvidence(ctx, k, opts, finding)...)
 	finding.Evidence = boundEvidence(finding.Evidence, 40)
 	finding.Logs = boundLogs(finding.Logs, 6)
+	return finding
+}
+
+// deliveryEvidence gathers the AI-independent cluster evidence the infer package
+// consumes to fill remediation-patch placeholders: `kubectl top` output for the
+// OOMKilled metrics path and ranked replacement-image candidates for the image
+// path. Neither call reaches a model — they shell out to kubectl and inspect
+// registries — so the fix path collects this whether or not an AI provider is
+// configured (see collectDeliveryEvidence). enrichFindingForAI folds the same
+// evidence in when --ai is set.
+func deliveryEvidence(ctx context.Context, k kube.Kubectl, opts options, finding analyzer.Finding) []analyzer.Evidence {
+	out := collectMetricsEvidence(ctx, k, opts, finding)
+	if isImageStatus(finding.Status) {
+		out = append(out, inspectCurrentImagePlatforms(ctx, finding)...)
+	}
+	return out
+}
+
+// collectDeliveryEvidence attaches deliveryEvidence to the finding on the fix
+// path. The dispatch calls this only when --ai is off; with --ai on,
+// enrichFindingForAI already folds the same evidence in.
+func collectDeliveryEvidence(ctx context.Context, k kube.Kubectl, opts options, finding analyzer.Finding) analyzer.Finding {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	finding.Evidence = boundEvidence(append(finding.Evidence, deliveryEvidence(ctx, k, opts, finding)...), 40)
 	return finding
 }
 

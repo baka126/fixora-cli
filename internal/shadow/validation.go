@@ -332,6 +332,20 @@ func validateProbeHandlers(revised map[string]any) []string {
 				if !ok {
 					continue
 				}
+				// A readiness probe cannot restart a container, so its timing is
+				// harmless. A liveness or startup probe whose first check is
+				// scheduled past the shadow soak window can pass verification and
+				// then restart-loop production once the delay elapses — a kill
+				// shadow structurally never sees.
+				if probeKey == "livenessProbe" || probeKey == "startupProbe" {
+					if raw := quantityString(probe["initialDelaySeconds"]); raw != "" {
+						if v, err := strconv.ParseFloat(raw, 64); err == nil && v > maxSoakSeconds {
+							reasons = append(reasons, fmt.Sprintf(
+								"%s.%s.%s.initialDelaySeconds %s exceeds the %ds shadow soak window; a first restart scheduled that late is not observable in verification",
+								section, name, probeKey, raw, maxSoakSeconds))
+						}
+					}
+				}
 				for handler := range probe {
 					prefix := section + "." + name + "." + probeKey + "." + handler
 					switch {

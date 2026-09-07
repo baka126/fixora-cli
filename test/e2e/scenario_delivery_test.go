@@ -83,13 +83,15 @@ func TestScenarioDelivery(t *testing.T) {
 			case c.deploy == "oomkilled-demo":
 				waitForPodReason(t, ns, "oomkilled-demo", "OOMKilled")
 			case c.deploy == "probe-demo":
-				// Pod runs but never becomes Ready. Wait for that.
-				waitFor(t, 90*time.Second, "probe-demo to be running-not-ready", func() bool {
-					out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pods",
-						"-n", ns, "-l", "app=probe-demo",
-						"-o", "jsonpath={.items[*].status.containerStatuses[*].ready}")
-					return code == 0 && strings.Contains(out, "false")
-				}, func() { dumpScenario(t, ns, "probe-demo") })
+				// `fix` only reaches the probe arm once probeFailureConfirmed
+				// opens the observation window: creation + initialDelaySeconds
+				// (5) + periodSeconds (5) x failureThreshold (default 3) = ~20s.
+				// containerStatuses[*].ready is false within seconds of creation
+				// — even while still ContainerCreating — so racing that check
+				// runs `fix` before any ProbeFailure finding exists and the
+				// suite's fail-fast fires. Poll `why` until the plan actually
+				// reports ProbeFailure: the exact precondition `fix` needs.
+				planJSONUntil(t, ns, "deployment/probe-demo", "ProbeFailure")
 			case c.podReason != "":
 				waitForPodReason(t, ns, c.deploy, c.podReason)
 			case c.phase != "":

@@ -106,6 +106,12 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 	}
 }
 
+// maxSoakSeconds caps the shadow soak window (see soakWindow). It is also the
+// ceiling validateProbeHandlers enforces on a liveness/startup probe's
+// initialDelaySeconds: a first kill scheduled later than this lands after the
+// soak ends, so shadow verification cannot observe it.
+const maxSoakSeconds = 30
+
 // soakWindow is how long a shadow clone must stay ready before the attempt
 // passes. A clone with no readiness probe reports Ready the instant its
 // container starts, so a single observation cannot distinguish a working
@@ -116,8 +122,8 @@ func soakWindow(timeout time.Duration, allowCompletion bool) time.Duration {
 		return 0
 	}
 	window := timeout / 4
-	if window > 30*time.Second {
-		window = 30 * time.Second
+	if window > maxSoakSeconds*time.Second {
+		window = maxSoakSeconds * time.Second
 	}
 	return window
 }

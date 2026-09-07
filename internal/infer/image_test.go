@@ -3,6 +3,7 @@ package infer
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -62,6 +63,33 @@ func TestImageInferrerHandlesBothStrategies(t *testing.T) {
 	}
 	if in.Handles(fix.Plan{Strategy: "resources"}) {
 		t.Fatal("must not handle resources")
+	}
+}
+
+// TestImageInferrerConcretePlanIsApplyEligible builds a real ImagePullBackOff
+// finding carrying a ranked pinned candidate, runs it through fix.BuildPlan then
+// infer.Concrete, and asserts the concretized plan comes back ApplyEligible with
+// no residual TODO_. The image inferrer shipped inert earlier in this plan; the
+// other four inference paths have this net and it was the one missing it.
+func TestImageInferrerConcretePlanIsApplyEligible(t *testing.T) {
+	f := analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "imagepull-demo", Namespace: "default",
+		Status: "ImagePullBackOff",
+		Evidence: []analyzer.Evidence{
+			{Label: "Container image typo-container", Value: "nginx:1.25-typo"},
+			{Label: "Ranked public image candidate (score 80)", Value: "docker.io/library/nginx@sha256:abc | Docker Official Image"},
+		},
+	}
+	plan := fix.BuildPlan(f)
+	got, ok := Concrete(context.Background(), nil, f, plan)
+	if !ok {
+		t.Fatalf("want a concretized plan, got ok=false (blocked: %v)", got.BlockedReasons)
+	}
+	if !got.ApplyEligible {
+		t.Fatalf("want ApplyEligible, got false (blocked: %v)", got.BlockedReasons)
+	}
+	if strings.Contains(got.PatchTemplate, "TODO_") {
+		t.Fatalf("patch still has an unsubstituted placeholder:\n%s", got.PatchTemplate)
 	}
 }
 

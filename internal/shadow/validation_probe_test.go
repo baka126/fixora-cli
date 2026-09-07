@@ -138,6 +138,80 @@ func TestProbeStrategyAllowsTCPSocketChange(t *testing.T) {
 	}
 }
 
+func TestProbeStrategyRejectsSlowLivenessProbe(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        livenessProbe:
+          httpGet:
+            port: 8080
+          initialDelaySeconds: 300
+`
+	err := ValidateRevisedPatch(probeOriginal, revised, "probe")
+	if err == nil {
+		t.Fatal("a livenessProbe whose first check lands past the soak window must be rejected")
+	}
+	if !strings.Contains(err.Error(), "shadow soak window") {
+		t.Fatalf("want a soak-window rejection reason, got: %v", err)
+	}
+}
+
+func TestProbeStrategyRejectsSlowStartupProbe(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        startupProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 120
+`
+	err := ValidateRevisedPatch(probeOriginal, revised, "probe")
+	if err == nil {
+		t.Fatal("a startupProbe with a first check past the soak window must be rejected")
+	}
+	if !strings.Contains(err.Error(), "shadow soak window") {
+		t.Fatalf("want a soak-window rejection reason, got: %v", err)
+	}
+}
+
+func TestProbeStrategyAllowsSlowReadinessProbe(t *testing.T) {
+	// A readiness probe cannot restart a container, so a large
+	// initialDelaySeconds is not the hazard the liveness/startup ceiling guards.
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        readinessProbe:
+          httpGet:
+            port: 8080
+          initialDelaySeconds: 300
+`
+	if err := ValidateRevisedPatch(probeOriginal, revised, "probe"); err != nil {
+		t.Fatalf("slow readiness probe must be allowed: %v", err)
+	}
+}
+
+func TestProbeStrategyAllowsNormalLivenessProbe(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        livenessProbe:
+          httpGet:
+            port: 8080
+          initialDelaySeconds: 10
+`
+	if err := ValidateRevisedPatch(probeOriginal, revised, "probe"); err != nil {
+		t.Fatalf("a normal liveness probe must be allowed: %v", err)
+	}
+}
+
 func TestProbeStrategyStillRejectsServiceAccount(t *testing.T) {
 	revised := `spec:
   template:
