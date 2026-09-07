@@ -496,6 +496,13 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		f.Evidence = append(f.Evidence, envRefEvidence(pod)...)
 	}
 
+	// A ProbeFailure pod is Running but never Ready. Record the ports the
+	// not-ready container declares and the port its readiness probe targets so
+	// the probe inferrer can propose the declared port when they disagree.
+	if status == "ProbeFailure" {
+		f.Evidence = append(f.Evidence, probePortEvidence(pod)...)
+	}
+
 	// An ImagePullBackOff pod never starts a container, so there are no logs to
 	// classify and the log-driven ExecFormatError path below never runs for it.
 	// The image inferrer and the AI patch path both need node-platform evidence
@@ -642,6 +649,52 @@ func envRefEvidence(pod kube.Pod) []Evidence {
 		}
 	}
 	return nil
+}
+
+// probePortEvidence records the ports the not-ready container declares and the
+// port its readiness probe targets — the two values the probe inferrer
+// compares.
+func probePortEvidence(pod kube.Pod) []Evidence {
+	notReady := map[string]bool{}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			notReady[cs.Name] = true
+		}
+	}
+	for _, container := range pod.Spec.Containers {
+		if !notReady[container.Name] {
+			continue
+		}
+		ports := make([]string, 0, len(container.Ports))
+		for _, port := range container.Ports {
+			ports = append(ports, strconv.Itoa(port.ContainerPort))
+		}
+		return []Evidence{
+			{Label: "Container ports", Value: strings.Join(ports, ",")},
+			{Label: "Readiness probe port", Value: probeTargetPort(container.ReadinessProbe)},
+		}
+	}
+	return nil
+}
+
+// probeTargetPort pulls the port out of an httpGet or tcpSocket probe. The
+// probe arrives as decoded JSON, so a numeric port is a float64.
+func probeTargetPort(probe map[string]any) string {
+	for _, handler := range []string{"httpGet", "tcpSocket"} {
+		h, ok := probe[handler].(map[string]any)
+		if !ok {
+			continue
+		}
+		switch port := h["port"].(type) {
+		case string:
+			return port
+		case float64:
+			return strconv.Itoa(int(port))
+		case int:
+			return strconv.Itoa(port)
+		}
+	}
+	return ""
 }
 
 // quantityMi converts a Kubernetes memory quantity (Ki/Mi/Gi) to mebibytes.
@@ -862,9 +915,11 @@ func probeFailureConfirmed(pod kube.Pod, container string, now time.Time) bool {
 	}
 	created, err := time.Parse(time.RFC3339, pod.Metadata.CreationTimestamp)
 	if err != nil {
-		// No parseable creation time (synthetic or broken object): cannot
-		// age-gate, so fall back to classifying.
-		return true
+		// No parseable creation time: cannot age-gate the probe window, so
+		// fail closed rather than risk a spurious ProbeFailure driving an
+		// apply-eligible patch. The API server stamps creationTimestamp on
+		// every persisted pod, so this is unreachable for real objects.
+		return false
 	}
 	return now.Sub(created) >= probeReadyWindow(pod, container)
 }
@@ -929,6 +984,8 @@ func summaryForStatus(status string) string {
 		return "Container was terminated after exceeding memory constraints."
 	case strings.Contains(status, "CrashLoopBackOff"):
 		return "Container is repeatedly crashing after start."
+	case strings.Contains(status, "ProbeFailure"):
+		return "Container is running but never becomes Ready; its readiness probe keeps failing."
 	case strings.Contains(status, "Pending"), strings.Contains(status, "Unschedulable"):
 		return "Pod cannot be scheduled or started."
 	default:

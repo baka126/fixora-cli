@@ -824,6 +824,7 @@ func TestEnvRefEvidenceEmptyWithoutValueFrom(t *testing.T) {
 
 func TestPodProblemClassifiesRunningNotReadyAsProbeFailure(t *testing.T) {
 	pod := kube.Pod{}
+	pod.Metadata.CreationTimestamp = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	pod.Status.Phase = "Running"
 	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
 		Name:  "web-app",
@@ -912,5 +913,58 @@ func TestProbeFailureDefaultWindowWhenProbeHasNoTimings(t *testing.T) {
 	old := runningNotReadyPod(time.Now().Add(-40*time.Second), map[string]any{})
 	if status, _, _ := podProblem(old); status != "ProbeFailure" {
 		t.Fatalf("past default 30s window must be ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureFailsClosedOnUnparseableCreationTimestamp(t *testing.T) {
+	// No parseable creationTimestamp: the probe window cannot be age-gated, so
+	// classification must fail closed rather than feed an apply-eligible patch.
+	pod := runningNotReadyPod(time.Now().Add(-time.Hour), nil)
+	pod.Metadata.CreationTimestamp = ""
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("missing creationTimestamp must not classify as ProbeFailure, got %q", status)
+	}
+	pod.Metadata.CreationTimestamp = "not-a-timestamp"
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("unparseable creationTimestamp must not classify as ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbePortEvidenceComparesDeclaredAndProbePort(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{Name: "web-app", Ready: false}}
+	pod.Spec.Containers = []kube.Container{{
+		Name:  "web-app",
+		Ports: []kube.ContainerPort{{ContainerPort: 8080}},
+		ReadinessProbe: map[string]any{
+			"httpGet": map[string]any{"path": "/", "port": float64(80)},
+		},
+	}}
+	got := probePortEvidence(pod)
+	if len(got) != 2 {
+		t.Fatalf("want two evidences, got %+v", got)
+	}
+	if got[0].Value != "8080" {
+		t.Fatalf("declared ports: want 8080, got %q", got[0].Value)
+	}
+	if got[1].Value != "80" {
+		t.Fatalf("probe port: want 80, got %q", got[1].Value)
+	}
+}
+
+func TestProbeTargetPortHandlesNamedPort(t *testing.T) {
+	probe := map[string]any{"httpGet": map[string]any{"port": "http"}}
+	if got := probeTargetPort(probe); got != "http" {
+		t.Fatalf("want http, got %q", got)
+	}
+}
+
+func TestSummaryForStatusProbeFailure(t *testing.T) {
+	got := summaryForStatus("ProbeFailure")
+	if !strings.Contains(got, "Ready") {
+		t.Fatalf("ProbeFailure summary should mention readiness, got %q", got)
+	}
+	if got == summaryForStatus("SomethingElse") {
+		t.Fatal("ProbeFailure must not fall through to the generic summary")
 	}
 }
