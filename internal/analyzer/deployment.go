@@ -23,6 +23,12 @@ func (a Analyzer) analyzeDeployments(ctx *ScanContext) ([]Finding, error) {
 		readyReplicas := intValue(status["readyReplicas"])
 		replicas := intValue(status["replicas"])
 
+		if generation := intValue(nestedMap(deployment, "metadata")["generation"]); generation > 0 && intValue(status["observedGeneration"]) < generation {
+			continue
+		}
+		if deploymentConditionTrue(status, "Progressing") && deploymentConditionTrue(status, "Available") {
+			continue
+		}
 		if specReplicas != readyReplicas {
 			var summary string
 			if replicas > specReplicas {
@@ -56,4 +62,14 @@ func (a Analyzer) analyzeDeployments(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+func deploymentConditionTrue(status map[string]any, conditionType string) bool {
+	for _, raw := range nestedSlice(status, "conditions") {
+		condition, ok := raw.(map[string]any)
+		if ok && strValue(condition["type"]) == conditionType && strValue(condition["status"]) == "True" {
+			return true
+		}
+	}
+	return false
 }

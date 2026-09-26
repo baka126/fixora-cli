@@ -29,6 +29,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "storage", aliases: []string{"storage", "pv", "persistentvolume", "storageclass"}, run: a.analyzeStorage},
 		{name: "configmap", aliases: []string{"configmap", "configmaps", "configuration"}, run: a.analyzeConfigMaps},
 		{name: "olm-operators", aliases: []string{"olm", "operator", "operators", "catalogsource", "subscription", "installplan", "clusterserviceversion", "operatorgroup", "clustercatalog", "clusterextension"}, run: a.analyzeOLM},
+		{name: "resource-claim", aliases: []string{"resourceclaim", "resourceclaims", "deviceclass", "devices", "scheduling"}, run: a.analyzeResourceClaims},
 		{name: "deployment-replicas", aliases: []string{"deployment", "deployments", "workload"}, run: a.analyzeDeployments},
 		{name: "daemonset", aliases: []string{"daemonset", "daemonsets", "workload"}, run: a.analyzeDaemonSets},
 		{name: "statefulset", aliases: []string{"statefulset", "statefulsets", "workload"}, run: a.analyzeStatefulSets},

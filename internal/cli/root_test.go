@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1047,5 +1049,23 @@ func TestMCPShadowFlagRequiresMCPMode(t *testing.T) {
 	code := Execute([]string{"serve", "--mcp-shadow"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "requires --mcp") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestAugmentWithAIReportsDeterministicFallback(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("private provider detail"))
+	}))
+	defer srv.Close()
+	t.Setenv("FIXORA_AI_PROVIDER", "openai")
+	t.Setenv("FIXORA_AI_BASE_URL", srv.URL)
+	t.Setenv("FIXORA_AI_API_KEY", "test")
+	finding := analyzer.Finding{Summary: "pod failed"}
+	var stderr bytes.Buffer
+	augmentWithAI(context.Background(), &finding, options{redact: true}, &stderr)
+	if finding.AI != nil || !strings.Contains(stderr.String(), "deterministic plan") || !strings.Contains(stderr.String(), "HTTP 400") || strings.Contains(stderr.String(), "private provider detail") {
+		t.Fatalf("AI=%#v warning=%q", finding.AI, stderr.String())
 	}
 }

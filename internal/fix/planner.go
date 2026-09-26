@@ -106,6 +106,20 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Confidence = 62
 		plan.Warnings = append(plan.Warnings, "Right-size from observed usage. Do not only raise limits if the process is intentionally allocating too much memory.")
 		plan.Verification = append(plan.Verification, "query Prometheus p95/p99 memory before choosing request and limit")
+	case finding.Status == "DeviceClassNotFound" && finding.ResourceKind == "ResourceClaim":
+		plan.Strategy = "deviceclass"
+		plan.Confidence = 85
+		plan.Steps = []string{
+			"Confirm the intended DeviceClass with the cluster's device driver operator.",
+			"Restore the missing DeviceClass or change the ResourceClaim in its source repository after reviewing allocation requirements.",
+			"Recheck the ResourceClaim and dependent Pod scheduling after the reviewed change.",
+		}
+		plan.BlockedReasons = append(plan.BlockedReasons, "DeviceClass and ResourceClaim changes require driver-aware review.")
+		for _, evidence := range finding.Evidence {
+			if evidence.Label == "DeviceClass" && evidence.Value != "" {
+				plan.Verification = append(plan.Verification, "kubectl get deviceclasses.resource.k8s.io "+evidence.Value)
+			}
+		}
 	case strings.Contains(finding.Status, "CrashLoopBackOff"):
 		plan.Strategy = "runtime"
 		plan.PatchTemplate = runtimePatchTemplate(finding)
@@ -177,8 +191,12 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.PatchTemplate = genericPatchTemplate(finding)
 		plan.BlockedReasons = append(plan.BlockedReasons, "No deterministic patch strategy matched this status.")
 	}
-	plan.Commands = []string{fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)}
-	plan.RollbackCommand = rollbackCommand(finding)
+	if plan.Strategy != "deviceclass" {
+		plan.Commands = []string{fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)}
+	}
+	if plan.Strategy != "deviceclass" {
+		plan.RollbackCommand = rollbackCommand(finding)
+	}
 	if plan.RollbackCommand != "" {
 		plan.Rollback = append(plan.Rollback, plan.RollbackCommand)
 	}

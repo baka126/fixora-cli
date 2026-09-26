@@ -1605,9 +1605,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	defer cancel()
 	result, err := client.Explain(aiCtx, aiFinding)
 	if err != nil {
-		if opts.verbose {
-			fmt.Fprintf(stderr, "ai failed: %v\n", err)
-		}
+		fmt.Fprintf(stderr, "warning: AI unavailable (%s); using the deterministic plan.\n", ai.FailureSummary(err))
 		return
 	}
 	finding.AI = result
