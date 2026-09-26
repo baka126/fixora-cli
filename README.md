@@ -143,7 +143,7 @@ Named profiles let teams keep reusable local/production defaults. Context overri
 
 ## AI Configuration
 
-AI is disabled unless `--ai` is passed. Credentials can be provided through environment variables or `kubectl fixora auth set`.
+AI is disabled unless `--ai` is passed. Credentials can be provided through environment variables or `kubectl fixora auth set`. Temporary provider HTTP failures are retried up to twice; if AI remains unavailable, Fixora reports the fallback and keeps the deterministic plan.
 
 ```sh
 export FIXORA_AI_PROVIDER="openai"
@@ -193,7 +193,7 @@ The request includes redacted Kubernetes evidence. The CLI never sends Secret va
 kubectl fixora incidents -A --filter Pod,Deployment,Service,Ingress
 ```
 
-The catalog includes workload, networking, storage, policy, node, Kyverno, Trivy, OLM, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services or TLS Secret references, HPA targets and resource requests, PDB disruption blocking, admission webhook backends, Gateway API conditions/backend refs, risky RBAC, risky pod security context, PersistentVolume failures, multiple default StorageClasses, and Pods stuck `Terminating` past their grace period (with the blocking cause attributed to finalizers, a slow preStop hook, a failing volume detach, or an unreachable node). Missing CRDs or denied reads are skipped cleanly.
+The catalog includes workload, networking, storage, policy, node, Kyverno, Trivy, OLM, and KEDA-style analyzers. Fixora also includes K8sGPT-inspired precision checks for Services without ready endpoints, Ingresses with missing backend Services or TLS Secret references, HPA targets and resource requests, PDB disruption blocking, admission webhook backends, Gateway API conditions/backend refs, risky RBAC, risky pod security context, PersistentVolume failures, multiple default StorageClasses, and Pods stuck `Terminating` past their grace period (with the blocking cause attributed to finalizers, a slow preStop hook, a failing volume detach, or an unreachable node). Missing CRDs or denied reads are skipped cleanly. The ResourceClaim check detects requests for missing DeviceClasses and produces a review-only repair plan.
 
 Two analyzers are off by default because they inspect Secret and TLS material:
 

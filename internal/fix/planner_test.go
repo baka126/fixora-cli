@@ -200,3 +200,10 @@ func TestProbePlanBecomesApplyEligibleWhenConcretized(t *testing.T) {
 		t.Fatalf("concretized probe plan must be apply-eligible; blocked: %v", got.BlockedReasons)
 	}
 }
+
+func TestMissingDeviceClassGetsReviewPlan(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{Namespace: "prod", ResourceKind: "ResourceClaim", ResourceName: "gpu", Status: "DeviceClassNotFound", Evidence: []analyzer.Evidence{{Label: "DeviceClass", Value: "nvidia.com"}}})
+	if plan.Strategy != "deviceclass" || plan.CanApply || plan.ApplyEligible || !strings.Contains(strings.Join(plan.Verification, "\n"), "deviceclasses.resource.k8s.io nvidia.com") {
+		t.Fatalf("unexpected plan: %#v", plan)
+	}
+}

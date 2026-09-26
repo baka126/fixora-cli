@@ -3,11 +3,13 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
@@ -107,5 +109,67 @@ func TestExplainAzureOpenAIUsesDeploymentEndpoint(t *testing.T) {
 	}
 	if result.Summary != "ok" || !strings.Contains(result.RecommendedFix, "fix") {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestExplainRetriesTransientHTTPFailure(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":"overloaded"}`)
+			return
+		}
+		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"summary\":\"ok\",\"rootCause\":\"known\",\"recommendedFix\":\"inspect\"}"}]}}]}`)
+	}))
+	defer srv.Close()
+	c := Client{Provider: "gemini", BaseURL: srv.URL, Model: "test", HTTP: srv.Client()}
+	result, err := c.Explain(context.Background(), analyzer.Finding{Summary: "pod failed"})
+	if err != nil || result == nil || result.Summary != "ok" || calls != 3 {
+		t.Fatalf("result=%#v err=%v calls=%d", result, err, calls)
+	}
+}
+
+func TestExplainDoesNotRetryPermanentHTTPFailure(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusBadRequest) }))
+	defer srv.Close()
+	c := Client{Provider: "gemini", BaseURL: srv.URL, Model: "test", HTTP: srv.Client()}
+	_, err := c.Explain(context.Background(), analyzer.Finding{Summary: "pod failed"})
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
+
+func TestExplainOpenAIRetriesProviderErrorBody(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"error":{"message":"busy"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"summary\":\"ok\",\"rootCause\":\"known\",\"recommendedFix\":\"inspect\"}"}}]}`)
+	}))
+	defer srv.Close()
+	c := Client{Provider: "openai", BaseURL: srv.URL, Model: "test", HTTP: srv.Client()}
+	result, err := c.Explain(context.Background(), analyzer.Finding{Summary: "pod failed"})
+	if err != nil || result == nil || result.Summary != "ok" || calls != 2 {
+		t.Fatalf("result=%#v err=%v calls=%d", result, err, calls)
+	}
+}
+
+func TestExplainStopsRetriesOnContextCancel(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer srv.Close()
+	c := Client{Provider: "gemini", BaseURL: srv.URL, Model: "test", HTTP: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := c.Explain(ctx, analyzer.Finding{Summary: "pod failed"})
+	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }

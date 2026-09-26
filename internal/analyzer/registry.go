@@ -39,6 +39,7 @@ var registry = []Definition{
 	{Name: "OLMOperatorGroup", Kind: "OperatorGroup", Resource: "operatorgroups.operators.coreos.com", Scope: "namespaced", Description: "OLM OperatorGroup count and CSV resolution health", Enabled: true},
 	{Name: "OLMClusterCatalog", Kind: "ClusterCatalog", Resource: "clustercatalogs.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster catalog source and serving health", Enabled: true},
 	{Name: "OLMClusterExtension", Kind: "ClusterExtension", Resource: "clusterextensions.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster extension install and progression health", Enabled: true},
+	{Name: "ResourceClaim", Kind: "ResourceClaim", Resource: "resourceclaims.resource.k8s.io", Scope: "namespaced", Description: "Missing DeviceClass references in ResourceClaim requests", Enabled: false},
 	{Name: "Secret", Kind: "Secret", Resource: "secrets", Scope: "namespaced", Description: "Secret key presence, base64 validity, and imagePullSecret resolution (key names only, never values)", Enabled: false},
 }
 
@@ -62,7 +63,7 @@ func (a Analyzer) runRegistry(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
 	for _, def := range registry {
-		if def.Name == "Pod" || def.Name == "Secret" {
+		if def.Name == "Pod" || def.Name == "Secret" || def.Name == "ResourceClaim" {
 			continue
 		}
 		if len(selected) == 0 && !def.Enabled {

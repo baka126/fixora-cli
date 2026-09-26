@@ -15,6 +15,7 @@ type Reader interface {
 
 type ObjectMeta struct {
 	Name              string            `json:"name"`
+	UID               string            `json:"uid"`
 	Namespace         string            `json:"namespace"`
 	Labels            map[string]string `json:"labels"`
 	Annotations       map[string]string `json:"annotations"`
@@ -132,6 +133,7 @@ type ObjectReference struct {
 	Kind      string `json:"kind"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
+	UID       string `json:"uid"`
 }
 
 // JobState is the completion-relevant view of a Job, consumed by ops.CompletionChecker.
