@@ -27,7 +27,8 @@ func TestHPATargetReadErrorIsNotReportedAsMissing(t *testing.T) {
 	}{
 		{"forbidden", errors.New("deployments.apps is forbidden"), "ScaleTargetUnreadable"},
 		{"unavailable", errors.New("connection refused"), "ScaleTargetUnreadable"},
-		{"missing", errors.New("deployments.apps api NotFound"), "MissingScaleTarget"},
+		{"missing", errors.New(`Error from server (NotFound): deployments.apps "api" not found`), "MissingScaleTarget"},
+		{"discovery failure", errors.New("resource mapping not found for deployments.apps"), "ScaleTargetUnreadable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reader := hpaTargetErrorReader{fakeReader: fakeReader{items: map[string][]map[string]any{"hpa": {hpa}}}, targetErr: tc.err}

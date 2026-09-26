@@ -2,6 +2,8 @@ package analyzer
 
 import (
 	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
@@ -39,7 +41,7 @@ func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
 		targetResource := strings.ToLower(targetKind) + "/" + targetName
 		targetObj, targetErr := ctx.GetResource(namespace, targetResource)
 		if targetErr != nil {
-			missing := strings.Contains(strings.ToLower(targetErr.Error()), "notfound") || strings.Contains(strings.ToLower(targetErr.Error()), "not found")
+			missing := hpaTargetNotFound(targetErr, targetKind, targetName)
 			status, severity, summary := "ScaleTargetUnreadable", "medium", "HPA scale target could not be verified because its read failed."
 			title, description := "Resolve scale target read error", "Check RBAC and API availability before concluding the HPA target is missing."
 			if missing {
@@ -98,4 +100,14 @@ func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+func hpaTargetNotFound(err error, kind, name string) bool {
+	if apierrors.IsNotFound(err) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "(notfound)") &&
+		strings.Contains(message, strings.ToLower(kind)) &&
+		strings.Contains(message, `"`+strings.ToLower(name)+`" not found`)
 }

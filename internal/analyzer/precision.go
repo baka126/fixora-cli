@@ -9,9 +9,10 @@ import (
 
 func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	type precisionAnalyzer struct {
-		name    string
-		aliases []string
-		run     func(*ScanContext) ([]Finding, error)
+		name     string
+		aliases  []string
+		run      func(*ScanContext) ([]Finding, error)
+		optional bool
 	}
 	analyzers := []precisionAnalyzer{
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
@@ -29,7 +30,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "storage", aliases: []string{"storage", "pv", "persistentvolume", "storageclass"}, run: a.analyzeStorage},
 		{name: "configmap", aliases: []string{"configmap", "configmaps", "configuration"}, run: a.analyzeConfigMaps},
 		{name: "olm-operators", aliases: []string{"olm", "operator", "operators", "catalogsource", "subscription", "installplan", "clusterserviceversion", "operatorgroup", "clustercatalog", "clusterextension"}, run: a.analyzeOLM},
-		{name: "resource-claim", aliases: []string{"resourceclaim", "resourceclaims", "deviceclass", "devices", "scheduling"}, run: a.analyzeResourceClaims},
+		{name: "resource-claim", aliases: []string{"resourceclaim", "resourceclaims", "deviceclass", "devices", "scheduling"}, run: a.analyzeResourceClaims, optional: true},
 		{name: "deployment-replicas", aliases: []string{"deployment", "deployments", "workload"}, run: a.analyzeDeployments},
 		{name: "daemonset", aliases: []string{"daemonset", "daemonsets", "workload"}, run: a.analyzeDaemonSets},
 		{name: "statefulset", aliases: []string{"statefulset", "statefulsets", "workload"}, run: a.analyzeStatefulSets},
@@ -44,6 +45,9 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 	// Select the analyzers to run, preserving registration order.
 	var jobs []precisionAnalyzer
 	for _, pa := range analyzers {
+		if len(selected) == 0 && pa.optional {
+			continue
+		}
 		if len(selected) > 0 && !matchesAny(selected, pa.aliases...) {
 			continue
 		}

@@ -16,7 +16,9 @@ func TestDeploymentReplicaMismatchWaitsForCurrentStatus(t *testing.T) {
 		want                 int
 	}{
 		{"stale", 2, 1, nil, 0},
-		{"healthy rollout", 2, 2, []any{map[string]any{"type": "Progressing", "status": "True"}, map[string]any{"type": "Available", "status": "True"}}, 0},
+		{"healthy rollout", 2, 2, []any{map[string]any{"type": "Progressing", "status": "True", "reason": "ReplicaSetUpdated"}, map[string]any{"type": "Available", "status": "True"}}, 0},
+		{"stale rollout progress", 2, 2, []any{map[string]any{"type": "Progressing", "status": "True", "reason": "ReplicaSetUpdated", "lastUpdateTime": "2000-01-01T00:00:00Z"}, map[string]any{"type": "Available", "status": "True"}}, 1},
+		{"previous rollout complete but replicas missing", 2, 2, []any{map[string]any{"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"}, map[string]any{"type": "Available", "status": "True", "reason": "MinimumReplicasAvailable"}}, 1},
 		{"stalled", 2, 2, []any{map[string]any{"type": "Progressing", "status": "False"}}, 1},
 	}
 	for _, tc := range cases {
@@ -88,6 +90,17 @@ func TestResourceClaimSkipsWhenDeviceClassesUnavailable(t *testing.T) {
 	got, skipped := a.runPrecisionAnalyzers(NewScanContext(context.Background(), reader, a.opts))
 	if len(got) != 0 || len(skipped) != 1 {
 		t.Fatalf("findings=%#v skipped=%#v", got, skipped)
+	}
+}
+
+func TestDefaultScanDoesNotReadOptionalResourceClaims(t *testing.T) {
+	reader := fakeReader{items: map[string][]map[string]any{}, itemErrs: map[string]error{"resourceclaims.resource.k8s.io": fmt.Errorf("resourceclaim API unavailable")}}
+	a := New(reader, Options{Namespace: "prod"})
+	_, skipped := a.runPrecisionAnalyzers(NewScanContext(context.Background(), reader, a.opts))
+	for _, check := range skipped {
+		if check.Name == "resource-claim" {
+			t.Fatalf("optional ResourceClaim analyzer ran in default scan: %#v", skipped)
+		}
 	}
 }
 
