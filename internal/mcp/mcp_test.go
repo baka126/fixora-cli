@@ -237,6 +237,24 @@ func TestMCPShadowRunsIsolatedAndReturnsMinimalSummary(t *testing.T) {
 	}
 }
 
+func TestMCPShadowFailurePreservesCleanupSummary(t *testing.T) {
+	server := Server{
+		EnableShadow: true,
+		analyzeResource: func(context.Context, string) (analyzer.Finding, error) {
+			return analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", Status: "ImagePullBackOff"}, nil
+		},
+		newTypedClient: func() (*kube.TypedClient, error) { return &kube.TypedClient{}, nil },
+		runShadow: func(_ context.Context, _ *kube.TypedClient, req shadow.Request) (shadow.Result, error) {
+			return shadow.Result{Verified: true, Resource: req.Resource, Namespace: req.Namespace, Cleanup: []string{"failed to delete networkpolicy/fixora-shadow"}}, errors.New("shadow cleanup failed")
+		},
+	}
+	session := connectServerTestClient(t, "2025-11-25", server)
+	result := callTestTool(t, session, "shadow-verify", map[string]any{"resource": "deployment/api", "confirm": true, "container": "api", "image": "ghcr.io/acme/api:v2"})
+	if !result.IsError || !strings.Contains(resultText(result), "failed to delete networkpolicy/fixora-shadow") {
+		t.Fatalf("cleanup failure absent from MCP error: %#v text=%q", result, resultText(result))
+	}
+}
+
 func TestMCPShadowToolHiddenByDefault(t *testing.T) {
 	session := connectTestClient(t, "2025-11-25")
 	listed, err := session.ListTools(context.Background(), nil)

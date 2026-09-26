@@ -132,13 +132,16 @@ func addShadowTool(server *sdk.Server, s Server) {
 	sdk.AddTool[shadowInput, any](server, &sdk.Tool{Name: "shadow-verify", Description: "Create a temporary isolated shadow Pod and NetworkPolicy to verify an eligible patch; requires server opt-in and confirm=true; never delivers the patch.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPointer(false)}}, func(ctx context.Context, req *sdk.CallToolRequest, input shadowInput) (*sdk.CallToolResult, any, error) {
 		value, err := s.callShadow(ctx, input)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s", redact.Text(err.Error()))
+			if value.FailureSummary == "" {
+				value.FailureSummary = redact.Text(err.Error())
+			}
 		}
+		failed := err != nil
 		safe, text, err := safeResult(value)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe}, nil, nil
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe, IsError: failed}, nil, nil
 	})
 }
 

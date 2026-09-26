@@ -76,6 +76,22 @@ func NewFromEnv() (Client, error) {
 
 type providerHTTPError struct{ StatusCode int }
 
+const maxAIResponseBytes = 1 << 20
+
+func readProviderResponse(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, providerHTTPError{StatusCode: resp.StatusCode}
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAIResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAIResponseBytes {
+		return nil, fmt.Errorf("AI provider response exceeds 1 MiB")
+	}
+	return data, nil
+}
+
 func (e providerHTTPError) Error() string {
 	return fmt.Sprintf("AI provider returned HTTP %d", e.StatusCode)
 }
@@ -190,12 +206,9 @@ func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
 	}
 	var decoded struct {
 		Message struct {
@@ -240,12 +253,9 @@ func (c Client) explainHuggingFace(ctx context.Context, payload string) (*analyz
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
 	}
 	var decoded []struct {
 		GeneratedText string `json:"generated_text"`
@@ -308,11 +318,12 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
+	data, err := readProviderResponse(resp)
+	if err != nil {
+		return nil, err
 	}
 	var decoded chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, err
 	}
 	if decoded.Error != nil {
@@ -359,12 +370,9 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
 	}
 	var decoded chatResponse
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -410,12 +418,9 @@ func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
 	}
 	var decoded struct {
 		Candidates []struct {
@@ -463,14 +468,15 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
+	data, err := readProviderResponse(resp)
+	if err != nil {
+		return nil, err
 	}
 	var decoded struct {
 		Message chatMessage `json:"message"`
 		Error   string      `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, err
 	}
 	if decoded.Error != "" {
@@ -503,12 +509,9 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
 	}
 	var decoded struct {
 		Content []struct {
