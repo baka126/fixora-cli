@@ -220,7 +220,9 @@ Fixora can run as a local MCP stdio server for AI assistants:
 kubectl fixora serve --mcp
 ```
 
-Available MCP tools include `analyze`, `incidents`, `health`, `runbook`, `list-resources`, `get-resource`, `get-logs`, `list-events`, `list-filters`, and `config`. The server also exposes MCP prompts: `troubleshoot-pod`, `troubleshoot-deployment`, `troubleshoot-cluster`, and `incident-runbook`.
+The stdio server uses the official Go MCP SDK and supports both older handshake clients and the current MCP lifecycle. Its read tools include `analyze`, `incidents`, `health`, `runbook`, `plan-fix`, `preview-fix`, `validate-fix`, `list-resources`, `get-resource`, `get-logs`, `list-events`, `list-filters`, and `config`. Results are redacted and bounded. Resource and Event lists support `limit` and `offset` pagination (50 by default, 100 maximum); generic resource reads allow only common workload, networking, and storage kinds. Secret, ConfigMap, and unknown resource payloads are blocked, and namespace-scoped servers reject cross-namespace log requests.
+
+To expose temporary shadow verification to an MCP client, start the server with `kubectl fixora serve --mcp --mcp-shadow`. The `shadow-verify` tool also requires `confirm=true` for each call and an apply-eligible concrete patch. It creates an isolated Pod and NetworkPolicy with egress denied by default, returns a short verification and cleanup summary, and never delivers the patch. It attempts cleanup even when verification fails and reports cleanup failures. This server opt-in grants the connected client access to create those temporary resources; review its tool calls in the client before enabling it. The server also exposes MCP prompts: `troubleshoot-pod`, `troubleshoot-deployment`, `troubleshoot-cluster`, and `incident-runbook`.
 
 ## Cache
 

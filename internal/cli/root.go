@@ -80,6 +80,7 @@ type options struct {
 	branch          string
 	commit          bool
 	mcp             bool
+	mcpShadow       bool
 	profile         string
 	aiBudget        int
 	container       string
@@ -235,8 +236,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case "custom-analyzers":
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
+		if opts.mcpShadow && !opts.mcp && !(len(rest) > 0 && rest[0] == "--mcp") {
+			fmt.Fprintln(stderr, "error: --mcp-shadow requires --mcp")
+			return 2
+		}
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, EnableShadow: opts.mcpShadow, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -643,6 +648,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
 	fs.BoolVar(&opts.mcp, "mcp", false, "serve MCP stdio mode")
+	fs.BoolVar(&opts.mcpShadow, "mcp-shadow", false, "expose explicitly confirmed shadow verification through MCP")
 	fs.StringVar(&opts.profile, "profile", "", "AI prompt profile or bundle profile")
 	fs.IntVar(&opts.aiBudget, "ai-budget-tokens", 0, "maximum estimated AI prompt tokens")
 	fs.StringVar(&opts.container, "container", "", "target container for concrete patch generation")
@@ -2693,6 +2699,7 @@ Primary commands:
   custom-analyzers list|add|run Manage explicit local custom analyzer executables
   serve [addr]                 Serve a local-only HTTP API for incidents/analyze
   serve --mcp                  Serve a local MCP stdio server for AI assistants
+      --mcp-shadow            Enable the opt-in shadow verification MCP tool
   trace <resource>             Debug Ingress/HTTPRoute/Service connectivity path
   storage                      Debug PVC/PV/StorageClass issues
   rbac [sa] [verb] [resource]  Debug service account authorization
