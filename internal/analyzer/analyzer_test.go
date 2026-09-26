@@ -292,6 +292,103 @@ func TestScanReportBoundsPodLogConcurrency(t *testing.T) {
 	}
 }
 
+func TestQuantityMi(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"100Gi", 102400, true},
+		{"7936Mi", 7936, true},
+		{"8126464Ki", 7936, true},
+		{"", 0, false},
+		{"100", 0, false},
+	} {
+		got, ok := quantityMi(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("quantityMi(%q) = %d,%v; want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestMilliCores(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"100m", 100, true},
+		{"100", 100000, true},
+		{"8", 8000, true},
+		{"0.5", 500, true},
+		{"", 0, false},
+		{"abc", 0, false},
+	} {
+		got, ok := milliCores(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("milliCores(%q) = %d,%v; want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func allocatableTestNode() kube.Node {
+	n := kube.Node{Metadata: kube.ObjectMeta{Name: "node-a"}}
+	n.Status.Allocatable = map[string]string{"memory": "8Gi", "cpu": "8"}
+	return n
+}
+
+func pendingPodWithRequests(name string, requests map[string]string) kube.Pod {
+	return kube.Pod{
+		Metadata: kube.ObjectMeta{Name: name, Namespace: "prod"},
+		Spec: kube.PodSpec{Containers: []kube.Container{{
+			Name: "greedy", Image: "busybox:1.36",
+			Resources: kube.ResourceRequirements{Requests: requests},
+		}}},
+		Status: kube.PodStatus{Phase: "Pending"},
+	}
+}
+
+func findingEvidence(f Finding, label string) (string, bool) {
+	for _, e := range f.Evidence {
+		if e.Label == label {
+			return e.Value, true
+		}
+	}
+	return "", false
+}
+
+func TestAllocatableShortfallEvidenceEmittedWhenRequestsExceedNode(t *testing.T) {
+	reader := fakeReader{
+		pods:  kube.PodList{Items: []kube.Pod{pendingPodWithRequests("greedy-0", map[string]string{"cpu": "100", "memory": "100Gi"})}},
+		nodes: []kube.Node{allocatableTestNode()},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(report.Findings))
+	}
+	value, ok := findingEvidence(report.Findings[0], "Requests exceed node allocatable")
+	if !ok {
+		t.Fatalf("expected allocatable-shortfall evidence, got %+v", report.Findings[0].Evidence)
+	}
+	if want := "requested memory=102400Mi cpu=100000m; largest node allocatable memory=8192Mi cpu=8000m"; value != want {
+		t.Fatalf("evidence value = %q, want %q", value, want)
+	}
+}
+
+func TestAllocatableShortfallSilentWhenPodFits(t *testing.T) {
+	reader := fakeReader{
+		pods:  kube.PodList{Items: []kube.Pod{pendingPodWithRequests("modest-0", map[string]string{"cpu": "100m", "memory": "64Mi"})}},
+		nodes: []kube.Node{allocatableTestNode()},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("want 1 finding, got %d", len(report.Findings))
+	}
+	if _, ok := findingEvidence(report.Findings[0], "Requests exceed node allocatable"); ok {
+		t.Fatal("a pod that fits an available node must not get allocatable-shortfall evidence")
+	}
+}
+
 func TestScanReportStopsWorkersOnContextCancellation(t *testing.T) {
 	var pods []kube.Pod
 	for i := 0; i < 100; i++ {
@@ -612,4 +709,262 @@ func (f fakeReader) Run(context.Context, ...string) ([]byte, error) {
 		return nil, f.runErr
 	}
 	return []byte("secret/tls"), nil
+}
+
+func nodePlatformEvidence(f Finding) (string, bool) {
+	for _, e := range f.Evidence {
+		if e.Label == "Node platform" {
+			return e.Value, true
+		}
+	}
+	return "", false
+}
+
+// An ImagePullBackOff pod produces no container logs, so the log-driven
+// ExecFormatError branch never attaches node-platform evidence for it. The
+// image inferrer and AI patch path both need that evidence to rank
+// platform-compatible replacement images, so findingForPod attaches it directly
+// for image-pull statuses.
+func TestImagePullFindingCarriesNodePlatformEvidence(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "pull-0", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "app",
+				State: map[string]kube.StatusState{"waiting": {Reason: "ImagePullBackOff"}},
+			}}},
+		}}},
+		nodes: []kube.Node{{Metadata: kube.ObjectMeta{Name: "node-a", Labels: map[string]string{"kubernetes.io/arch": "arm64", "kubernetes.io/os": "linux"}}}},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(report.Findings))
+	}
+	value, ok := nodePlatformEvidence(report.Findings[0])
+	if !ok || value != "linux/arm64" {
+		t.Fatalf("expected Node platform evidence linux/arm64, got %q ok=%v", value, ok)
+	}
+}
+
+func TestCrashLoopFindingHasNoNodePlatformEvidence(t *testing.T) {
+	reader := fakeReader{
+		pods: kube.PodList{Items: []kube.Pod{{
+			Metadata: kube.ObjectMeta{Name: "crash-0", Namespace: "prod"},
+			Spec:     kube.PodSpec{NodeName: "node-a"},
+			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+				Name:  "app",
+				State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+			}}},
+		}}},
+		nodes: []kube.Node{{Metadata: kube.ObjectMeta{Name: "node-a", Labels: map[string]string{"kubernetes.io/arch": "arm64", "kubernetes.io/os": "linux"}}}},
+	}
+	report := New(reader, Options{Namespace: "prod"}).ScanReport(context.Background())
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(report.Findings))
+	}
+	if value, ok := nodePlatformEvidence(report.Findings[0]); ok {
+		t.Fatalf("CrashLoopBackOff must not trigger node-platform lookup, got %q", value)
+	}
+}
+
+func TestEnvRefEvidenceReadsConfigMapKeyRef(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "config-consumer",
+		Env: []kube.EnvVar{{
+			Name: "REQUIRED_ENV",
+			ValueFrom: map[string]any{
+				"configMapKeyRef": map[string]any{"name": "app-confg", "key": "some-key"},
+			},
+		}},
+	}}
+	got := envRefEvidence(pod)
+	if len(got) != 4 || got[0].Value != "REQUIRED_ENV" || got[1].Value != "some-key" {
+		t.Fatalf("unexpected evidence: %+v", got)
+	}
+	if got[2].Label != "Env reference kind" || got[2].Value != "ConfigMap" {
+		t.Fatalf("want ConfigMap kind, got %+v", got[2])
+	}
+	if got[3].Label != "Env reference object" || got[3].Value != "app-confg" {
+		t.Fatalf("want app-confg object, got %+v", got[3])
+	}
+}
+
+func TestEnvRefEvidenceReadsSecretKeyRef(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "config-consumer",
+		Env: []kube.EnvVar{{
+			Name: "REQUIRED_ENV",
+			ValueFrom: map[string]any{
+				"secretKeyRef": map[string]any{"name": "app-secret", "key": "some-key"},
+			},
+		}},
+	}}
+	got := envRefEvidence(pod)
+	if len(got) != 4 {
+		t.Fatalf("secret refs must also be described: %+v", got)
+	}
+	if got[2].Value != "Secret" || got[3].Value != "app-secret" {
+		t.Fatalf("want Secret/app-secret, got %+v %+v", got[2], got[3])
+	}
+}
+
+func TestEnvRefEvidenceEmptyWithoutValueFrom(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Spec.Containers = []kube.Container{{
+		Name: "app",
+		Env:  []kube.EnvVar{{Name: "PLAIN", Value: "literal"}},
+	}}
+	if got := envRefEvidence(pod); got != nil {
+		t.Fatalf("plain env vars produce no reference evidence: %+v", got)
+	}
+}
+
+func TestPodProblemClassifiesRunningNotReadyAsProbeFailure(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Metadata.CreationTimestamp = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name:  "web-app",
+		Ready: false,
+		State: map[string]kube.StatusState{"running": {}},
+	}}
+	status, category, severity := podProblem(pod)
+	if status != "ProbeFailure" {
+		t.Fatalf("want ProbeFailure, got %q", status)
+	}
+	if category != "runtime" || severity != "high" {
+		t.Fatalf("unexpected category=%q severity=%q", category, severity)
+	}
+}
+
+func TestPodProblemPrefersCrashLoopOverProbeFailure(t *testing.T) {
+	// A crash-looping container is also never Ready. It must keep its crash
+	// classification rather than be relabelled a probe problem.
+	pod := kube.Pod{}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name:  "app",
+		Ready: false,
+		State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+	}}
+	if status, _, _ := podProblem(pod); status != "CrashLoopBackOff" {
+		t.Fatalf("want CrashLoopBackOff, got %q", status)
+	}
+}
+
+func TestPodProblemIgnoresReadyPod(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name: "app", Ready: true, State: map[string]kube.StatusState{"running": {}},
+	}}
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("healthy pod must produce no status, got %q", status)
+	}
+}
+
+func runningNotReadyPod(created time.Time, probe map[string]any) kube.Pod {
+	pod := kube.Pod{}
+	pod.Metadata.CreationTimestamp = created.UTC().Format(time.RFC3339)
+	pod.Spec.Containers = []kube.Container{{Name: "web-app", ReadinessProbe: probe}}
+	pod.Status.Phase = "Running"
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{
+		Name: "web-app", Ready: false, State: map[string]kube.StatusState{"running": {}},
+	}}
+	return pod
+}
+
+func TestProbeFailureNotClassifiedInsideProbeWindow(t *testing.T) {
+	// Probe declares 5s delay + 5s period × 3 failures = 20s window.
+	pod := runningNotReadyPod(time.Now().Add(-8*time.Second), map[string]any{
+		"initialDelaySeconds": 5, "periodSeconds": 5, "failureThreshold": 3,
+	})
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("pod still inside its probe window must not be classified, got %q", status)
+	}
+}
+
+func TestProbeFailureClassifiedPastProbeWindow(t *testing.T) {
+	pod := runningNotReadyPod(time.Now().Add(-60*time.Second), map[string]any{
+		"initialDelaySeconds": 5, "periodSeconds": 5, "failureThreshold": 3,
+	})
+	if status, _, _ := podProblem(pod); status != "ProbeFailure" {
+		t.Fatalf("pod past its probe window must be ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureSkipsTerminatingPod(t *testing.T) {
+	pod := runningNotReadyPod(time.Now().Add(-10*time.Minute), nil)
+	pod.Metadata.DeletionTimestamp = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("terminating pod must not be classified as ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureDefaultWindowWhenProbeHasNoTimings(t *testing.T) {
+	// No probe timings => 30s default. 20s old => inside; 40s old => past.
+	young := runningNotReadyPod(time.Now().Add(-20*time.Second), map[string]any{})
+	if status, _, _ := podProblem(young); status != "" {
+		t.Fatalf("within default 30s window must not be classified, got %q", status)
+	}
+	old := runningNotReadyPod(time.Now().Add(-40*time.Second), map[string]any{})
+	if status, _, _ := podProblem(old); status != "ProbeFailure" {
+		t.Fatalf("past default 30s window must be ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbeFailureFailsClosedOnUnparseableCreationTimestamp(t *testing.T) {
+	// No parseable creationTimestamp: the probe window cannot be age-gated, so
+	// classification must fail closed rather than feed an apply-eligible patch.
+	pod := runningNotReadyPod(time.Now().Add(-time.Hour), nil)
+	pod.Metadata.CreationTimestamp = ""
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("missing creationTimestamp must not classify as ProbeFailure, got %q", status)
+	}
+	pod.Metadata.CreationTimestamp = "not-a-timestamp"
+	if status, _, _ := podProblem(pod); status != "" {
+		t.Fatalf("unparseable creationTimestamp must not classify as ProbeFailure, got %q", status)
+	}
+}
+
+func TestProbePortEvidenceComparesDeclaredAndProbePort(t *testing.T) {
+	pod := kube.Pod{}
+	pod.Status.ContainerStatuses = []kube.ContainerStatus{{Name: "web-app", Ready: false}}
+	pod.Spec.Containers = []kube.Container{{
+		Name:  "web-app",
+		Ports: []kube.ContainerPort{{ContainerPort: 8080}},
+		ReadinessProbe: map[string]any{
+			"httpGet": map[string]any{"path": "/", "port": float64(80)},
+		},
+	}}
+	got := probePortEvidence(pod)
+	if len(got) != 2 {
+		t.Fatalf("want two evidences, got %+v", got)
+	}
+	if got[0].Value != "8080" {
+		t.Fatalf("declared ports: want 8080, got %q", got[0].Value)
+	}
+	if got[1].Value != "80" {
+		t.Fatalf("probe port: want 80, got %q", got[1].Value)
+	}
+}
+
+func TestProbeTargetPortHandlesNamedPort(t *testing.T) {
+	probe := map[string]any{"httpGet": map[string]any{"port": "http"}}
+	if got := probeTargetPort(probe); got != "http" {
+		t.Fatalf("want http, got %q", got)
+	}
+}
+
+func TestSummaryForStatusProbeFailure(t *testing.T) {
+	got := summaryForStatus("ProbeFailure")
+	if !strings.Contains(got, "Ready") {
+		t.Fatalf("ProbeFailure summary should mention readiness, got %q", got)
+	}
+	if got == summaryForStatus("SomethingElse") {
+		t.Fatal("ProbeFailure must not fall through to the generic summary")
+	}
 }

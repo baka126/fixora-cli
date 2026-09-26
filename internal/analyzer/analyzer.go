@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -476,6 +478,39 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
+	// A Pending/Unschedulable pod whose summed requests exceed every node's
+	// allocatable is fixable by lowering the requests (the resources strategy).
+	// Taints, affinity and PVC binding are also Pending causes, are not fixed
+	// this way, and deliberately produce no evidence here so they keep falling
+	// through to the review-only scheduling strategy.
+	if status == "Pending" || status == "Unschedulable" {
+		if evidence, ok := a.allocatableShortfall(ctx, sctx, pod); ok {
+			f.Evidence = append(f.Evidence, evidence)
+		}
+	}
+
+	// A CreateContainerConfigError pod references a ConfigMap or Secret that
+	// does not resolve. Name the env var and key behind the reference so the
+	// env inferrer can rebuild it once it identifies the intended object.
+	if status == "CreateContainerConfigError" {
+		f.Evidence = append(f.Evidence, envRefEvidence(pod)...)
+	}
+
+	// A ProbeFailure pod is Running but never Ready. Record the ports the
+	// not-ready container declares and the port its readiness probe targets so
+	// the probe inferrer can propose the declared port when they disagree.
+	if status == "ProbeFailure" {
+		f.Evidence = append(f.Evidence, probePortEvidence(pod)...)
+	}
+
+	// An ImagePullBackOff pod never starts a container, so there are no logs to
+	// classify and the log-driven ExecFormatError path below never runs for it.
+	// The image inferrer and the AI patch path both need node-platform evidence
+	// to rank platform-compatible replacement images, so attach it here.
+	if strings.Contains(status, "ImagePull") {
+		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
+	}
+
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
 	f.RecentChanges = recent
@@ -539,6 +574,161 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 	}
 
 	return f, true
+}
+
+// allocatableShortfall reports requests-exceed-allocatable evidence when no
+// node could satisfy the pod's summed memory or CPU requests. Only this
+// sub-case of Pending is fixable by lowering requests. The evidence value
+// carries both allocatable figures in a form internal/infer's parseAllocatable
+// can read back — keep the two in sync.
+func (a Analyzer) allocatableShortfall(ctx context.Context, sctx *ScanContext, pod kube.Pod) (Evidence, bool) {
+	var reqMem, reqCPU int64
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		if mi, ok := quantityMi(container.Resources.Requests["memory"]); ok {
+			reqMem += mi
+		}
+		if m, ok := milliCores(container.Resources.Requests["cpu"]); ok {
+			reqCPU += m
+		}
+	}
+	if reqMem == 0 && reqCPU == 0 {
+		return Evidence{}, false
+	}
+	nodes, err := a.nodeList(ctx, sctx)
+	if err != nil {
+		return Evidence{}, false
+	}
+	var largestMem, largestCPU int64
+	for _, node := range nodes {
+		if mi, ok := quantityMi(node.Status.Allocatable["memory"]); ok && mi > largestMem {
+			largestMem = mi
+		}
+		if m, ok := milliCores(node.Status.Allocatable["cpu"]); ok && m > largestCPU {
+			largestCPU = m
+		}
+	}
+	// Both figures are needed to size a complete patch; without either, the
+	// inferrer could not fill every placeholder, so decline here too.
+	if largestMem == 0 || largestCPU == 0 {
+		return Evidence{}, false
+	}
+	if reqMem <= largestMem && reqCPU <= largestCPU {
+		return Evidence{}, false
+	}
+	return Evidence{
+		Label: "Requests exceed node allocatable",
+		Value: fmt.Sprintf("requested memory=%dMi cpu=%dm; largest node allocatable memory=%dMi cpu=%dm",
+			reqMem, reqCPU, largestMem, largestCPU),
+	}, true
+}
+
+// envRefEvidence names the env var and key behind a ConfigMap or Secret
+// reference, so the env inferrer can rebuild the reference once it identifies
+// the intended object.
+func envRefEvidence(pod kube.Pod) []Evidence {
+	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		for _, env := range container.Env {
+			for _, refKind := range []string{"configMapKeyRef", "secretKeyRef"} {
+				ref, ok := env.ValueFrom[refKind].(map[string]any)
+				if !ok {
+					continue
+				}
+				key, _ := ref["key"].(string)
+				name, _ := ref["name"].(string)
+				kind := "ConfigMap"
+				if refKind == "secretKeyRef" {
+					kind = "Secret"
+				}
+				return []Evidence{
+					{Label: "Env reference name", Value: env.Name},
+					{Label: "Env reference key", Value: key},
+					{Label: "Env reference kind", Value: kind},
+					{Label: "Env reference object", Value: name},
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// probePortEvidence records the ports the not-ready container declares and the
+// port its readiness probe targets — the two values the probe inferrer
+// compares.
+func probePortEvidence(pod kube.Pod) []Evidence {
+	notReady := map[string]bool{}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			notReady[cs.Name] = true
+		}
+	}
+	for _, container := range pod.Spec.Containers {
+		if !notReady[container.Name] {
+			continue
+		}
+		ports := make([]string, 0, len(container.Ports))
+		for _, port := range container.Ports {
+			ports = append(ports, strconv.Itoa(port.ContainerPort))
+		}
+		return []Evidence{
+			{Label: "Container ports", Value: strings.Join(ports, ",")},
+			{Label: "Readiness probe port", Value: probeTargetPort(container.ReadinessProbe)},
+		}
+	}
+	return nil
+}
+
+// probeTargetPort pulls the port out of an httpGet or tcpSocket probe. The
+// probe arrives as decoded JSON, so a numeric port is a float64.
+func probeTargetPort(probe map[string]any) string {
+	for _, handler := range []string{"httpGet", "tcpSocket"} {
+		h, ok := probe[handler].(map[string]any)
+		if !ok {
+			continue
+		}
+		switch port := h["port"].(type) {
+		case string:
+			return port
+		case float64:
+			return strconv.Itoa(int(port))
+		case int:
+			return strconv.Itoa(port)
+		}
+	}
+	return ""
+}
+
+// quantityMi converts a Kubernetes memory quantity (Ki/Mi/Gi) to mebibytes.
+func quantityMi(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	switch {
+	case strings.HasSuffix(value, "Gi"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Gi"), 10, 64)
+		return n * 1024, err == nil
+	case strings.HasSuffix(value, "Mi"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Mi"), 10, 64)
+		return n, err == nil
+	case strings.HasSuffix(value, "Ki"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "Ki"), 10, 64)
+		return n / 1024, err == nil
+	}
+	return 0, false
+}
+
+// milliCores converts a Kubernetes CPU quantity to millicores. It accepts a
+// millicore suffix ("100m"), a bare integer core count ("8", "100"), and a
+// fractional core count ("0.5").
+func milliCores(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	switch {
+	case value == "":
+		return 0, false
+	case strings.HasSuffix(value, "m"):
+		n, err := strconv.ParseInt(strings.TrimSuffix(value, "m"), 10, 64)
+		return n, err == nil && n >= 0
+	default:
+		cores, err := strconv.ParseFloat(value, 64)
+		return int64(cores * 1000), err == nil && cores >= 0
+	}
 }
 
 // totalRestarts sums restartCount across init and app container statuses.
@@ -665,6 +855,19 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 				return reason, "runtime", "high"
 			}
 		}
+		if term, ok := cs.State["terminated"]; ok {
+			switch {
+			case strings.Contains(term.Reason, "OOMKilled"):
+				return "OOMKilled", "resources", "high"
+			case cs.RestartCount >= 1 && (term.ExitCode != 0 || term.Reason == "Error"):
+				// A container currently reported as terminated with a non-zero
+				// exit that has already restarted is crash-looping. Recent
+				// kubelet reports this state for most of the back-off period
+				// instead of waiting: CrashLoopBackOff, so keying only off the
+				// waiting reason misses an active crash loop between restarts.
+				return "CrashLoopBackOff", "runtime", "critical"
+			}
+		}
 		for _, state := range cs.LastState {
 			if strings.Contains(state.Reason, "OOMKilled") {
 				return "OOMKilled", "resources", "high"
@@ -677,6 +880,20 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 	if pod.Status.Phase == "Failed" || pod.Status.Reason != "" {
 		return firstNonEmpty(pod.Status.Reason, "PodFailed"), "runtime", "high"
 	}
+	// Running but never Ready is a failing readiness probe. Checked after the
+	// container-state switches above so a crash-looping or image-pull-failing
+	// container keeps its own classification — those are also never Ready.
+	// Gated on the container's own probe window so a pod still inside its
+	// startup delay, or one shutting down, is not misread as a misconfiguration.
+	if pod.Status.Phase == "Running" {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if _, running := cs.State["running"]; running && !cs.Ready {
+				if probeFailureConfirmed(pod, cs.Name, time.Now()) {
+					return "ProbeFailure", "runtime", "high"
+				}
+			}
+		}
+	}
 	for _, condition := range pod.Status.Conditions {
 		if condition.Status == "False" && condition.Reason != "" {
 			if strings.Contains(condition.Reason, "Unschedulable") {
@@ -685,6 +902,59 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 		}
 	}
 	return "", "", ""
+}
+
+// probeFailureConfirmed reports whether a Running, not-Ready container has had
+// long enough for its own readiness probe to have failed for a real reason
+// rather than the pod still being inside its startup window. A pod whose
+// deletion has been requested is excluded: a not-Ready container there is
+// usually a preStop hook draining, not a misconfiguration.
+func probeFailureConfirmed(pod kube.Pod, container string, now time.Time) bool {
+	if strings.TrimSpace(pod.Metadata.DeletionTimestamp) != "" {
+		return false
+	}
+	created, err := time.Parse(time.RFC3339, pod.Metadata.CreationTimestamp)
+	if err != nil {
+		// No parseable creation time: cannot age-gate the probe window, so
+		// fail closed rather than risk a spurious ProbeFailure driving an
+		// apply-eligible patch. The API server stamps creationTimestamp on
+		// every persisted pod, so this is unreachable for real objects.
+		return false
+	}
+	return now.Sub(created) >= probeReadyWindow(pod, container)
+}
+
+// probeReadyWindow is how long the container's readiness probe is allowed to
+// keep failing before a persistent not-Ready state counts as a
+// misconfiguration: initialDelaySeconds + periodSeconds × failureThreshold read
+// from the container's own readinessProbe. Unset fields fall back to the
+// Kubernetes probe defaults (period 10, failureThreshold 3), so a probe with no
+// timings — or no probe at all — yields the 30s default.
+func probeReadyWindow(pod kube.Pod, container string) time.Duration {
+	initial, period, failures := 0, 10, 3
+	for _, c := range pod.Spec.Containers {
+		if c.Name != container {
+			continue
+		}
+		if p := c.ReadinessProbe; len(p) > 0 {
+			initial = probeInt(p, "initialDelaySeconds", initial)
+			period = probeInt(p, "periodSeconds", period)
+			failures = probeInt(p, "failureThreshold", failures)
+		}
+		break
+	}
+	w := time.Duration(initial+period*failures) * time.Second
+	if w <= 0 {
+		return 30 * time.Second
+	}
+	return w
+}
+
+func probeInt(probe map[string]any, key string, def int) int {
+	if _, ok := probe[key]; !ok {
+		return def
+	}
+	return intValue(probe[key])
 }
 
 func recommendationsForStatus(status string, pod kube.Pod) []Recommendation {
@@ -697,6 +967,8 @@ func recommendationsForStatus(status string, pod kube.Pod) []Recommendation {
 		return []Recommendation{{Title: "Inspect logs and probes", Description: "Review previous logs, command/args, env refs, config mounts, securityContext, and probe timing.", PatchType: "runtime", SafeByDefault: false}}
 	case strings.Contains(status, "Config"):
 		return []Recommendation{{Title: "Validate ConfigMap and Secret refs", Description: "Check env, envFrom, volumes, and required keys. Never print secret values.", PatchType: "env", SafeByDefault: true}}
+	case strings.Contains(status, "ProbeFailure"):
+		return []Recommendation{{Title: "Correct the readiness probe", Description: "Check the probe's port, path, scheme and timing against the port the container actually listens on.", PatchType: "probe", SafeByDefault: true}}
 	case strings.Contains(status, "Pending"), strings.Contains(status, "Unschedulable"):
 		return []Recommendation{{Title: "Review scheduling constraints", Description: "Check nodeSelector, affinity, taints, tolerations, PVC binding, and resource requests.", PatchType: "scheduling", SafeByDefault: false}}
 	default:
@@ -712,6 +984,8 @@ func summaryForStatus(status string) string {
 		return "Container was terminated after exceeding memory constraints."
 	case strings.Contains(status, "CrashLoopBackOff"):
 		return "Container is repeatedly crashing after start."
+	case strings.Contains(status, "ProbeFailure"):
+		return "Container is running but never becomes Ready; its readiness probe keeps failing."
 	case strings.Contains(status, "Pending"), strings.Contains(status, "Unschedulable"):
 		return "Pod cannot be scheduled or started."
 	default:

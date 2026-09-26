@@ -43,16 +43,34 @@ func planJSON(t *testing.T, ns, ref string, extraArgs ...string) planView {
 	return parsePlanView(t, []byte(stdout))
 }
 
+// planJSONUntil re-runs `why <ref> -o json` until the plan Status contains
+// want, or the deadline passes. A crash-looping pod spends most of each cycle
+// in CrashLoopBackOff backoff but briefly re-runs its container; a lone scan
+// can land in that window and see a healthy pod (OwnedPodsHealthy) or only the
+// structural ReplicasMismatch. Retrying rides out the window, the same way
+// waitForPodReason polls for a container state.
+func planJSONUntil(t *testing.T, ns, ref, want string, extraArgs ...string) planView {
+	t.Helper()
+	var pv planView
+	waitFor(t, 90*time.Second, ref+" plan Status to contain "+strconv.Quote(want), func() bool {
+		pv = planJSON(t, ns, ref, extraArgs...)
+		return strings.Contains(pv.Status, want)
+	}, func() { t.Logf("last plan: %+v", pv) })
+	return pv
+}
+
 // waitForPodReason polls until a pod labelled app=<deploy> reports reason in a
-// container waiting- or terminated-state reason.
+// container's current waiting/terminated state or its last-terminated state.
+// lastState matters for reasons like OOMKilled that only sit in the current
+// terminated state for the instant between the kill and CrashLoopBackOff.
 func waitForPodReason(t *testing.T, ns, deploy, reason string) {
 	t.Helper()
 	waitFor(t, 150*time.Second, deploy+" pods to report "+reason, func() bool {
 		out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pods",
 			"-n", ns, "-l", "app="+deploy,
-			"-o", "jsonpath={.items[*].status.containerStatuses[*].state.waiting.reason} {.items[*].status.containerStatuses[*].state.terminated.reason}")
+			"-o", "jsonpath={.items[*].status.containerStatuses[*].state.waiting.reason} {.items[*].status.containerStatuses[*].state.terminated.reason} {.items[*].status.containerStatuses[*].lastState.terminated.reason}")
 		return code == 0 && strings.Contains(out, reason)
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }
 
 // waitForPhase polls a deployment's first pod until its phase matches.
@@ -62,7 +80,7 @@ func waitForPhase(t *testing.T, ns, deploy, phase string) {
 		out, _, code := run(t, "kubectl", "--context", kubeContext, "get", "pods",
 			"-n", ns, "-l", "app="+deploy, "-o", "jsonpath={.items[*].status.phase}")
 		return code == 0 && strings.Contains(out, phase)
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }
 
 // waitForRollout polls until every replica of deploy has been continuously
@@ -87,7 +105,7 @@ func waitForRollout(t *testing.T, ns, deploy string, timeout time.Duration) {
 			streak = 0
 		}
 		return streak >= 16
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }
 
 // waitForUnschedulable polls until a pod labelled app=<deploy> reports the
@@ -101,7 +119,7 @@ func waitForUnschedulable(t *testing.T, ns, deploy string) {
 			"-n", ns, "-l", "app="+deploy,
 			"-o", `jsonpath={.items[*].status.conditions[?(@.type=="PodScheduled")].reason}`)
 		return code == 0 && strings.Contains(out, "Unschedulable")
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }
 
 // waitForRestarts polls until a pod labelled app=<deploy> has restarted at
@@ -123,7 +141,7 @@ func waitForRestarts(t *testing.T, ns, deploy string, min int) {
 			}
 		}
 		return false
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }
 
 // waitForLog polls the logs of pods labelled app=<deploy> until they contain
@@ -135,5 +153,5 @@ func waitForLog(t *testing.T, ns, deploy, substr string) {
 		out, _, code := run(t, "kubectl", "--context", kubeContext, "logs",
 			"-n", ns, "-l", "app="+deploy, "--tail=-1")
 		return code == 0 && strings.Contains(strings.ToLower(out), strings.ToLower(substr))
-	})
+	}, func() { dumpScenario(t, ns, deploy) })
 }

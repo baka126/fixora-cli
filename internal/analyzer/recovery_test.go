@@ -93,3 +93,45 @@ func TestTotalRestarts(t *testing.T) {
 		t.Fatalf("totalRestarts = %d, want 6", got)
 	}
 }
+
+// A crash-looping container spends much of the back-off period reported as
+// terminated (Error, non-zero exit) rather than waiting: CrashLoopBackOff on
+// current Kubernetes. A scan that lands in that window must still classify it.
+func TestCrashLoopDetectedFromTerminatedState(t *testing.T) {
+	pod := kube.Pod{
+		Metadata: kube.ObjectMeta{Name: "api-2", Namespace: "prod"},
+		Status: kube.PodStatus{
+			Phase: "Running",
+			ContainerStatuses: []kube.ContainerStatus{{
+				Name:         "api",
+				Ready:        false,
+				RestartCount: 4,
+				State:        map[string]kube.StatusState{"terminated": {Reason: "Error", ExitCode: 1}},
+				LastState:    map[string]kube.StatusState{"terminated": {Reason: "Error", ExitCode: 1}},
+			}},
+		},
+	}
+	status, category, severity := podProblem(pod)
+	if status != "CrashLoopBackOff" || category != "runtime" || severity != "critical" {
+		t.Fatalf("podProblem = (%q, %q, %q), want (CrashLoopBackOff, runtime, critical)", status, category, severity)
+	}
+}
+
+// A one-shot Pod that failed once (restartPolicy: Never) is Failed, not
+// crash-looping — restartCount 0 must not trip the terminated-state branch.
+func TestSingleFailedRunIsNotCrashLoop(t *testing.T) {
+	pod := kube.Pod{
+		Metadata: kube.ObjectMeta{Name: "job-x", Namespace: "prod"},
+		Status: kube.PodStatus{
+			Phase: "Failed",
+			ContainerStatuses: []kube.ContainerStatus{{
+				Name:         "runner",
+				RestartCount: 0,
+				State:        map[string]kube.StatusState{"terminated": {Reason: "Error", ExitCode: 1}},
+			}},
+		},
+	}
+	if status, _, _ := podProblem(pod); status == "CrashLoopBackOff" {
+		t.Fatalf("a single failed run must not be classified CrashLoopBackOff (got %q)", status)
+	}
+}

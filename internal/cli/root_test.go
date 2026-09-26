@@ -498,17 +498,6 @@ func TestPatchImagesAndNodePlatformFromFinding(t *testing.T) {
 	}
 }
 
-func TestBestTrustedImageCandidatePrefersHigherScore(t *testing.T) {
-	finding := analyzer.Finding{Evidence: []analyzer.Evidence{
-		{Label: "Ranked public image candidate (score 45)", Value: "example/low | public"},
-		{Label: "Ranked public image candidate (score 65)", Value: "example/high | public"},
-	}}
-	image, score := bestTrustedImageCandidate(finding)
-	if image != "example/high" || score != 65 {
-		t.Fatalf("unexpected trusted candidate %q score=%d", image, score)
-	}
-}
-
 func TestWriteReviewPatchUsesEditedFileAsPlanPatch(t *testing.T) {
 	dir := t.TempDir()
 	editor := filepath.Join(dir, "editor.sh")

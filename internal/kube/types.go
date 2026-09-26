@@ -14,11 +14,13 @@ type Reader interface {
 }
 
 type ObjectMeta struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace"`
-	Labels      map[string]string `json:"labels"`
-	Annotations map[string]string `json:"annotations"`
-	OwnerRefs   []OwnerReference  `json:"ownerReferences"`
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	Labels            map[string]string `json:"labels"`
+	Annotations       map[string]string `json:"annotations"`
+	OwnerRefs         []OwnerReference  `json:"ownerReferences"`
+	CreationTimestamp string            `json:"creationTimestamp"`
+	DeletionTimestamp string            `json:"deletionTimestamp"`
 }
 
 type OwnerReference struct {
