@@ -93,6 +93,10 @@ class GeneratedChecks(unittest.TestCase):
         root = self.make_site('<link rel="stylesheet" href="/fixora-cli/assets/css/missing.css">')
         self.assertTrue(any("broken local link" in issue for issue in check_site(root, "/fixora-cli")))
 
+    def test_missing_generated_fragment(self):
+        root = self.make_site('<a href="/fixora-cli/#absent">Missing section</a>')
+        self.assertTrue(any("broken local fragment" in issue for issue in check_site(root, "/fixora-cli")))
+
 
 if __name__ == "__main__":
     unittest.main()

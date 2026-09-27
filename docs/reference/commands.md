@@ -10,6 +10,8 @@ section: reference
 
 The following command families are available in **v0.8.0** unless marked Upcoming. Run `kubectl fixora help --advanced` on your installed binary for its exact syntax. Commands that perform a write still require the corresponding Kubernetes or repository permission; see [safety]({{ '/safety/' | relative_url }}).
 
+[Diagnose](#diagnose) · [Subsystems](#inspect-a-particular-subsystem) · [Review and deliver](#review-and-deliver) · [Operate and extend](#operate-and-extend) · [Flags](#global-and-workflow-flags)
+
 ## Diagnose
 
 | Command | Purpose and effect |
