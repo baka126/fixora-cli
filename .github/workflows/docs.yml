@@ -35,3 +35,9 @@ jobs:
           destination: ./_site
       - name: Check generated links
         run: python3 scripts/check_docs.py --source docs --site _site
+      - name: Upload site preview for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixora-docs-preview
+          path: _site
+          retention-days: 7
