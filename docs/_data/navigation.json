@@ -1,6 +1,11 @@
 [
   {"title": "Overview", "path": "/", "summary": "What Fixora does", "section": "overview"},
   {"title": "Get started", "path": "/get-started/", "summary": "Install and first scan", "section": "get-started"},
+  {"title": "Use cases", "path": "/use-cases/", "summary": "Troubleshoot by symptom", "section": "use-cases"},
+  {"title": "Workload failures", "path": "/use-cases/workloads/", "summary": "Crash loops, OOM, image pulls, Pending, and Jobs", "section": "use-cases"},
+  {"title": "Networking failures", "path": "/use-cases/networking/", "summary": "Services, routes, Gateway, and DNS", "section": "use-cases"},
+  {"title": "Storage and security", "path": "/use-cases/storage-security/", "summary": "PVC, RBAC, policy, and Secrets", "section": "use-cases"},
+  {"title": "Delivery and operations", "path": "/use-cases/delivery-operations/", "summary": "Node pressure and source-managed workloads", "section": "use-cases"},
   {"title": "Guides", "path": "/guides/", "summary": "Operator workflows", "section": "guides"},
   {"title": "Incident workflow", "path": "/guides/incident-workflow/", "summary": "Scan, explain, and fix", "section": "guides"},
   {"title": "Verification and delivery", "path": "/guides/delivery/", "summary": "Shadow, patch, cluster, and PR", "section": "guides"},

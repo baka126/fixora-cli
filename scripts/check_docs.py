@@ -2,11 +2,13 @@
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 
 def _pages(source: Path):
     pages = set()
+    anchors = {}
     issues = []
     for path in source.rglob("*.md"):
         if any(part in {"superpowers", "_site"} for part in path.parts) or path.name == "checklist.md":
@@ -37,7 +39,13 @@ def _pages(source: Path):
             if permalink in pages:
                 issues.append(f"duplicate permalink: {permalink}")
             pages.add(permalink)
-    return pages, issues
+            headings = re.findall(r"^#{1,6}\s+(.+)$", body, re.MULTILINE)
+            anchor_set = {re.sub(r"[^a-z0-9 -]", "", heading.lower()).strip().replace(" ", "-") for heading in headings}
+            anchors[permalink] = anchor_set
+            for fragment in re.findall(r"\]\(#([^)]+)\)", body):
+                if fragment not in anchor_set:
+                    issues.append(f"broken page fragment: {path.relative_to(source)}#{fragment}")
+    return pages, anchors, issues
 
 
 def check_source(source: Path) -> list[str]:
@@ -48,7 +56,7 @@ def check_source(source: Path) -> list[str]:
         features = json.loads((data / "feature_status.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         return [f"site data cannot be read: {error}"]
-    pages, page_issues = _pages(source)
+    pages, anchors, page_issues = _pages(source)
     issues.extend(page_issues)
     seen = set()
     for item in navigation:
@@ -62,6 +70,8 @@ def check_source(source: Path) -> list[str]:
         owner = feature.get("owner", "")
         if owner not in pages:
             issues.append(f"missing feature owner: {feature.get('name', '<unnamed>')} -> {owner}")
+        elif feature.get("anchor") and feature["anchor"] not in anchors.get(owner, set()):
+            issues.append(f"missing feature anchor: {feature.get('name', '<unnamed>')} -> {owner}#{feature['anchor']}")
         if feature.get("status") not in {"released", "upcoming"}:
             issues.append(f"invalid feature status: {feature.get('name', '<unnamed>')}")
     return issues

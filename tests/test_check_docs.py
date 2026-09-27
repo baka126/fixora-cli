@@ -55,6 +55,15 @@ class SourceChecks(unittest.TestCase):
         (root / "index.md").write_text("---\ntitle: Home\npermalink: /\nstatus: tomorrow\n---\n# Home\n")
         self.assertTrue(any("invalid page status" in issue for issue in check_source(root)))
 
+    def test_missing_feature_anchor(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [{"name": "Crash loops", "status": "released", "owner": "/", "anchor": "crash-loops"}])
+        self.assertTrue(any("missing feature anchor" in issue for issue in check_source(root)))
+
+    def test_broken_page_fragment(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "index.md").write_text("---\ntitle: Home\npermalink: /\n---\n# Home\n[Missing](#nope)\n")
+        self.assertTrue(any("broken page fragment" in issue for issue in check_source(root)))
+
 
 if __name__ == "__main__":
     unittest.main()
