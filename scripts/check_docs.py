@@ -3,7 +3,24 @@
 import argparse
 import json
 import re
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urljoin, urlsplit
+
+
+class _Links(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = []
+        self.ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if values.get("id"):
+            self.ids.add(values["id"])
+        for key in ("href", "src"):
+            if values.get(key):
+                self.links.append(values[key])
 
 
 def _pages(source: Path):
@@ -89,11 +106,51 @@ def check_source(source: Path) -> list[str]:
     return issues
 
 
+def check_site(site: Path, baseurl: str) -> list[str]:
+    issues = []
+    html_files = list(site.rglob("*.html"))
+    parsed = {}
+    for path in html_files:
+        if any(part == "superpowers" for part in path.relative_to(site).parts):
+            issues.append(f"excluded page published: {path.relative_to(site)}")
+        parser = _Links()
+        parser.feed(path.read_text(encoding="utf-8"))
+        parsed[path] = parser
+    for source, parser in parsed.items():
+        relative = source.relative_to(site).as_posix()
+        page_url = baseurl.rstrip("/") + "/" + (relative[:-10] if relative.endswith("index.html") else relative)
+        for link in parser.links:
+            parsed_url = urlsplit(link)
+            if parsed_url.scheme or parsed_url.netloc or link.startswith("//"):
+                continue
+            absolute = urlsplit(urljoin(page_url, link))
+            target_path = unquote(absolute.path)
+            if not (target_path == baseurl or target_path.startswith(baseurl + "/")):
+                issues.append(f"missing baseurl: {relative} -> {link}")
+                continue
+            site_relative = target_path[len(baseurl):].lstrip("/")
+            target = site / site_relative
+            if target.is_dir():
+                target = target / "index.html"
+            if not target.is_file():
+                issues.append(f"broken local link: {relative} -> {link}")
+                continue
+            if absolute.fragment and target.suffix == ".html":
+                target_parser = parsed.get(target)
+                if target_parser and absolute.fragment not in target_parser.ids:
+                    issues.append(f"broken local fragment: {relative} -> {link}")
+    return issues
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--site", type=Path)
+    parser.add_argument("--baseurl", default="/fixora-cli")
     args = parser.parse_args()
     issues = check_source(args.source)
+    if args.site:
+        issues.extend(check_site(args.site, args.baseurl))
     for issue in issues:
         print(issue)
     if issues:

@@ -1,0 +1,37 @@
+name: Documentation checks
+
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "scripts/check_docs.py"
+      - "tests/test_check_docs.py"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "scripts/check_docs.py"
+      - "tests/test_check_docs.py"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check source and validator tests
+        run: |
+          python3 -m unittest tests.test_check_docs
+          python3 scripts/check_docs.py --source docs
+      - name: Build Jekyll site
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs/
+          destination: ./_site
+      - name: Check generated links
+        run: python3 scripts/check_docs.py --source docs --site _site

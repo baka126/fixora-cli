@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.check_docs import check_source
+from scripts.check_docs import check_source, check_site
 
 
 class SourceChecks(unittest.TestCase):
@@ -69,6 +69,29 @@ class SourceChecks(unittest.TestCase):
         (root / "_data" / "commands.json").write_text(json.dumps([{"name": "scan", "status": "released"}]))
         (root / "reference.md").write_text("---\ntitle: Reference\npermalink: /reference/commands/\n---\n# Commands\n")
         self.assertTrue(any("missing command reference: scan" in issue for issue in check_source(root)))
+
+
+class GeneratedChecks(unittest.TestCase):
+    def make_site(self, html):
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        (root / "index.html").write_text(html)
+        self.addCleanup(temporary.cleanup)
+        return root
+
+    def test_missing_baseurl(self):
+        root = self.make_site('<a href="/get-started/">Start</a>')
+        self.assertTrue(any("missing baseurl" in issue for issue in check_site(root, "/fixora-cli")))
+
+    def test_excluded_working_page(self):
+        root = self.make_site("<h1>Home</h1>")
+        (root / "superpowers").mkdir()
+        (root / "superpowers" / "plan.html").write_text("plan")
+        self.assertTrue(any("excluded page published" in issue for issue in check_site(root, "/fixora-cli")))
+
+    def test_missing_site_asset(self):
+        root = self.make_site('<link rel="stylesheet" href="/fixora-cli/assets/css/missing.css">')
+        self.assertTrue(any("broken local link" in issue for issue in check_site(root, "/fixora-cli")))
 
 
 if __name__ == "__main__":
