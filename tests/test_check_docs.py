@@ -31,6 +31,20 @@ class SourceChecks(unittest.TestCase):
         )
         self.assertTrue(any("missing feature owner" in issue for issue in check_source(root)))
 
+    def test_missing_front_matter(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "broken.md").write_text("# Missing front matter\n")
+        self.assertTrue(any("missing front matter" in issue for issue in check_source(root)))
+
+    def test_missing_navigation_target(self):
+        root = self.make_site([{"title": "Unknown", "path": "/missing/"}], [])
+        self.assertTrue(any("missing navigation target" in issue for issue in check_source(root)))
+
+    def test_duplicate_permalink(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "again.md").write_text("---\ntitle: Again\npermalink: /\n---\n# Again\n")
+        self.assertTrue(any("duplicate permalink" in issue for issue in check_source(root)))
+
 
 if __name__ == "__main__":
     unittest.main()
