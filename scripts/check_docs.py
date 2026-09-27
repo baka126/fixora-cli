@@ -74,6 +74,18 @@ def check_source(source: Path) -> list[str]:
             issues.append(f"missing feature anchor: {feature.get('name', '<unnamed>')} -> {owner}#{feature['anchor']}")
         if feature.get("status") not in {"released", "upcoming"}:
             issues.append(f"invalid feature status: {feature.get('name', '<unnamed>')}")
+    command_data = data / "commands.json"
+    if command_data.exists():
+        try:
+            commands = json.loads(command_data.read_text(encoding="utf-8"))
+        except ValueError as error:
+            issues.append(f"command inventory cannot be read: {error}")
+            commands = []
+        reference = "\n".join(path.read_text(encoding="utf-8") for path in source.rglob("*.md") if "permalink: /reference/commands/" in path.read_text(encoding="utf-8"))
+        for command in commands:
+            name = command.get("name", "")
+            if f"`{name}`" not in reference:
+                issues.append(f"missing command reference: {name}")
     return issues
 
 

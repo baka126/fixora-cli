@@ -64,6 +64,12 @@ class SourceChecks(unittest.TestCase):
         (root / "index.md").write_text("---\ntitle: Home\npermalink: /\n---\n# Home\n[Missing](#nope)\n")
         self.assertTrue(any("broken page fragment" in issue for issue in check_source(root)))
 
+    def test_missing_command_reference(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "_data" / "commands.json").write_text(json.dumps([{"name": "scan", "status": "released"}]))
+        (root / "reference.md").write_text("---\ntitle: Reference\npermalink: /reference/commands/\n---\n# Commands\n")
+        self.assertTrue(any("missing command reference: scan" in issue for issue in check_source(root)))
+
 
 if __name__ == "__main__":
     unittest.main()
