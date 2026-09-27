@@ -10,14 +10,14 @@ section: reference
 
 In v0.8.0, `filters -o json` reports each analyzer's kind, resource, scope, description, and `enabled` default. An explicit `--filter` selects only the named checks. Missing permissions or CRDs can produce skipped checks; no finding is not proof of health.
 
-**Effect:** Reads the local analyzer registry; no cluster write.
+**Effect:** The first command reads the local analyzer registry. The second reads selected Kubernetes resources and bounded logs by default; add `--include-logs=false` to skip logs. No cluster write.
 
 ```bash
 kubectl fixora filters -o json
 kubectl fixora scan -n prod --filter Pod,Service,PVC
 ```
 
-The second command reads the selected Kubernetes resources.
+The selected filters narrow analyzer coverage; they do not disable incident log collection.
 
 ## Enabled by default in v0.8.0
 

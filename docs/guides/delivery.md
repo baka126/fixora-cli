@@ -12,7 +12,7 @@ The delivery mode decides where a reviewed change goes. It does not replace patc
 
 ## Shadow verification
 
-**Effect:** Creates a temporary shadow Pod and NetworkPolicy in the cluster, reads their health, and deletes them afterward unless `--keep-shadow` is set. No production workload is changed by this option alone.
+**Effect:** Reads cluster evidence and bounded logs by default, then creates a temporary shadow Pod and NetworkPolicy, reads their health, and deletes them afterward unless `--keep-shadow` is set. No production workload is changed by this option alone. Use `--include-logs=false` to skip log reads.
 
 ```bash
 kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --shadow --delivery patch
@@ -26,20 +26,20 @@ The clone omits workload identity and can differ from production traffic, depend
 
 ## Cluster apply
 
-**Effect:** After eligibility checks, confirmation, and server-side dry-run, writes to the target production workload. It can trigger a rollout.
+**Effect:** Reads cluster evidence and bounded logs by default. After eligibility checks, confirmation, and a server-side dry-run when enabled (the default), writes to the target production workload. It can trigger a rollout. Use `--include-logs=false` to skip log reads.
 
 ```bash
 kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --shadow --delivery cluster
 ```
 
-Fixora observes post-apply health and may offer a structured rollback command if the rollout fails. Rollback is not automatic under `--yes`; an operator must review and approve it. Ensure your RBAC permits the exact target write and shadow resources.
+In **v0.8.0**, a successful apply is the end of this command: Fixora does not monitor the live rollout or offer a rollback. Watch the rollout with your normal Kubernetes, Helm, or GitOps tooling and follow your team's rollback runbook if health degrades. Automatic post-apply health checks and a reviewed rollback path are **Upcoming** on the development branch. Ensure your RBAC permits the exact target write and shadow resources.
 
 ## Source or pull request
 
-**Effect:** Reads a local manifest, Helm chart, or Kustomize source in `--repo`; a PR delivery writes the source, commits a branch, and may push/open a GitHub PR or GitLab MR. It does not directly apply the production workload.
+**Effect:** Reads cluster evidence and bounded logs by default, creates and cleans up a temporary shadow Pod and NetworkPolicy, and reads source in `--repo`. A PR delivery writes the source, commits a branch, and may push/open a GitHub PR or GitLab MR. It does not directly apply the production workload. Use `--include-logs=false` to skip log reads.
 
 ```bash
-kubectl fixora fix deployment/api -n prod --repo ./platform --gitops --shadow --delivery pr
+kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --repo ./platform --gitops --shadow --delivery pr --yes
 ```
 
-Managed workloads can reject direct cluster apply and route you to source review. Source mapping must be unambiguous; validation failures should stop delivery. Review the rendered result, diff, base branch, repository permissions, and remote before approving a PR. See [source validation]({{ '/guides/source-and-coordinate/' | relative_url }}).
+In v0.8.0, PR delivery requires `--yes` to acknowledge the remote Git operation; other review prompts may still appear. Managed workloads can reject direct cluster apply and route you to source review. Source mapping must be unambiguous; validation failures should stop delivery. Review the rendered result, diff, base branch, repository permissions, and remote before approving a PR. See [source validation]({{ '/guides/source-and-coordinate/' | relative_url }}).

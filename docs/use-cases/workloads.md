@@ -8,11 +8,11 @@ section: use-cases
 
 # Workload failures
 
-These investigations read workload status and related Pods/Events. Use `--include-logs` only when log content is needed and permitted. A suggested patch is a hypothesis until you inspect its diff and verification result.
+These investigations read workload status, related Pods/Events, and bounded logs by default. Use `--include-logs=false` on each `scan` or `why` command if log access is not permitted. A suggested patch is a hypothesis until you inspect its diff and verification result.
 
 ## Crash loops and probes
 
-**Effect:** Reads deployment, owned Pods, container states, restart counts, probes, and Events. With `--include-logs`, reads bounded Pod logs. No cluster writes.
+**Effect:** Reads deployment, owned Pods, container states, restart counts, probes, Events, and bounded Pod logs. No cluster writes.
 
 ```bash
 kubectl fixora why deployment/api -n prod --proof --include-logs
@@ -22,7 +22,7 @@ Look for `CrashLoopBackOff`, failing startup/liveness probes, exit codes, and re
 
 ## Image pulls and architecture
 
-**Effect:** Reads Pod status, image pull Events, and node architecture. No cluster writes.
+**Effect:** Reads Pod status, image pull Events, node architecture, and bounded logs by default. No cluster writes.
 
 ```bash
 kubectl fixora why deployment/api -n prod --proof
@@ -32,7 +32,7 @@ Review `ImagePullBackOff`, registry authorization, missing tags, and `exec forma
 
 ## Out of memory and resource pressure
 
-**Effect:** Reads container termination reasons, configured requests/limits, Events, and available node signals. No cluster writes.
+**Effect:** Reads container termination reasons, configured requests/limits, Events, available node signals, and bounded logs by default. No cluster writes.
 
 ```bash
 kubectl fixora why deployment/api -n prod --proof
@@ -42,7 +42,7 @@ An `OOMKilled` status supports a memory diagnosis; it does not by itself determi
 
 ## Pending and scheduling
 
-**Effect:** Reads Pod scheduling conditions, Events, node readiness/taints, and related capacity signals. No cluster writes.
+**Effect:** Reads Pod scheduling conditions, Events, node readiness/taints, related capacity signals, and bounded logs by default. No cluster writes.
 
 ```bash
 kubectl fixora scan -n prod --filter Pod,Node,PVC
@@ -52,7 +52,7 @@ Check insufficient resources, affinity, taints, unavailable volumes, and quota m
 
 ## Jobs and CronJobs
 
-**Effect:** Reads Job/CronJob status and owned Pods/Events. No cluster writes.
+**Effect:** Reads Job/CronJob status, owned Pods/Events, and bounded logs by default. No cluster writes.
 
 ```bash
 kubectl fixora scan -n batch --filter Job,CronJob,Pod

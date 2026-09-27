@@ -98,5 +98,44 @@ class GeneratedChecks(unittest.TestCase):
         self.assertTrue(any("broken local fragment" in issue for issue in check_site(root, "/fixora-cli")))
 
 
+class ReleaseBehaviorChecks(unittest.TestCase):
+    docs = Path(__file__).resolve().parents[1] / "docs"
+
+    def test_incident_guides_disclose_default_log_reads(self):
+        for page in ("get-started.md", "guides/incident-workflow.md", "use-cases/workloads.md"):
+            with self.subTest(page=page):
+                body = (self.docs / page).read_text(encoding="utf-8")
+                self.assertIn("--include-logs=false", body)
+                self.assertNotIn("Logs are collected only if you add `--include-logs`", body)
+                self.assertNotIn("Add `--include-logs` only when", body)
+
+    def test_release_delivery_does_not_promise_automatic_health_or_rollback(self):
+        delivery = (self.docs / "guides/delivery.md").read_text(encoding="utf-8")
+        safety = (self.docs / "safety.md").read_text(encoding="utf-8")
+        self.assertNotIn("Fixora observes post-apply health", delivery)
+        self.assertNotIn("After a cluster apply, inspect the health result; a rollback is offered", safety)
+        self.assertIn("v0.8.0", delivery)
+        self.assertIn("Upcoming", delivery)
+
+    def test_pr_delivery_example_has_confirmation_and_concrete_patch(self):
+        delivery = (self.docs / "guides/delivery.md").read_text(encoding="utf-8")
+        example = next(line for line in delivery.splitlines() if line.startswith("kubectl fixora fix") and "--delivery pr" in line)
+        for required in ("--yes", "--container api", "--image ghcr.io/example/api:v1.2.3"):
+            self.assertIn(required, example)
+        effect = delivery.split("## Source or pull request", 1)[1].split("```bash", 1)[0]
+        self.assertIn("shadow Pod", effect)
+        self.assertIn("NetworkPolicy", effect)
+
+    def test_released_aliases_are_in_inventory_and_reference(self):
+        commands = json.loads((self.docs / "_data/commands.json").read_text(encoding="utf-8"))
+        names = {item["name"] for item in commands if item["status"] == "released"}
+        reference = (self.docs / "reference/commands.md").read_text(encoding="utf-8")
+        for alias in ("repair", "dashboard", "analyzers"):
+            with self.subTest(alias=alias):
+                self.assertIn(alias, names)
+                self.assertIn(f"`{alias}`", reference)
+        self.assertIn("`--filters`", reference.split("**Upcoming flags:**", 1)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

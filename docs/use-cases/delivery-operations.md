@@ -12,7 +12,7 @@ Some symptoms are rooted in shared infrastructure or deployment source. Read the
 
 ## Node pressure
 
-**Effect:** Reads Node conditions, taints, capacity, and related eviction signals. No cluster writes.
+**Effect:** Reads Node conditions, taints, capacity, and related eviction signals. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them. No cluster writes.
 
 ```bash
 kubectl fixora node-pressure

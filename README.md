@@ -21,11 +21,11 @@ kubectl fixora why deployment/api -n prod --proof
 kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --preview
 ```
 
-These commands read cluster evidence; the final command previews a plan and does not apply a production patch. AI is optional for diagnosis. Review the [incident workflow](https://baka126.github.io/fixora-cli/guides/incident-workflow/) before choosing shadow verification or a delivery mode.
+These commands read cluster evidence, including bounded container logs by default. Add `--include-logs=false` to each command to prevent log reads. The final command previews a plan and does not apply a production patch. AI is optional for diagnosis. Review the [incident workflow](https://baka126.github.io/fixora-cli/guides/incident-workflow/) before choosing shadow verification or a delivery mode.
 
 ## What it covers
 
-- **Incident evidence:** Pods, Events, owner relationships, bounded optional logs, and a Kubernetes analyzer catalog.
+- **Incident evidence:** Pods, Events, owner relationships, bounded logs by default in incident workflows, and a Kubernetes analyzer catalog.
 - **Root-cause workflow:** `scan`, `why`, proof and confidence, optional AI explanation, and concrete patch planning.
 - **Controlled delivery:** optional shadow verification followed by a reviewed local patch, cluster apply, or source/PR workflow.
 - **Specialist investigations:** network routing, DNS, storage, RBAC, security policy, node pressure, Jobs, Helm/Kustomize source, and optional ecosystem CRDs.

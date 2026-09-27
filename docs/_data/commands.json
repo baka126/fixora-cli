@@ -1,13 +1,13 @@
 [
   {"name":"scan","status":"released"},{"name":"incidents","status":"released"},{"name":"why","status":"released"},{"name":"fix","status":"released"},
-  {"name":"status","status":"released"},{"name":"doctor","status":"released"},{"name":"filters","status":"released"},{"name":"integrations","status":"released"},
+  {"name":"status","status":"released"},{"name":"doctor","status":"released"},{"name":"filters","status":"released"},{"name":"analyzers","status":"released"},{"name":"integrations","status":"released"},
   {"name":"custom-analyzers","status":"released"},{"name":"serve","status":"released"},{"name":"trace","status":"released"},{"name":"storage","status":"released"},
   {"name":"rbac","status":"released"},{"name":"dns","status":"released"},{"name":"security","status":"released"},{"name":"node-pressure","status":"released"},
   {"name":"repo","status":"released"},{"name":"validate","status":"released"},{"name":"health","status":"released"},{"name":"preflight","status":"released"},
-  {"name":"policy-check","status":"released"},{"name":"watch","status":"released"},{"name":"ui","status":"released"},{"name":"cluster","status":"released"},
+  {"name":"policy-check","status":"released"},{"name":"watch","status":"released"},{"name":"ui","status":"released"},{"name":"cluster","status":"released"},{"name":"dashboard","status":"released"},
   {"name":"cost","status":"released"},{"name":"predict","status":"released"},{"name":"lint","status":"released"},{"name":"version","status":"released"},
   {"name":"auth","status":"released"},{"name":"config","status":"released"},{"name":"cache","status":"released"},{"name":"profiles","status":"released"},
   {"name":"memory","status":"released"},{"name":"graph","status":"released"},{"name":"changes","status":"released"},{"name":"report","status":"released"},
-  {"name":"bundle","status":"released"},{"name":"debug","status":"released"},{"name":"source","status":"released"},
+  {"name":"bundle","status":"released"},{"name":"debug","status":"released"},{"name":"source","status":"released"},{"name":"repair","status":"released"},
   {"name":"ai","status":"upcoming"},{"name":"ai doctor","status":"upcoming"},{"name":"coordinate","status":"upcoming"},{"name":"fix-set","status":"upcoming"}
 ]

@@ -26,7 +26,7 @@ kubectl fixora config validate
 
 `-o, --output` supports `text`, `json`, `yaml`, `markdown`, `sarif`, `junit`, and `prometheus` for applicable commands. A specialist command may support a narrower set or a special format such as a Mermaid graph. Structured output is useful for automation, but keep evidence and skipped checks alongside a root-cause summary.
 
-**Effect:** Reads cluster incidents and prints JSON to stdout; no write.
+**Effect:** Reads cluster incidents and bounded logs by default, then prints JSON to stdout; use `--include-logs=false` to skip logs. No write.
 
 ```bash
 kubectl fixora scan -n prod -o json

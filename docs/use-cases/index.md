@@ -8,7 +8,7 @@ section: use-cases
 
 # Use cases
 
-Start with a **read-only** investigation. Fixora can connect resource status, Events, owner references, optional bounded logs, and selected analyzers, but a missing permission or unavailable CRD can leave gaps. Each guide gives an example command, the evidence to review, and the limit of the result.
+Start with a **read-only** investigation. Fixora can connect resource status, Events, owner references, bounded logs read by default in incident commands, and selected analyzers. Use `--include-logs=false` to avoid log reads. Missing permission or an unavailable CRD can leave gaps. Each guide gives an example command, the evidence to review, and the limit of the result.
 
 | Symptom | Start here |
 | --- | --- |

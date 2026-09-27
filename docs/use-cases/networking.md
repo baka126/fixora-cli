@@ -12,7 +12,7 @@ Fixora connects Kubernetes routing resources and conditions. It cannot see every
 
 ## Service, Ingress, and Gateway routing
 
-**Effect:** Reads Ingress or Gateway API route, Service, endpoints, and backing Pods. No cluster writes.
+**Effect:** Reads Ingress or Gateway API route, Service, endpoints, and backing Pods. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them. No cluster writes.
 
 ```bash
 kubectl fixora trace ingress/api -n prod
@@ -33,7 +33,7 @@ Compare the Service name, namespace, endpoints, and CoreDNS health signals. A lo
 
 ## Network policy context
 
-**Effect:** Reads policy inventory when selected. No writes.
+**Effect:** Reads policy inventory when selected and bounded logs by default. Use `--include-logs=false` to skip logs. No writes.
 
 ```bash
 kubectl fixora scan -n prod --filter NetworkPolicy,Service,Pod

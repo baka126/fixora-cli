@@ -16,13 +16,13 @@ The following command families are available in **v0.8.0** unless marked Upcomin
 
 | Command | Purpose and effect |
 | --- | --- |
-| `scan` / `incidents` | List failing workloads and analyzer findings; reads cluster state. `scan` is an alias for `incidents`. |
-| `why` | Explain one resource with evidence, proof, and next step; reads cluster state, optionally calls AI with `--ai`. |
+| `scan` / `incidents` | List failing workloads and analyzer findings; reads cluster state and bounded logs by default. `scan` is an alias for `incidents`. |
+| `why` | Explain one resource with evidence, proof, and next step; reads cluster state and bounded logs by default, optionally calls AI with `--ai`. |
 | `status` | Show access and capability summary; reads cluster state. |
 | `doctor` | In v0.8.0, the top-level command runs the **AI configuration check**. The release help also describes a cluster check, but command routing selects AI doctor. |
-| `filters` | Show analyzer catalog and active filter selection; local registry read. |
+| `filters` / `analyzers` | Show analyzer catalog and active filter selection; local registry read. `analyzers` is an alias. |
 | `health` | Summarize namespace or cluster health; reads cluster state. |
-| `watch` | Poll incidents until interrupted; repeated cluster reads. |
+| `watch` | Poll incidents until interrupted; repeated cluster and bounded log reads by default. |
 | `predict` | Show future-risk signals from local evidence; reads cluster state. |
 | `cost` | Estimate node or workload costs from available metadata; reads cluster state and is not a billing quote. |
 
@@ -44,7 +44,7 @@ The following command families are available in **v0.8.0** unless marked Upcomin
 
 | Command | Purpose and effect |
 | --- | --- |
-| `fix` | Guided plan, concrete patch, optional shadow verification, and chosen delivery. Reads first; a selected delivery can write locally, to the cluster, or to source/PR. |
+| `fix` / `repair` | Guided plan, concrete patch, optional shadow verification, and chosen delivery. Reads cluster evidence and bounded logs by default; a selected delivery can write locally, to the cluster, or to source/PR. `repair` is an alias. |
 | `repo` | Detect raw, Helm, or Kustomize source from a local path. |
 | `validate` | Render and validate local source. |
 | `lint` | Lint a manifest, chart, or overlay. |
@@ -56,7 +56,7 @@ The following command families are available in **v0.8.0** unless marked Upcomin
 
 | Command | Purpose and effect |
 | --- | --- |
-| `ui` / `cluster` | Terminal dashboards; reads cluster state. Bare invocation opens the older dashboard in v0.8.0. |
+| `ui` / `cluster` / `dashboard` | Terminal dashboards; reads cluster state. `dashboard` aliases `cluster`. Bare invocation opens the older dashboard in v0.8.0. |
 | `integrations` | Detect local optional tools and CRDs. |
 | `custom-analyzers` | List, add, or run explicitly registered local executables; `run` executes local code. |
 | `serve` | Start loopback HTTP API or `--mcp` stdio server; requests read cluster state. |
@@ -74,14 +74,14 @@ The following require [codex/production-hardening](https://github.com/baka126/fi
 
 | Scope | Flags and meaning |
 | --- | --- |
-| Target | `-n, --namespace` (default `default`), `-A, --all-namespaces`, `--context`, `-l, --selector`, `--filter` |
-| Evidence | `--include-logs`, `--proof`, `--typed-client`, `--log-tail`, `--max-logs-bytes`, `--timeout` |
+| Target | `-n, --namespace` (default `default`), `-A, --all-namespaces`, `--context`, `-l, --selector`, `--filter` (alias `--filters`) |
+| Evidence | `--include-logs` (defaults to true for `scan`, `why`, `fix`, and `watch`; use `--include-logs=false` to opt out), `--proof`, `--typed-client`, `--log-tail`, `--max-logs-bytes`, `--timeout` |
 | Output | `-o, --output`, `--out`, `--wide`, `--no-color`, `--max-findings`, `--watch-interval` |
 | AI and privacy | `--ai`, `--redact`, `--paranoid`, `--unsafe-ai-no-redact`, `--profile`, `--ai-budget-tokens` |
 | Planning | `--auto-fix`, `--preview`, `--strategy`, `--force-risky`, `--container`, `--image`, `--memory-request`, `--memory-limit`, `--cpu-request`, `--env-name`, `--configmap`, `--config-key` |
 | Delivery | `--apply`, `--apply-dry-run`, `--source-patch`, `--repo`, `--gitops`, `--shadow`, `--shadow-timeout`, `--shadow-retries`, `--keep-shadow`, `--shadow-egress`, `--delivery`, `--pr-base`, `--pr-title`, `--yes` |
 | Presets and files | `--quick`, `--safe`, `-f, --filename`, `--tui` |
 
-Some flags only affect relevant commands. `--quick` can skip default shadow verification; an output without shadow is not shadow-verified. `--yes` confirms a supported noninteractive delivery but does not run a rollback automatically. `--unsafe-ai-no-redact` can expose sensitive evidence to a provider.
+Some flags only affect relevant commands. `--quick` can skip default shadow verification; an output without shadow is not shadow-verified. PR delivery in v0.8.0 requires `--yes` for its remote Git operation; it may still request shadow review. `--unsafe-ai-no-redact` can expose sensitive evidence to a provider.
 
-**Upcoming flags:** `--no-ai`, `--edit-patch`, `--mcp-shadow`, `--secret-keys`, `--cert-expiry`, and coordination's `--from` are branch-only. The branch accepts compatibility aliases `--filters` and `-L`; prefer canonical `--filter` and `-l`. No v0.8.0 flag removal is claimed here.
+**Upcoming flags:** `--no-ai`, `--edit-patch`, `--mcp-shadow`, `--secret-keys`, `--cert-expiry`, and coordination's `--from` are branch-only. The branch adds the `-L` selector alias; `--filters` already works in v0.8.0. Prefer canonical `--filter` and `-l`. No v0.8.0 flag removal is claimed here.

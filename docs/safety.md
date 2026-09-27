@@ -12,7 +12,7 @@ Fixora runs locally with your Kubernetes identity. Grant the narrowest access ne
 
 ## Separate read and write permissions
 
-Scanning needs read access to Pods, workloads, Events, and any optional resource you select. Bounded logs require `pods/log`. Use the [read-only Role example](https://github.com/baka126/fixora-cli/blob/v0.8.0/docs/rbac.yaml) as a starting point, then tailor it to your namespace and analyzers. A denied optional read becomes a coverage gap.
+Scanning needs read access to Pods, workloads, Events, and any optional resource you select. Incident commands read bounded logs by default and require `pods/log`; use `--include-logs=false` to prevent these reads. The [RBAC example](https://github.com/baka126/fixora-cli/blob/v0.8.0/docs/rbac.yaml) includes a read-only ClusterRole plus a separate optional shadow Role. Tailor them to your namespace and analyzers. A denied read becomes a coverage gap.
 
 Shadow verification additionally needs permission to create and delete temporary Pods and NetworkPolicies. Cluster delivery needs write permission on the exact target workload. Source/PR delivery needs local repository access and, if opening a PR, remote credentials. Keep those roles separate where your organization can.
 
@@ -30,7 +30,7 @@ Shadow readiness cannot prove production traffic, dependencies, controller behav
 
 ## Delivery gates and rollback
 
-A concrete, apply-eligible patch and server-side dry-run are part of the guarded path. Direct cluster apply can be refused for Helm/GitOps-managed objects. After a cluster apply, inspect the health result; a rollback is offered for operator review and is not automatic under `--yes`. PR delivery changes source and depends on the normal review/deployment process.
+A concrete, apply-eligible patch is required for cluster delivery. Server-side dry-run is enabled by default and can be disabled with `--apply-dry-run=false`; leave it enabled for production use. Direct cluster apply can be refused for Helm/GitOps-managed objects. In **v0.8.0**, Fixora does not monitor the live rollout or offer a rollback after a successful apply. Observe the rollout and use your established rollback procedure if needed. Post-apply health checks and a reviewed rollback path are **Upcoming** on the development branch. PR delivery changes source and depends on the normal review/deployment process.
 
 For emergencies, run `--preview` first, keep the target context explicit, and preserve a copy of the diff and findings. Use [delivery guidance]({{ '/guides/delivery/' | relative_url }}) for each write mode.
 

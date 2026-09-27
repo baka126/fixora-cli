@@ -12,7 +12,7 @@ The commands here begin with reads. Secret values are sensitive: Fixora's option
 
 ## PVC and storage
 
-**Effect:** Reads PVC, PV, StorageClass, related Pod, and Event state. No cluster writes.
+**Effect:** Reads PVC, PV, StorageClass, related Pod, and Event state. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them. No cluster writes.
 
 ```bash
 kubectl fixora storage -n prod
@@ -36,7 +36,7 @@ Use the exact service account, verb, and resource when narrowing an RBAC questio
 
 The `--secret-keys` switch is **Upcoming** on [codex/production-hardening](https://github.com/baka126/fixora-cli/tree/codex/production-hardening); it is not available in v0.8.0.
 
-**Effect:** On that branch, reads Secret key presence and base64 validity and reports key names, not values. No writes.
+**Effect:** On that branch, reads Secret key presence and base64 validity and reports key names, not values. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them. No writes.
 
 ```bash
 kubectl fixora scan -n prod --filter Secret,Pod --secret-keys

@@ -26,7 +26,7 @@ In v0.8.0, `doctor` is the AI setup check. The branch introduces `ai doctor` and
 
 ## Request an explanation
 
-**Effect:** Reads cluster evidence and sends a bounded, redacted prompt to the configured AI endpoint. No cluster writes.
+**Effect:** Reads cluster evidence and bounded logs by default, then sends a bounded, redacted prompt to the configured AI endpoint. Use `--include-logs=false` to prevent log reads and exclude that evidence from the prompt. No cluster writes.
 
 ```bash
 kubectl fixora why deployment/api -n prod --proof --ai

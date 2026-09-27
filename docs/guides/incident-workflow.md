@@ -12,7 +12,7 @@ Fixora's main loop is **scan → why → fix**. Keep the context and namespace e
 
 ## Discover and inspect proof
 
-**Effect:** Reads cluster objects and Events. No writes. Add `--include-logs` only when you need bounded container log evidence.
+**Effect:** Reads cluster objects, Events, and bounded container logs by default. No writes. Use `--include-logs=false` on each command to prevent log reads when your data policy requires it.
 
 ```bash
 kubectl fixora scan -n prod
@@ -25,7 +25,7 @@ The finding connects a status to supporting signals and a likely cause. `--proof
 
 `fix` can guide you from explanation through a concrete patch. Specify values such as the target container and pinned image; unresolved placeholders are not an executable fix.
 
-**Effect:** Reads cluster evidence and produces a preview. `--preview` does not apply to the live workload.
+**Effect:** Reads cluster evidence, including bounded logs by default, and produces a preview. Use `--include-logs=false` to skip logs. `--preview` does not apply to the live workload.
 
 ```bash
 kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --preview

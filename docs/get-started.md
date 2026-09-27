@@ -34,11 +34,11 @@ kubectl config current-context
 kubectl fixora status --context my-cluster -n payments
 ```
 
-The [read-only RBAC example](https://github.com/baka126/fixora-cli/blob/v0.8.0/docs/rbac.yaml) is a starting point. Missing permission or missing optional CRDs should appear as skipped checks, and can reduce coverage.
+The [RBAC example](https://github.com/baka126/fixora-cli/blob/v0.8.0/docs/rbac.yaml) includes a read-only ClusterRole and a separate optional shadow Role. Tailor its permissions to your workflow. Missing permission or optional CRDs can reduce coverage.
 
 ## 3. Scan and explain
 
-**Effect:** Reads workload status, Events, and related resources in `payments`. It does not change cluster objects. Logs are collected only if you add `--include-logs`.
+**Effect:** Reads workload status, Events, related resources, and bounded container logs in `payments` by default. It does not change cluster objects. Add `--include-logs=false` to each incident command when logs must not be read; that also removes log evidence from the diagnosis.
 
 ```bash
 kubectl fixora scan -n payments --context my-cluster
@@ -51,7 +51,7 @@ Read the proof and confidence alongside the proposed cause. The explanation can 
 
 Start with a resource and explicit patch inputs. A plan with unresolved placeholders may remain review-only.
 
-**Effect:** Reads cluster evidence and prepares a local preview. `--preview` does not apply a production patch; do not treat it as a completed shadow verification.
+**Effect:** Reads cluster evidence, including bounded logs by default, and prepares a local preview. Use `--include-logs=false` to skip logs. `--preview` does not apply a production patch or complete shadow verification.
 
 ```bash
 kubectl fixora fix deployment/payments-api -n payments --container api --image ghcr.io/example/payments:v1.2.3 --preview
