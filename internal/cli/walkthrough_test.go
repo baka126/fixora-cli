@@ -74,6 +74,9 @@ func TestWalkthroughNoShadowExplicitPatch(t *testing.T) {
 	if _, err := os.Stat(patchPath); err != nil {
 		t.Fatalf("expected patch file written at %s: %v", patchPath, err)
 	}
+	if !strings.Contains(stdout.String(), "Outcome: Unverified patch saved") || !strings.Contains(stdout.String(), "cluster unchanged") {
+		t.Fatalf("missing accurate final outcome: %q", stdout.String())
+	}
 }
 
 func TestWalkthroughExplicitDeliverySkipsMenu(t *testing.T) {

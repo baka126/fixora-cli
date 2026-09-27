@@ -54,6 +54,8 @@ GitHub Actions builds Linux, macOS, and Windows release archives for every `v*` 
 
 Start with the incident workflow:
 
+Running `kubectl fixora` in a terminal offers Scan, Check cluster setup, and Dashboard (the Enter default). In scripts or other non-interactive uses, it prints help without contacting the cluster.
+
 ```sh
 kubectl fixora scan -A
 kubectl fixora doctor -A
@@ -66,7 +68,7 @@ kubectl fixora ui -A
 kubectl fixora cluster
 ```
 
-`--delivery` chooses what happens after verification: `patch` (default) leaves a verified local patch, `cluster` performs the dry-run and final apply, `pr` opens a GitHub PR or GitLab MR from `--repo`. The older `--apply`, `--source-patch`, and `--gitops` flags are deprecated aliases kept for compatibility.
+`--delivery` chooses how to deliver the proposed fix: `patch` (default) leaves a local patch, `cluster` performs the dry-run and final apply, `pr` opens a GitHub PR or GitLab MR from `--repo`. Output and PR text state when `--quick` skips shadow verification. The older `--apply`, `--source-patch`, and `--gitops` flags are deprecated aliases kept for compatibility.
 
 The TUI starts in a fast incident mode: pod failures only, no log fetches, and typed Kubernetes reads. Press `D` for deep analyzers, `L` to collect logs, `C` to toggle cluster-wide scope, or use `--include-logs` only when you need log snippets at startup.
 
@@ -143,7 +145,7 @@ Named profiles let teams keep reusable local/production defaults. Context overri
 
 ## AI Configuration
 
-AI is disabled unless `--ai` is passed. Credentials can be provided through environment variables or `kubectl fixora auth set`. Temporary provider HTTP failures are retried up to twice; if AI remains unavailable, Fixora reports the fallback and keeps the deterministic plan.
+AI is enabled by default for `fix` when a provider is configured; other incident commands require `--ai`. Use `--no-ai` to keep a command deterministic. Credentials can be provided through environment variables or `kubectl fixora auth set`. Temporary provider HTTP failures are retried up to twice; if AI remains unavailable, Fixora reports the fallback and keeps the deterministic plan.
 
 ```sh
 export FIXORA_AI_PROVIDER="openai"
