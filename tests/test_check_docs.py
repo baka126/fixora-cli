@@ -45,6 +45,16 @@ class SourceChecks(unittest.TestCase):
         (root / "again.md").write_text("---\ntitle: Again\npermalink: /\n---\n# Again\n")
         self.assertTrue(any("duplicate permalink" in issue for issue in check_source(root)))
 
+    def test_command_needs_consequence(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "index.md").write_text("---\ntitle: Home\npermalink: /\n---\n```bash\nkubectl fixora fix pod/api --apply\n```\n")
+        self.assertTrue(any("missing command effect" in issue for issue in check_source(root)))
+
+    def test_invalid_page_status(self):
+        root = self.make_site([{"title": "Home", "path": "/"}], [])
+        (root / "index.md").write_text("---\ntitle: Home\npermalink: /\nstatus: tomorrow\n---\n# Home\n")
+        self.assertTrue(any("invalid page status" in issue for issue in check_source(root)))
+
 
 if __name__ == "__main__":
     unittest.main()

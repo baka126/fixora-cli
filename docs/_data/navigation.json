@@ -1,3 +1,8 @@
 [
-  {"title": "Overview", "path": "/", "summary": "What Fixora does", "section": "overview"}
+  {"title": "Overview", "path": "/", "summary": "What Fixora does", "section": "overview"},
+  {"title": "Get started", "path": "/get-started/", "summary": "Install and first scan", "section": "get-started"},
+  {"title": "Guides", "path": "/guides/", "summary": "Operator workflows", "section": "guides"},
+  {"title": "Incident workflow", "path": "/guides/incident-workflow/", "summary": "Scan, explain, and fix", "section": "guides"},
+  {"title": "Verification and delivery", "path": "/guides/delivery/", "summary": "Shadow, patch, cluster, and PR", "section": "guides"},
+  {"title": "Source and coordination", "path": "/guides/source-and-coordinate/", "summary": "Validate source and coordinated fixes", "section": "guides"}
 ]

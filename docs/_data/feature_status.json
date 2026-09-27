@@ -1,10 +1,11 @@
 [
-  {"name": "scan, why, fix", "status": "released", "evidence": "v0.8.0 internal/cli/root.go help", "owner": "/"},
-  {"name": "shadow verification and patch/cluster/PR delivery", "status": "released", "evidence": "v0.8.0 internal/cli/root.go flags", "owner": "/"},
+  {"name": "scan, why, fix", "status": "released", "evidence": "v0.8.0 internal/cli/root.go help", "owner": "/guides/incident-workflow/"},
+  {"name": "shadow verification and patch/cluster/PR delivery", "status": "released", "evidence": "v0.8.0 internal/cli/root.go flags", "owner": "/guides/delivery/"},
   {"name": "MCP stdio server", "status": "released", "evidence": "v0.8.0 serve --mcp", "owner": "/"},
   {"name": "AI provider configuration", "status": "released", "evidence": "v0.8.0 auth, config, doctor", "owner": "/"},
   {"name": "cluster doctor and ai doctor split", "status": "upcoming", "evidence": "codex/production-hardening help --advanced", "owner": "/"},
   {"name": "MCP shadow tool opt-in", "status": "upcoming", "evidence": "codex/production-hardening --mcp-shadow", "owner": "/"},
-  {"name": "no-argument terminal chooser", "status": "upcoming", "evidence": "codex/production-hardening internal/cli/root.go", "owner": "/"},
-  {"name": "explicit local custom analyzers", "status": "upcoming", "evidence": "codex/production-hardening help --advanced", "owner": "/"}
+  {"name": "no-argument terminal chooser", "status": "upcoming", "evidence": "codex/production-hardening internal/cli/root.go", "owner": "/guides/incident-workflow/"},
+  {"name": "explicit local custom analyzers", "status": "released", "evidence": "v0.8.0 internal/cli/root.go custom-analyzers", "owner": "/"},
+  {"name": "coordinate transaction", "status": "upcoming", "evidence": "codex/production-hardening internal/cli/coordinate.go", "owner": "/guides/source-and-coordinate/"}
 ]

@@ -21,6 +21,12 @@ def _pages(source: Path):
             if ":" in line:
                 key, value = line.split(":", 1)
                 fields[key.strip()] = value.strip().strip('"\'')
+        if fields.get("status") and fields["status"] not in {"released", "upcoming"}:
+            issues.append(f"invalid page status: {path.relative_to(source)}")
+        lines = body.splitlines()
+        for index, line in enumerate(lines):
+            if line.strip() == "```bash" and not any("Effect:" in prior for prior in lines[max(0, index - 3):index]):
+                issues.append(f"missing command effect: {path.relative_to(source)}:{index + 1}")
         permalink = fields.get("permalink")
         if not permalink:
             if path.name == "index.md" and path.parent == source:
