@@ -5,6 +5,8 @@ on:
     branches: ["main"]
     paths:
       - "docs/**"
+      - "scripts/check_docs.py"
+      - "tests/test_check_docs.py"
   workflow_dispatch:
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
@@ -23,6 +25,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check documentation source
+        run: |
+          python3 -m unittest tests.test_check_docs
+          python3 scripts/check_docs.py --source docs
       
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -32,6 +39,9 @@ jobs:
         with:
           source: ./docs/
           destination: ./_site
+
+      - name: Check generated links
+        run: python3 scripts/check_docs.py --source docs --site _site
           
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

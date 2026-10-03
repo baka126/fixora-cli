@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,8 +16,211 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/repo"
 	"github.com/fixora/kubectl-fixora/internal/shadow"
 )
+
+func TestHelpFixShowsFocusedUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"help", "fix"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("help fix exit %d: %s", code, stderr.String())
+	}
+	got := stdout.String()
+	if !strings.Contains(got, "kubectl fixora fix <kind/name>") || !strings.Contains(got, "--delivery") {
+		t.Fatalf("missing focused fix guidance: %s", got)
+	}
+	if strings.Contains(got, "Fast incident workflow:") {
+		t.Fatalf("help fix showed general help: %s", got)
+	}
+}
+
+func TestUnknownCommandSuggestsLikelyCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"scna"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("unknown command exit %d", code)
+	}
+	if !strings.Contains(stderr.String(), "Did you mean 'scan'?") {
+		t.Fatalf("missing typo suggestion: %s", stderr.String())
+	}
+}
+
+func TestCommandHelpFlagShowsFocusedUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"fix", "--help"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("fix --help exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage: kubectl fixora fix <kind/name>") {
+		t.Fatalf("missing fix usage: %s", stdout.String())
+	}
+}
+
+func TestUnknownCommandWithoutCloseMatchStaysConcise(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"teleportation"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("unknown command exit %d", code)
+	}
+	if strings.Contains(stderr.String(), "Did you mean") || strings.Contains(stderr.String(), "Fast incident workflow:") {
+		t.Fatalf("unexpected suggestion or full help: %s", stderr.String())
+	}
+}
+
+func TestDoctorChecksClusterCapabilities(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"doctor", "-A", "-o", "json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "pods read") || !strings.Contains(stdout.String(), "checks") {
+		t.Fatalf("doctor did not report cluster capabilities: %s", stdout.String())
+	}
+}
+
+func TestAIDoctorCommandIsAvailable(t *testing.T) {
+	if cmd, rest, err := normalizeCommand("ai", []string{"doctor"}); err != nil || cmd != "ai-doctor" || len(rest) != 0 {
+		t.Fatalf("ai doctor routing: cmd=%q rest=%v err=%v", cmd, rest, err)
+	}
+}
+
+func TestStartChooserDefaultsToDashboardAndCanSelectScan(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"\n", "dashboard"},
+		{"1\n", "scan"},
+		{"2\n", "doctor"},
+		{"q\n", ""},
+	} {
+		var out bytes.Buffer
+		if got := chooseStartCommand(strings.NewReader(tc.input), &out); got != tc.want {
+			t.Fatalf("input %q: got %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestNoArgumentNonTerminalShowsHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := executeNoArgs(false, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("no args exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Fast incident workflow:") || strings.Contains(stderr.String(), "Scanning") {
+		t.Fatalf("expected help without cluster work, stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestVerifiedPatchDeliverySummarizesClusterState(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	opts := options{output: "text", outFile: "patch.yaml"}
+	if code := deliverVerifiedFix(context.Background(), &stdout, &stderr, opts, kube.Kubectl{}, analyzer.Finding{}, fix.Plan{}, shadow.Result{Parity: 95}, shadow.DeliveryPatch, true); code != 0 {
+		t.Fatalf("patch delivery exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Outcome: Verified patch saved to patch.yaml; cluster unchanged.") {
+		t.Fatalf("missing outcome: %s", stdout.String())
+	}
+}
+
+func TestDeliveryHeadlineDoesNotClaimSkippedVerification(t *testing.T) {
+	if got := deliveryHeadline(false, 0); got != "Fix not shadow-verified" {
+		t.Fatalf("unverified headline: %q", got)
+	}
+	if got := deliveryHeadline(true, 95); got != "Fix Verified - Parity 95%" {
+		t.Fatalf("verified headline: %q", got)
+	}
+}
+
+func TestScriptedQuickFixSummarizesSavedPatch(t *testing.T) {
+	plan := fix.Plan{
+		Resource:      "deployment/api",
+		Strategy:      "resources",
+		PatchTemplate: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          requests:\n            cpu: 100m\n",
+		ApplyEligible: true,
+		CanApply:      true,
+	}
+	opts := options{output: "text", yes: true, outFile: filepath.Join(t.TempDir(), "patch.yaml")}
+	var stdout, stderr bytes.Buffer
+	if code := runGuidedFix(context.Background(), &stdout, &stderr, opts, kube.Kubectl{}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api"}, plan, "deployment/api"); code != 0 {
+		t.Fatalf("quick fix exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Outcome: Unverified patch saved") || !strings.Contains(stdout.String(), "cluster unchanged") {
+		t.Fatalf("missing quick fix outcome: %s", stdout.String())
+	}
+}
+
+func TestReviewOnlyPRBodyDoesNotClaimShadowVerification(t *testing.T) {
+	body := prBody(shadow.Result{}, repo.SourcePatch{Path: "patch.yaml"}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, false)
+	if strings.Contains(body, "verified this remediation") || strings.Contains(body, "Parity") {
+		t.Fatalf("unverified PR claims verification: %s", body)
+	}
+	if !strings.Contains(body, "Shadow verification was not run") || !strings.Contains(body, "Deployment/api") {
+		t.Fatalf("missing review-only context: %s", body)
+	}
+}
+
+func TestIsTerminalRejectsDevNull(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTerminal(f) {
+		t.Fatal("/dev/null is a character device but not an interactive terminal")
+	}
+}
+
+func TestQuickPRDeliveryOpensReviewRequest(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "source")
+	remotePath := filepath.Join(root, "remote.git")
+	if err := os.Mkdir(repoPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git(root, "init", "--bare", remotePath)
+	git(repoPath, "init")
+	git(repoPath, "config", "user.email", "fixora@example.test")
+	git(repoPath, "config", "user.name", "Fixora Test")
+	git(repoPath, "remote", "add", "origin", remotePath)
+	if err := os.WriteFile(filepath.Join(repoPath, "deployment.yaml"), []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(repoPath, "add", ".")
+	git(repoPath, "commit", "-m", "initial")
+	binDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nprintf 'https://example.test/pr/1\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	plan := fix.Plan{Resource: "deployment/api", PatchTemplate: "spec:\n  replicas: 2\n", ApplyEligible: true, CanApply: true}
+	opts := options{output: "text", yes: true, delivery: "pr", visited: map[string]bool{"delivery": true}, sourcePatch: true, repoPath: repoPath, outFile: filepath.Join(root, "patch.yaml")}
+	var stdout, stderr bytes.Buffer
+	if code := runGuidedFix(context.Background(), &stdout, &stderr, opts, kube.Kubectl{}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, plan, "deployment/api"); code != 0 {
+		t.Fatalf("quick PR exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Outcome: PR opened at https://example.test/pr/1") {
+		t.Fatalf("quick PR did not open a request: %s", stdout.String())
+	}
+}
+
+func TestCanonicalPRDeliveryAcceptsCaseInsensitiveMode(t *testing.T) {
+	if !canonicalPRDelivery(options{delivery: "PR", visited: map[string]bool{"delivery": true}}) {
+		t.Fatal("explicit uppercase PR must use the PR delivery path")
+	}
+	if canonicalPRDelivery(options{delivery: "pr"}) {
+		t.Fatal("legacy/default delivery must keep its existing path")
+	}
+}
 
 func TestLintAcceptsFilenameFlag(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
@@ -1039,5 +1245,31 @@ func TestGateRolloutTrimsCompletionKind(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "CronJob/nightly accepted") {
 		t.Fatalf("expected completion verifier output, got %q", errb.String())
+	}
+}
+
+func TestMCPShadowFlagRequiresMCPMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"serve", "--mcp-shadow"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "requires --mcp") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestAugmentWithAIReportsDeterministicFallback(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("private provider detail"))
+	}))
+	defer srv.Close()
+	t.Setenv("FIXORA_AI_PROVIDER", "openai")
+	t.Setenv("FIXORA_AI_BASE_URL", srv.URL)
+	t.Setenv("FIXORA_AI_API_KEY", "test")
+	finding := analyzer.Finding{Summary: "pod failed"}
+	var stderr bytes.Buffer
+	augmentWithAI(context.Background(), &finding, options{redact: true}, &stderr)
+	if finding.AI != nil || !strings.Contains(stderr.String(), "deterministic plan") || !strings.Contains(stderr.String(), "HTTP 400") || strings.Contains(stderr.String(), "private provider detail") {
+		t.Fatalf("AI=%#v warning=%q", finding.AI, stderr.String())
 	}
 }

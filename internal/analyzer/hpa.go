@@ -2,6 +2,8 @@ package analyzer
 
 import (
 	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
@@ -39,23 +41,30 @@ func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
 		targetResource := strings.ToLower(targetKind) + "/" + targetName
 		targetObj, targetErr := ctx.GetResource(namespace, targetResource)
 		if targetErr != nil {
+			missing := hpaTargetNotFound(targetErr, targetKind, targetName)
+			status, severity, summary := "ScaleTargetUnreadable", "medium", "HPA scale target could not be verified because its read failed."
+			title, description := "Resolve scale target read error", "Check RBAC and API availability before concluding the HPA target is missing."
+			if missing {
+				status, severity, summary = "MissingScaleTarget", "high", "HPA references a scale target that does not exist."
+				title, description = "Fix or restore the autoscale target", "Confirm the target kind, name, namespace, and API availability before the HPA is allowed to drive scaling decisions."
+			}
 			out = append(out, Finding{
-				ID:           keyFor(namespace, "HPA/"+name+"/MissingTarget/"+targetKind+"/"+targetName),
+				ID:           keyFor(namespace, "HPA/"+name+"/"+status+"/"+targetKind+"/"+targetName),
 				Namespace:    namespace,
 				ResourceKind: "HorizontalPodAutoscaler",
 				ResourceName: name,
-				Status:       "MissingScaleTarget",
-				Severity:     "high",
+				Status:       status,
+				Severity:     severity,
 				Category:     "autoscaling",
-				Summary:      "HPA references a scale target that could not be read.",
+				Summary:      summary,
 				Evidence: []Evidence{
 					{Label: "Target", Value: targetKind + "/" + targetName},
 					{Label: "Error", Value: targetErr.Error()},
 				},
 				GitOps: gitOpsForObject(hpa),
 				Recommendations: []Recommendation{{
-					Title:         "Fix or restore the autoscale target",
-					Description:   "Confirm the target kind, name, namespace, and API availability before the HPA is allowed to drive scaling decisions.",
+					Title:         title,
+					Description:   description,
 					PatchType:     "hpa",
 					SafeByDefault: false,
 				}},
@@ -91,4 +100,14 @@ func (a Analyzer) analyzeHPATargets(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+func hpaTargetNotFound(err error, kind, name string) bool {
+	if apierrors.IsNotFound(err) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "(notfound)") &&
+		strings.Contains(message, strings.ToLower(kind)) &&
+		strings.Contains(message, `"`+strings.ToLower(name)+`" not found`)
 }

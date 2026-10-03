@@ -1,0 +1,23 @@
+[
+  {"name": "scan, why, fix", "status": "released", "evidence": "v0.8.0 internal/cli/root.go help", "owner": "/guides/incident-workflow/"},
+  {"name": "shadow verification and patch/cluster/PR delivery", "status": "released", "evidence": "v0.8.0 internal/cli/root.go flags", "owner": "/guides/delivery/"},
+  {"name": "MCP stdio server", "status": "released", "evidence": "v0.8.0 serve --mcp", "owner": "/guides/mcp/"},
+  {"name": "AI provider configuration", "status": "released", "evidence": "v0.8.0 auth, config, doctor", "owner": "/guides/ai/"},
+  {"name": "cluster doctor and ai doctor split", "status": "upcoming", "evidence": "codex/production-hardening help --advanced", "owner": "/reference/commands/"},
+  {"name": "MCP shadow tool opt-in", "status": "upcoming", "evidence": "codex/production-hardening --mcp-shadow", "owner": "/guides/mcp/"},
+  {"name": "no-argument terminal chooser", "status": "upcoming", "evidence": "codex/production-hardening internal/cli/root.go", "owner": "/guides/incident-workflow/"},
+  {"name": "explicit local custom analyzers", "status": "released", "evidence": "v0.8.0 internal/cli/root.go custom-analyzers", "owner": "/guides/dashboards-and-integrations/"},
+  {"name": "coordinate transaction", "status": "upcoming", "evidence": "codex/production-hardening internal/cli/coordinate.go", "owner": "/guides/source-and-coordinate/"},
+  {"name": "crash loops and probes", "status": "released", "evidence": "v0.8.0 Pod diagnostics", "owner": "/use-cases/workloads/", "anchor": "crash-loops-and-probes"},
+  {"name": "image pulls and architecture", "status": "released", "evidence": "v0.8.0 Pod diagnostics", "owner": "/use-cases/workloads/", "anchor": "image-pulls-and-architecture"},
+  {"name": "OOM and resource pressure", "status": "released", "evidence": "v0.8.0 Pod diagnostics", "owner": "/use-cases/workloads/", "anchor": "out-of-memory-and-resource-pressure"},
+  {"name": "Pending and scheduling", "status": "released", "evidence": "v0.8.0 Pod diagnostics", "owner": "/use-cases/workloads/", "anchor": "pending-and-scheduling"},
+  {"name": "Jobs and CronJobs", "status": "released", "evidence": "v0.8.0 analyzer catalog", "owner": "/use-cases/workloads/", "anchor": "jobs-and-cronjobs"},
+  {"name": "Service, Ingress, Gateway routing", "status": "released", "evidence": "v0.8.0 trace and analyzer catalog", "owner": "/use-cases/networking/", "anchor": "service-ingress-and-gateway-routing"},
+  {"name": "DNS", "status": "released", "evidence": "v0.8.0 dns command", "owner": "/use-cases/networking/", "anchor": "dns-failures"},
+  {"name": "PVC and storage", "status": "released", "evidence": "v0.8.0 storage command", "owner": "/use-cases/storage-security/", "anchor": "pvc-and-storage"},
+  {"name": "RBAC and policy", "status": "released", "evidence": "v0.8.0 rbac and security commands", "owner": "/use-cases/storage-security/", "anchor": "rbac-and-policy"},
+  {"name": "Secret key inspection", "status": "upcoming", "evidence": "codex/production-hardening --secret-keys", "owner": "/use-cases/storage-security/", "anchor": "secret-references"},
+  {"name": "Node pressure", "status": "released", "evidence": "v0.8.0 node-pressure command", "owner": "/use-cases/delivery-operations/", "anchor": "node-pressure"},
+  {"name": "Helm and GitOps", "status": "released", "evidence": "v0.8.0 repo and validate commands", "owner": "/use-cases/delivery-operations/", "anchor": "helm-and-gitops-managed-workloads"}
+]

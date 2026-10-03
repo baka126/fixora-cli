@@ -166,6 +166,13 @@ func deliverWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts opti
 		opts.yes = true // interactive confirmation already given by menu selection
 	case termui.DeliverPatch:
 		fmt.Fprintf(stdout, "Patch written to %s\n", opts.outFile)
+		status := "Unverified"
+		if reviewOnly {
+			status = "Review-only"
+		} else if opts.shadowVerify {
+			status = "Verified"
+		}
+		fmt.Fprintf(stdout, "Outcome: %s patch saved to %s; cluster unchanged.\n", status, opts.outFile)
 		return 0
 	default:
 		fmt.Fprintln(stdout, "delivery cancelled")
@@ -174,7 +181,7 @@ func deliverWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts opti
 	if code := guardDelivery(stderr, opts, finding, mode); code != 0 {
 		return code
 	}
-	rc := deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode)
+	rc := deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode, opts.shadowVerify && !reviewOnly)
 	if rc == 0 {
 		_ = memory.Add(finding, plan, "guided-fix")
 	}

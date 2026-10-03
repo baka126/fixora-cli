@@ -63,15 +63,14 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 				events = nil
 			}
 
-			eventIndex := make(map[string][]kube.Event)
-			unindexedEvents := []kube.Event{}
-			for _, e := range events {
-				if e.InvolvedObject.Name != "" {
-					key := firstNonEmpty(e.InvolvedObject.Namespace, e.Metadata.Namespace) + "/" + e.InvolvedObject.Name
-					eventIndex[key] = append(eventIndex[key], e)
+			eventIndex := make(map[string][]kube.Event, len(events))
+			for _, event := range events {
+				ref := event.InvolvedObject
+				if ref.Kind != "Pod" || ref.Name == "" {
 					continue
 				}
-				unindexedEvents = append(unindexedEvents, e)
+				key := firstNonEmpty(ref.Namespace, event.Metadata.Namespace) + "/" + ref.Name
+				eventIndex[key] = append(eventIndex[key], event)
 			}
 
 			workerCount := a.opts.MaxConcurrency
@@ -98,13 +97,7 @@ func (a Analyzer) ScanReport(ctx context.Context) ScanReport {
 							attribute.String("pod.name", p.Metadata.Name),
 						))
 
-						key := p.Metadata.Namespace + "/" + p.Metadata.Name
-						relatedEvents := append([]kube.Event{}, eventIndex[key]...)
-						for _, event := range unindexedEvents {
-							if event.Metadata.Namespace == p.Metadata.Namespace && strings.Contains(event.Message, p.Metadata.Name) {
-								relatedEvents = append(relatedEvents, event)
-							}
-						}
+						relatedEvents := eventsForPod(eventIndex[p.Metadata.Namespace+"/"+p.Metadata.Name], p)
 						finding, ok := a.findingForPod(workerCtx, sctx, p, relatedEvents)
 						if ok {
 							mu.Lock()
@@ -352,9 +345,15 @@ func labelsMatch(selector, labels map[string]string) bool {
 func eventsForPod(events []kube.Event, pod kube.Pod) []kube.Event {
 	var out []kube.Event
 	for _, event := range events {
-		if event.InvolvedObject.Name == pod.Metadata.Name || (event.Metadata.Namespace == pod.Metadata.Namespace && strings.Contains(event.Message, pod.Metadata.Name)) {
-			out = append(out, event)
+		ref := event.InvolvedObject
+		namespace := firstNonEmpty(ref.Namespace, event.Metadata.Namespace)
+		if ref.Kind != "Pod" || namespace != pod.Metadata.Namespace || ref.Name != pod.Metadata.Name {
+			continue
 		}
+		if ref.UID != "" && (pod.Metadata.UID == "" || ref.UID != pod.Metadata.UID) {
+			continue
+		}
+		out = append(out, event)
 	}
 	return out
 }
@@ -516,9 +515,7 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 	f.RecentChanges = recent
 
 	for _, event := range events {
-		if event.Metadata.Namespace == pod.Metadata.Namespace && strings.Contains(event.Message, pod.Metadata.Name) {
-			f.Evidence = append(f.Evidence, Evidence{Label: "Event " + event.Reason, Value: event.Message})
-		}
+		f.Evidence = append(f.Evidence, Evidence{Label: "Event " + event.Reason, Value: event.Message})
 	}
 	if a.opts.IncludeLogs {
 		if logs, err := a.k.Logs(ctx, pod.Metadata.Namespace, pod.Metadata.Name, false); err == nil && logs != "" {

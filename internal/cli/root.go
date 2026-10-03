@@ -42,6 +42,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/termui"
 	"github.com/fixora/kubectl-fixora/internal/version"
+	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
@@ -80,6 +81,7 @@ type options struct {
 	branch          string
 	commit          bool
 	mcp             bool
+	mcpShadow       bool
 	profile         string
 	aiBudget        int
 	container       string
@@ -131,15 +133,34 @@ func (l *listFlag) Type() string {
 
 func Execute(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		args = []string{"dashboard"}
+		return executeNoArgs(isTerminal(os.Stdin) && isTerminal(os.Stdout), os.Stdin, stdout, stderr)
 	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		if hasArg(args[1:], "--advanced") || hasArg(args[1:], "-a") {
 			printAdvancedHelp(stdout)
 			return 0
 		}
+		if len(args) > 1 {
+			if printCommandHelp(stdout, args[1]) {
+				return 0
+			}
+			fmt.Fprintf(stderr, "unknown help topic %q\n", args[1])
+			if suggestion := suggestCommand(args[1]); suggestion != "" {
+				fmt.Fprintf(stderr, "Did you mean '%s'?\n", suggestion)
+			}
+			return 2
+		}
 		printHelp(stdout)
 		return 0
+	}
+	if hasArg(args[1:], "--help") || hasArg(args[1:], "-h") {
+		if printCommandHelp(stdout, args[0]) {
+			return 0
+		}
+		if suggestCommand(args[0]) == args[0] {
+			printAdvancedHelp(stdout)
+			return 0
+		}
 	}
 	if args[0] == "version" {
 		fmt.Fprintf(stdout, "%s %s\n", version.Name, version.Version)
@@ -157,9 +178,6 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	}
 	if args[0] == "cache" {
 		return runCache(args[1:], stdout, stderr)
-	}
-	if args[0] == "doctor" {
-		return runAIDoctor(args[1:], stdout, stderr)
 	}
 	if args[0] == "profiles" {
 		return runProfiles(args[1:], stdout, stderr)
@@ -218,6 +236,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	})
 
 	switch cmd {
+	case "ai-doctor":
+		return runAIDoctor(rest, stdout, stderr)
 	case "status":
 		if opts.output == "text" {
 			fmt.Fprintln(stderr, "Gathering status...")
@@ -235,8 +255,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	case "custom-analyzers":
 		return runCustomAnalyzers(ctx, stdout, stderr, opts, a, rest)
 	case "serve":
+		if opts.mcpShadow && !opts.mcp && !(len(rest) > 0 && rest[0] == "--mcp") {
+			fmt.Fprintln(stderr, "error: --mcp-shadow requires --mcp")
+			return 2
+		}
 		if opts.mcp || len(rest) > 0 && rest[0] == "--mcp" {
-			if err := (mcp.Server{Kubectl: k, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
+			if err := (mcp.Server{Kubectl: k, EnableShadow: opts.mcpShadow, AnalyzerOpt: analyzer.Options{Namespace: opts.namespace, AllNS: opts.allNS, IncludeLogs: opts.includeLogs, Redact: opts.redact, Filters: splitCSV(opts.filters), LabelSelector: opts.labelSelector, CheckSecretKeys: opts.checkSecretKeys, CheckCertExpiry: opts.checkCertExpiry}}).ServeStdio(ctx, os.Stdin, stdout); err != nil {
 				fmt.Fprintf(stderr, "error: %v\n", err)
 				return 1
 			}
@@ -570,8 +594,11 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		results, err := analyzer.Lint(paths)
 		return output.WriteOrError(stdout, stderr, opts.output, results, err)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
-		printHelp(stderr)
+		fmt.Fprintf(stderr, "unknown command %q\n", cmd)
+		if suggestion := suggestCommand(cmd); suggestion != "" {
+			fmt.Fprintf(stderr, "Did you mean '%s'?\n", suggestion)
+		}
+		fmt.Fprintln(stderr, "Run 'kubectl fixora help' to see available commands.")
 		return 2
 	}
 }
@@ -643,6 +670,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
 	fs.BoolVar(&opts.commit, "commit", false, "commit local repo changes")
 	fs.BoolVar(&opts.mcp, "mcp", false, "serve MCP stdio mode")
+	fs.BoolVar(&opts.mcpShadow, "mcp-shadow", false, "expose explicitly confirmed shadow verification through MCP")
 	fs.StringVar(&opts.profile, "profile", "", "AI prompt profile or bundle profile")
 	fs.IntVar(&opts.aiBudget, "ai-budget-tokens", 0, "maximum estimated AI prompt tokens")
 	fs.StringVar(&opts.container, "container", "", "target container for concrete patch generation")
@@ -714,6 +742,16 @@ func parseFlags(args []string) (options, []string, error) {
 
 func normalizeCommand(cmd string, rest []string) (string, []string, error) {
 	switch cmd {
+	case "ai":
+		if len(rest) == 1 && rest[0] == "doctor" {
+			return "ai-doctor", nil, nil
+		}
+		return "", rest, fmt.Errorf("ai requires the subcommand doctor")
+	case "doctor":
+		if len(rest) == 1 && rest[0] == "ai" {
+			return "ai-doctor", nil, nil
+		}
+		return cmd, rest, nil
 	case "scan":
 		return "incidents", rest, nil
 	case "repair":
@@ -1031,14 +1069,26 @@ func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, as
 	return 1
 }
 
-func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, mode shadow.DeliveryMode) int {
+func deliveryHeadline(verified bool, parity int) string {
+	if !verified {
+		return "Fix not shadow-verified"
+	}
+	return fmt.Sprintf("Fix Verified - Parity %d%%", parity)
+}
+
+func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, mode shadow.DeliveryMode, verified bool) int {
 	switch mode {
 	case shadow.DeliveryPatch:
 		if opts.output == "text" {
-			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\n", result.Parity)
+			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stdout, "warning: %s\n", warning)
 			}
+			status := "Unverified"
+			if verified {
+				status = "Verified"
+			}
+			fmt.Fprintf(stdout, "Outcome: %s patch saved to %s; cluster unchanged.\n", status, opts.outFile)
 			return 0
 		}
 		return output.Write(stdout, opts.output, result)
@@ -1063,21 +1113,29 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 				return code
 			}
 		} else {
-			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\napplied verified patch\n", result.Parity)
+			fmt.Fprintf(stdout, "%s\napplied patch\n", deliveryHeadline(verified, result.Parity))
 		}
-		return gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
+		code := gateRollout(ctx, stdout, stderr, inputFor(opts), false, k, finding, plan, opts.rolloutTimeout)
+		if code == 0 && opts.output == "text" {
+			fmt.Fprintln(stdout, "Outcome: Patch applied to cluster; rollout result above.")
+		}
+		return code
 	case shadow.DeliveryPR:
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: source patch: %v\n", err)
 			return 1
 		}
-		branch := firstArg([]string{opts.branch, defaultShadowBranch(finding)})
-		if err := repo.PrepareBranchFiles(ctx, opts.repoPath, branch, true, "fixora: verified remediation for "+finding.ResourceKind+"/"+finding.ResourceName, []string{sourcePatch.Path}); err != nil {
+		branch := firstArg([]string{opts.branch, defaultPRBranch(finding, verified)})
+		title := "fixora: review remediation for " + finding.ResourceKind + "/" + finding.ResourceName
+		if verified {
+			title = "fixora: verified remediation for " + finding.ResourceKind + "/" + finding.ResourceName
+		}
+		if err := repo.PrepareBranchFiles(ctx, opts.repoPath, branch, true, title, []string{sourcePatch.Path}); err != nil {
 			fmt.Fprintf(stderr, "error: repo workflow: %v\n", err)
 			return 1
 		}
-		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, "fixora: verified remediation for "+finding.ResourceKind+"/"+finding.ResourceName), prBody(result, sourcePatch), true)
+		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, title), prBody(result, sourcePatch, finding, verified), true)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: open pull request: %v\n", err)
 			return 1
@@ -1086,11 +1144,13 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		result.PRURL = pr.URL
 		result.Warnings = append(result.Warnings, pr.Warnings...)
 		if opts.output == "text" {
-			fmt.Fprintf(stdout, "Fix Verified - Parity %d%%\n", result.Parity)
+			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
 			if pr.URL != "" {
 				fmt.Fprintf(stdout, "opened PR: %s\n", pr.URL)
+				fmt.Fprintf(stdout, "Outcome: PR opened at %s; cluster unchanged.\n", pr.URL)
 			} else {
 				fmt.Fprintf(stdout, "prepared PR branch: %s\n", pr.Branch)
+				fmt.Fprintf(stdout, "Outcome: PR branch %s prepared; cluster unchanged.\n", pr.Branch)
 			}
 			return 0
 		}
@@ -1119,7 +1179,7 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 	if !verified {
 		return code
 	}
-	return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode)
+	return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode, true)
 }
 
 func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
@@ -1204,6 +1264,10 @@ func shadowAttemptReason(result shadow.Result, reason string) bool {
 	return false
 }
 
+func canonicalPRDelivery(opts options) bool {
+	return opts.visited["delivery"] && strings.EqualFold(strings.TrimSpace(opts.delivery), "pr")
+}
+
 func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, resourceArg string) int {
 	if opts.output != "text" {
 		return output.Write(stdout, opts.output, plan)
@@ -1225,6 +1289,12 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 	if opts.preview {
 		return 0
 	}
+	canonicalPR := canonicalPRDelivery(opts)
+	if canonicalPR {
+		if code := guardDelivery(stderr, opts, finding, shadow.DeliveryPR); code != 0 {
+			return code
+		}
+	}
 
 	if !plan.ApplyEligible {
 		if hasConcreteReviewPatch(plan) {
@@ -1237,6 +1307,9 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 				return 1
 			}
 			plan = updatedPlan
+			if canonicalPR {
+				return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, shadow.Result{}, shadow.DeliveryPR, false)
+			}
 			if opts.sourcePatch {
 				if opts.repoPath == "" {
 					failNext(stderr, "--delivery=pr (--gitops/--source-patch) requires --repo", "re-run with --repo <path-to-your-manifests-repo>")
@@ -1273,6 +1346,9 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 
 	if opts.shadowVerify {
 		return runShadowWorkflow(ctx, stdout, stderr, opts, k, finding, plan)
+	}
+	if canonicalPR {
+		return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, shadow.Result{}, shadow.DeliveryPR, false)
 	}
 	if opts.sourcePatch {
 		if opts.repoPath == "" {
@@ -1315,6 +1391,7 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 		}
 	}
 	_ = memory.Add(finding, plan, "guided-fix")
+	fmt.Fprintf(stdout, "Outcome: Unverified patch saved to %s; cluster unchanged.\n", opts.outFile)
 	return 0
 }
 
@@ -1599,9 +1676,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	defer cancel()
 	result, err := client.Explain(aiCtx, aiFinding)
 	if err != nil {
-		if opts.verbose {
-			fmt.Fprintf(stderr, "ai failed: %v\n", err)
-		}
+		fmt.Fprintf(stderr, "warning: AI unavailable (%s); using the deterministic plan.\n", ai.FailureSummary(err))
 		return
 	}
 	finding.AI = result
@@ -2263,11 +2338,7 @@ func runProfiles(args []string, stdout, stderr io.Writer) int {
 }
 
 func isTerminal(f *os.File) bool {
-	stat, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (stat.Mode() & os.ModeCharDevice) != 0
+	return f != nil && term.IsTerminal(int(f.Fd()))
 }
 
 func runInteractiveProfiles(stdout, stderr io.Writer) int {
@@ -2626,14 +2697,14 @@ Fast incident workflow:
   why <kind/name>              Explain root cause, proof, rollback hint, and next step
   fix <kind/name>              Guided walkthrough: root cause -> fix -> shadow -> deliver.
                                Interactive on a TTY; pass -o json or --yes for scripted runs.
-    --delivery                 How to ship a verified fix: patch, cluster, or pr (default: patch).
+    --delivery                 How to ship a proposed fix: patch, cluster, or pr (default: patch).
     --yes                      Confirm non-interactive cluster/PR delivery.
                                (--apply, --source-patch, --gitops are deprecated aliases.)
   coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure.
                                Interactive on a TTY; pass --yes for scripted/non-interactive runs.
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
-  doctor                       Validate access, RBAC, logs, events, metrics, Helm/GitOps CRDs
+  doctor                       Validate access, RBAC, logs, events, Helm/GitOps CRDs
 
 Specialist workflows:
   debug <tool>                 trace, graph, storage, rbac, dns, security, node-pressure, changes, readiness, rollback
@@ -2641,6 +2712,7 @@ Specialist workflows:
 
 Setup:
   auth                         Configure AI provider credentials (interactive or set direct)
+  ai doctor                    Check AI provider setup
   config                       Manage local CLI configuration
   version                      Print version
 
@@ -2648,7 +2720,7 @@ Examples:
   kubectl fixora scan -A
   kubectl fixora why deployment/api -n prod
   kubectl fixora fix deployment/api -n prod
-  kubectl fixora fix deployment/api -n prod --repo ./charts/api --gitops
+  kubectl fixora fix deployment/api -n prod --repo ./charts/api --delivery pr --yes
   kubectl fixora debug trace service/api -n prod
   kubectl fixora source validate ./charts/api
 
@@ -2661,11 +2733,10 @@ Common flags:
       --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
       --no-ai                  Disable AI remediation for this command
       --repo string            Local manifest, Helm chart, or Kustomize overlay path
-      --gitops                 Prefer source-controlled patch output
+      --delivery string        patch, cluster, or pr (default "patch")
       --edit-patch             Open generated patch in $VISUAL/$EDITOR before delivery
-      --quick                  Faster diagnostics; skip default shadow verification
+      --quick                  Skip shadow verification for fixes
       --safe                   Force paranoid redaction and production-safe defaults
-      --apply                  Apply only after concrete diff, dry-run, and confirmation
       --proof                  Show evidence proof
       --container string       Target container for concrete patches
       --image string           Pinned replacement image
@@ -2687,12 +2758,13 @@ Usage:
 Primary commands:
   scan                         Alias for incidents
   status                       Show cluster access and capability summary
-  doctor                       Validate RBAC, metrics, logs, events, Helm/GitOps CRDs
+  doctor                       Validate RBAC, logs, events, Helm/GitOps CRDs
   filters                      List available analyzers and active filter selection
   integrations                 Detect local optional integrations and CRDs
   custom-analyzers list|add|run Manage explicit local custom analyzer executables
   serve [addr]                 Serve a local-only HTTP API for incidents/analyze
   serve --mcp                  Serve a local MCP stdio server for AI assistants
+      --mcp-shadow            Enable the opt-in shadow verification MCP tool
   trace <resource>             Debug Ingress/HTTPRoute/Service connectivity path
   storage                      Debug PVC/PV/StorageClass issues
   rbac [sa] [verb] [resource]  Debug service account authorization
@@ -2717,7 +2789,7 @@ Primary commands:
   config view|set|unset|validate|export|reset|path
   cache path|stats|list|purge|clear
   cache add|get|remove         Configure K8sGPT-style remote cache metadata
-  doctor                       Validate AI setup and configuration
+  ai doctor                    Validate AI setup and configuration
   profiles                     Manage AI prompt profiles (interactive or show|set|create)
   memory list|clear            Inspect or clear local scenario memory
 
@@ -2863,12 +2935,26 @@ func defaultShadowBranch(finding analyzer.Finding) string {
 	return "fixora/verified-" + kind + "-" + name
 }
 
-func prBody(result shadow.Result, sourcePatch repo.SourcePatch) string {
+func defaultPRBranch(finding analyzer.Finding, verified bool) string {
+	branch := defaultShadowBranch(finding)
+	if verified {
+		return branch
+	}
+	return strings.Replace(branch, "fixora/verified-", "fixora/review-", 1)
+}
+
+func prBody(result shadow.Result, sourcePatch repo.SourcePatch, finding analyzer.Finding, verified bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Fixora verified this remediation in a shadow clone before delivery.\n\n")
-	fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
-	fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
-	fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
+	if verified {
+		b.WriteString("Fixora verified this remediation in a shadow clone before delivery.\n\n")
+		fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
+		fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
+		fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
+	} else {
+		b.WriteString("Fixora prepared this source patch for review. Shadow verification was not run.\n\n")
+		fmt.Fprintf(&b, "- Resource: `%s/%s`\n", finding.ResourceKind, finding.ResourceName)
+		fmt.Fprintf(&b, "- Namespace: `%s`\n", finding.Namespace)
+	}
 	fmt.Fprintf(&b, "- Source patch: `%s`\n", sourcePatch.Path)
 	for _, attempt := range result.Attempts {
 		fmt.Fprintf(&b, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)

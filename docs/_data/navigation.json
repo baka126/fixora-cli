@@ -1,0 +1,22 @@
+[
+  {"title": "Overview", "path": "/", "summary": "What Fixora does", "section": "overview"},
+  {"title": "Get started", "path": "/get-started/", "summary": "Install and first scan", "section": "get-started"},
+  {"title": "Use cases", "path": "/use-cases/", "summary": "Troubleshoot by symptom", "section": "use-cases"},
+  {"title": "Workload failures", "path": "/use-cases/workloads/", "summary": "Crash loops, OOM, image pulls, Pending, and Jobs", "section": "use-cases"},
+  {"title": "Networking failures", "path": "/use-cases/networking/", "summary": "Services, routes, Gateway, and DNS", "section": "use-cases"},
+  {"title": "Storage and security", "path": "/use-cases/storage-security/", "summary": "PVC, RBAC, policy, and Secrets", "section": "use-cases"},
+  {"title": "Delivery and operations", "path": "/use-cases/delivery-operations/", "summary": "Node pressure and source-managed workloads", "section": "use-cases"},
+  {"title": "Guides", "path": "/guides/", "summary": "Operator workflows", "section": "guides"},
+  {"title": "Incident workflow", "path": "/guides/incident-workflow/", "summary": "Scan, explain, and fix", "section": "guides"},
+  {"title": "Verification and delivery", "path": "/guides/delivery/", "summary": "Shadow, patch, cluster, and PR", "section": "guides"},
+  {"title": "Source and coordination", "path": "/guides/source-and-coordinate/", "summary": "Validate source and coordinated fixes", "section": "guides"}
+  ,{"title": "AI providers", "path": "/guides/ai/", "summary": "Optional AI and data flow", "section": "guides"}
+  ,{"title": "MCP server", "path": "/guides/mcp/", "summary": "Assistant tools and permission scope", "section": "guides"}
+  ,{"title": "Dashboards and integrations", "path": "/guides/dashboards-and-integrations/", "summary": "Terminal views and custom analyzers", "section": "guides"}
+  ,{"title": "Reports, cache, and local API", "path": "/guides/reports-cache-serve/", "summary": "Export evidence and serve locally", "section": "guides"}
+  ,{"title": "Reference", "path": "/reference/", "summary": "Commands, analyzers, and settings", "section": "reference"}
+  ,{"title": "Commands", "path": "/reference/commands/", "summary": "Released and upcoming commands and flags", "section": "reference"}
+  ,{"title": "Analyzers", "path": "/reference/analyzers/", "summary": "Registry and default selection", "section": "reference"}
+  ,{"title": "Configuration and output", "path": "/reference/configuration-and-output/", "summary": "Settings, formats, and exits", "section": "reference"}
+  ,{"title": "Safety", "path": "/safety/", "summary": "Permissions, privacy, and verification limits", "section": "safety"}
+]

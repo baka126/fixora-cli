@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"time"
 )
 
 func (a Analyzer) analyzeDeployments(ctx *ScanContext) ([]Finding, error) {
@@ -23,6 +24,12 @@ func (a Analyzer) analyzeDeployments(ctx *ScanContext) ([]Finding, error) {
 		readyReplicas := intValue(status["readyReplicas"])
 		replicas := intValue(status["replicas"])
 
+		if generation := intValue(nestedMap(deployment, "metadata")["generation"]); generation > 0 && intValue(status["observedGeneration"]) < generation {
+			continue
+		}
+		if deploymentRolloutActive(status, spec) && mapConditionTrue(status, "Available") {
+			continue
+		}
 		if specReplicas != readyReplicas {
 			var summary string
 			if replicas > specReplicas {
@@ -56,4 +63,38 @@ func (a Analyzer) analyzeDeployments(ctx *ScanContext) ([]Finding, error) {
 		}
 	}
 	return out, nil
+}
+
+func deploymentRolloutActive(status, spec map[string]any) bool {
+	deadline := 600
+	if configured := intValue(spec["progressDeadlineSeconds"]); configured > 0 {
+		deadline = configured
+	}
+	for _, raw := range nestedSlice(status, "conditions") {
+		condition, ok := raw.(map[string]any)
+		if !ok || strValue(condition["type"]) != "Progressing" || strValue(condition["status"]) != "True" {
+			continue
+		}
+		switch strValue(condition["reason"]) {
+		case "NewReplicaSetCreated", "FoundNewReplicaSet", "ReplicaSetUpdated":
+			if updatedAt := strValue(condition["lastUpdateTime"]); updatedAt != "" {
+				updated, err := time.Parse(time.RFC3339Nano, updatedAt)
+				if err != nil || time.Since(updated) > time.Duration(deadline)*time.Second {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func mapConditionTrue(status map[string]any, conditionType string) bool {
+	for _, raw := range nestedSlice(status, "conditions") {
+		condition, ok := raw.(map[string]any)
+		if ok && strValue(condition["type"]) == conditionType && strValue(condition["status"]) == "True" {
+			return true
+		}
+	}
+	return false
 }

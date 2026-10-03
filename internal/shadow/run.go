@@ -52,7 +52,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			return result, fmt.Errorf("create shadow NetworkPolicy: %w", err)
 		}
 		if _, err := c.CreatePod(ctx, plan.Clone); err != nil {
-			_ = c.DeleteNetworkPolicy(context.Background(), plan.Policy.Namespace, plan.Policy.Name)
+			cleanup(ctx, c, clonePlan{Policy: plan.Policy}, &result)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
 		verification := verifyClone(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource))

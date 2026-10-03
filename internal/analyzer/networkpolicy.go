@@ -1,5 +1,11 @@
 package analyzer
 
+import (
+	"encoding/json"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+)
+
 func (a Analyzer) analyzeNetworkPolicies(ctx *ScanContext) ([]Finding, error) {
 	policies, err := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "networkpolicies")
 	if err != nil {
@@ -20,8 +26,16 @@ func (a Analyzer) analyzeNetworkPolicies(ctx *ScanContext) ([]Finding, error) {
 		if podErr != nil {
 			continue
 		}
-		if !networkPolicySelectorMatchesPods(namespace, matchLabels, pods) {
-			out = append(out, networkPolicyFinding(policy, "NoSelectedPods", "low", "NetworkPolicy does not select any observable pods.", "No pods matched selector "+compactStringMap(matchLabels)+" for "+keyFor(namespace, name)+"."))
+		matcher, selectorErr := networkPolicySelector(selector)
+		if selectorErr != nil {
+			continue
+		}
+		if !networkPolicySelectorMatchesPods(namespace, matcher, pods) {
+			selectorText := compactStringMap(matchLabels)
+			if len(matchExpressions) > 0 {
+				selectorText = matcher.String()
+			}
+			out = append(out, networkPolicyFinding(policy, "NoSelectedPods", "low", "NetworkPolicy does not select any observable pods.", "No pods matched selector "+selectorText+" for "+keyFor(namespace, name)+"."))
 		}
 	}
 	if podErr != nil && len(policies) > 0 {
@@ -67,17 +81,26 @@ func networkPolicyFinding(policy map[string]any, status, severity, summary, evid
 	}
 }
 
-func networkPolicySelectorMatchesPods(namespace string, selector map[string]string, pods []map[string]any) bool {
-	if len(selector) == 0 {
-		return false
+func networkPolicySelector(selector map[string]any) (labels.Selector, error) {
+	data, err := json.Marshal(selector)
+	if err != nil {
+		return nil, err
 	}
+	var parsed metav1.LabelSelector
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, err
+	}
+	return metav1.LabelSelectorAsSelector(&parsed)
+}
+
+func networkPolicySelectorMatchesPods(namespace string, selector labels.Selector, pods []map[string]any) bool {
 	for _, pod := range pods {
 		podNamespace, _ := objectNamespaceName(pod)
 		if podNamespace != namespace {
 			continue
 		}
-		labels, _ := objectLabelsAnnotations(pod)
-		if labelsMatch(selector, labels) {
+		podLabels, _ := objectLabelsAnnotations(pod)
+		if selector.Matches(labels.Set(podLabels)) {
 			return true
 		}
 	}
