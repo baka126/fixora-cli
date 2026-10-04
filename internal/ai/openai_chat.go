@@ -26,7 +26,7 @@ type openAIChatRequest struct {
 }
 
 func (a openAIChatAdapter) Explain(ctx context.Context, request Request) (*analyzer.AIResult, error) {
-	if request.Provider.Protocol != ProtocolOpenAIChat && request.Provider.Protocol != ProtocolAzureOpenAI {
+	if request.Provider.Protocol != ProtocolOpenAIChat && request.Provider.Protocol != ProtocolAzureOpenAI && request.Provider.Protocol != ProtocolHuggingFace {
 		return nil, &ProviderError{Kind: ErrorUnsupported}
 	}
 	endpoint, err := openAIEndpoint(request, "chat/completions")
@@ -90,8 +90,11 @@ func (a openAIChatAdapter) Explain(ctx context.Context, request Request) (*analy
 	if choice.Message.Refusal != "" {
 		return nil, &ProviderError{Kind: ErrorRefusal}
 	}
-	if choice.FinishReason == "length" {
+	switch choice.FinishReason {
+	case "length":
 		return nil, &ProviderError{Kind: ErrorIncomplete}
+	case "content_filter":
+		return nil, &ProviderError{Kind: ErrorRefusal}
 	}
 	return ValidateAIResult([]byte(choice.Message.Content))
 }

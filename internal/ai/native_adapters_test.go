@@ -119,3 +119,16 @@ func TestGeminiAdapterHandlesBlockedOrIncompleteCandidates(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiAdapterMapsPromptFeedbackBlockToRefusal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"promptFeedback":{"blockReason":"SAFETY"}}`)
+	}))
+	defer server.Close()
+	spec, _ := ResolveProvider("gemini")
+	_, err := NewGeminiAdapter(server.Client()).Explain(context.Background(), Request{Provider: spec, Model: "test", BaseURL: server.URL})
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Kind != ErrorRefusal {
+		t.Fatalf("error=%v, want refusal", err)
+	}
+}

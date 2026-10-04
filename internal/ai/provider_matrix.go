@@ -34,13 +34,14 @@ const (
 )
 
 type ProviderSpec struct {
-	ID              string
-	ConfiguredID    string
-	Protocol        Protocol
-	DefaultBaseURL  string
-	AuthMode        string
-	OutputModes     []OutputMode
-	EndpointOptions map[string]string
+	ID                string
+	ConfiguredID      string
+	Protocol          Protocol
+	DefaultBaseURL    string
+	AuthMode          string
+	OutputModes       []OutputMode
+	EndpointOptions   map[string]string
+	UnsupportedReason string
 }
 
 var providerSpecs = map[string]ProviderSpec{
@@ -51,18 +52,18 @@ var providerSpecs = map[string]ProviderSpec{
 	"google":                {ID: "gemini", Protocol: ProtocolGemini, DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthMode: "google-api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"groq":                  {ID: "groq", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "https://api.groq.com/openai/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
 	"localai":               {ID: "localai", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "http://localhost:8080/v1", AuthMode: "optional-bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
-	"azureopenai":           {ID: "azureopenai", Protocol: ProtocolAzureOpenAI, AuthMode: "azure-key", OutputModes: []OutputMode{OutputModePromptJSON}, EndpointOptions: map[string]string{"api-version": "2024-02-15-preview"}},
+	"azureopenai":           {ID: "azureopenai", Protocol: ProtocolAzureOpenAI, AuthMode: "azure-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}, EndpointOptions: map[string]string{"api-version": "2024-02-15-preview"}},
 	"customrest":            {ID: "customrest", Protocol: ProtocolOpenAIChat, AuthMode: "optional-bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
 	"cohere":                {ID: "cohere", Protocol: ProtocolCohere, DefaultBaseURL: "https://api.cohere.com", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"huggingface":           {ID: "huggingface", Protocol: ProtocolHuggingFace, DefaultBaseURL: "https://api-inference.huggingface.co/models", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"googlevertexai":        {ID: "googlevertexai", Protocol: ProtocolVertex, AuthMode: "google-credentials", OutputModes: []OutputMode{OutputModePromptJSON}},
+	"huggingface":           {ID: "huggingface", Protocol: ProtocolHuggingFace, DefaultBaseURL: "https://router.huggingface.co/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
+	"googlevertexai":        {ID: "googlevertexai", Protocol: ProtocolVertex, AuthMode: "google-credentials", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"amazonbedrock":         {ID: "amazonbedrock", Protocol: ProtocolBedrock, AuthMode: "aws-credentials", OutputModes: []OutputMode{OutputModePromptJSON}},
 	"amazonbedrockconverse": {ID: "amazonbedrockconverse", Protocol: ProtocolBedrockConverse, AuthMode: "aws-credentials", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"amazonsagemaker":       {ID: "amazonsagemaker", Protocol: ProtocolSageMaker, AuthMode: "aws-credentials", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"oci":                   {ID: "oci", Protocol: ProtocolOCI, AuthMode: "oci-credentials", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"watsonxai":             {ID: "watsonxai", Protocol: ProtocolWatsonx, AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"ibmwatsonxai":          {ID: "watsonxai", Protocol: ProtocolWatsonx, AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"noop":                  {ID: "noop", Protocol: ProtocolNoop, AuthMode: "none"},
+	"amazonsagemaker":       {ID: "amazonsagemaker", Protocol: ProtocolSageMaker, AuthMode: "aws-credentials", UnsupportedReason: "SageMaker endpoints require model-specific request and response contracts that Fixora has not implemented; use an OpenAI-compatible gateway with provider=customrest if your endpoint supports it."},
+	"oci":                   {ID: "oci", Protocol: ProtocolOCI, AuthMode: "oci-credentials", UnsupportedReason: "OCI Generative AI request signing and chat contracts are not implemented; use an OpenAI-compatible gateway with provider=customrest if your endpoint supports it."},
+	"watsonxai":             {ID: "watsonxai", Protocol: ProtocolWatsonx, AuthMode: "bearer", UnsupportedReason: "watsonx IAM token exchange and chat contracts are not implemented; use an OpenAI-compatible gateway with provider=customrest if your endpoint supports it."},
+	"ibmwatsonxai":          {ID: "watsonxai", Protocol: ProtocolWatsonx, AuthMode: "bearer", UnsupportedReason: "watsonx IAM token exchange and chat contracts are not implemented; use an OpenAI-compatible gateway with provider=customrest if your endpoint supports it."},
+	"noop":                  {ID: "noop", Protocol: ProtocolNoop, AuthMode: "none", OutputModes: []OutputMode{OutputModePromptJSON}},
 }
 
 // SupportedProviderIDs returns configured provider IDs in stable display order.

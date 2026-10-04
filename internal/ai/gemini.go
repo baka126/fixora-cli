@@ -36,14 +36,20 @@ func (a geminiAdapter) Explain(ctx context.Context, request Request) (*analyzer.
 	body := map[string]any{
 		"systemInstruction": map[string]any{"parts": []map[string]string{{"text": request.SystemPrompt}}},
 		"contents":          []map[string]any{{"role": "user", "parts": []map[string]string{{"text": request.UserPrompt}}}},
-		"generationConfig":  map[string]any{"responseMimeType": "application/json"},
+	}
+	generationConfig := map[string]any{}
+	if hasOutputMode(request.Provider, OutputModeJSON) || hasOutputMode(request.Provider, OutputModeJSONSchema) {
+		generationConfig["responseMimeType"] = "application/json"
 	}
 	if hasOutputMode(request.Provider, OutputModeJSONSchema) {
 		schema := request.Contract.Schema
 		if schema == nil {
 			schema = remediationSchema()
 		}
-		body["generationConfig"].(map[string]any)["responseJsonSchema"] = schema
+		generationConfig["responseJsonSchema"] = schema
+	}
+	if len(generationConfig) > 0 {
+		body["generationConfig"] = generationConfig
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -67,7 +73,10 @@ func (a geminiAdapter) Explain(ctx context.Context, request Request) (*analyzer.
 		return nil, err
 	}
 	var decoded struct {
-		Error      json.RawMessage `json:"error"`
+		Error          json.RawMessage `json:"error"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
 		Candidates []struct {
 			FinishReason string `json:"finishReason"`
 			Content      struct {
@@ -85,6 +94,9 @@ func (a geminiAdapter) Explain(ctx context.Context, request Request) (*analyzer.
 		return nil, providerErrorFromResponse(http.StatusBadRequest, 0, responseBody)
 	}
 	if len(decoded.Candidates) == 0 {
+		if decoded.PromptFeedback.BlockReason != "" && decoded.PromptFeedback.BlockReason != "BLOCK_REASON_UNSPECIFIED" {
+			return nil, &ProviderError{Kind: ErrorRefusal}
+		}
 		return nil, &ProviderError{Kind: ErrorIncomplete}
 	}
 	candidate := decoded.Candidates[0]

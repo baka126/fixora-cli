@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,26 @@ func TestOpenAIAdapterOmitsUnsupportedSamplingFields(t *testing.T) {
 		SystemPrompt: "system", UserPrompt: "finding",
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenAIChatAdapterMapsTruncationAndContentFilter(t *testing.T) {
+	for _, tc := range []struct {
+		finish string
+		want   ErrorKind
+	}{{"length", ErrorIncomplete}, {"content_filter", ErrorRefusal}} {
+		t.Run(tc.finish, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"choices":[{"finish_reason":%q,"message":{"content":"partial"}}]}`, tc.finish)
+			}))
+			defer server.Close()
+			spec, _ := ResolveProvider("openai")
+			_, err := NewOpenAIChatAdapter(server.Client()).Explain(context.Background(), Request{Provider: spec, Model: "test", BaseURL: server.URL})
+			var providerErr *ProviderError
+			if !errors.As(err, &providerErr) || providerErr.Kind != tc.want {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

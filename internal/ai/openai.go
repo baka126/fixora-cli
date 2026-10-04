@@ -15,11 +15,15 @@ import (
 )
 
 type Client struct {
-	Provider string
-	BaseURL  string
-	APIKey   string
-	Model    string
-	HTTP     *http.Client
+	Provider   string
+	Protocol   Protocol
+	OutputMode OutputMode
+	Spec       ProviderSpec
+	Profile    string
+	BaseURL    string
+	APIKey     string
+	Model      string
+	HTTP       *http.Client
 }
 
 type chatMessage struct {
@@ -34,26 +38,90 @@ func NewFromEnv() (Client, error) {
 	if key == "" {
 		key = strings.TrimSpace(cfg.AIAPIKey)
 	}
-	if key == "" && !providerAllowsNoKey(provider) {
-		return Client{}, fmt.Errorf("FIXORA_AI_API_KEY is not set")
-	}
 	baseURL := strings.TrimRight(strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_BASE_URL"), cfg.AIBaseURL)), "/")
-	model := strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_MODEL"), cfg.AIModel))
+	model := strings.TrimSpace(os.Getenv("FIXORA_AI_MODEL"))
+	if model == "" {
+		configuredModel := cfg.AIModel
+		if provider != "openai" && configuredModel == config.Default().AIModel {
+			configuredModel = ""
+		}
+		model = strings.TrimSpace(firstNonEmpty(configuredModel, defaultModel(provider)))
+	}
 	if model == "" {
 		model = defaultModel(provider)
 	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL(provider)
 	}
-	if (provider == "azureopenai" || provider == "customrest" || provider == "watsonxai" || provider == "ibmwatsonxai" || provider == "googlevertexai" || provider == "amazonbedrock" || provider == "amazonbedrockconverse" || provider == "amazonsagemaker" || provider == "oci") && baseURL == "" {
+	spec, err := ResolveProvider(provider)
+	if err != nil {
+		return Client{}, err
+	}
+	if spec.UnsupportedReason != "" {
+		return Client{}, fmt.Errorf("AI provider %q is not supported: %s", provider, spec.UnsupportedReason)
+	}
+	if key == "" && !providerAllowsNoKey(provider) {
+		return Client{}, fmt.Errorf("FIXORA_AI_API_KEY is not set")
+	}
+	if provider == "googlevertexai" {
+		project := strings.TrimSpace(os.Getenv("FIXORA_AI_PROJECT"))
+		location := strings.TrimSpace(os.Getenv("FIXORA_AI_LOCATION"))
+		if project == "" || location == "" {
+			return Client{}, fmt.Errorf("googlevertexai requires FIXORA_AI_PROJECT and FIXORA_AI_LOCATION")
+		}
+		spec.EndpointOptions = map[string]string{"project": project, "location": location}
+		if baseURL == "" {
+			baseURL = "https://" + location + "-aiplatform.googleapis.com"
+		}
+	}
+	if provider == "azureopenai" {
+		if version := strings.TrimSpace(os.Getenv("FIXORA_AI_API_VERSION")); version != "" {
+			if spec.EndpointOptions == nil {
+				spec.EndpointOptions = map[string]string{}
+			}
+			spec.EndpointOptions["api-version"] = version
+		}
+	}
+	if provider == "amazonbedrock" || provider == "amazonbedrockconverse" {
+		region := firstNonEmpty(os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
+		if region == "" {
+			return Client{}, fmt.Errorf("%s requires AWS_REGION or AWS_DEFAULT_REGION", provider)
+		}
+		spec.EndpointOptions = map[string]string{"region": region}
+	}
+	protocol := spec.Protocol
+	if configured := strings.TrimSpace(os.Getenv("FIXORA_AI_PROTOCOL")); configured != "" {
+		protocol = Protocol(configured)
+		if protocol != spec.Protocol && !(provider == "openai" && protocol == ProtocolOpenAIResponses) {
+			return Client{}, fmt.Errorf("FIXORA_AI_PROTOCOL %q is not supported for provider %q", configured, provider)
+		}
+	}
+	outputMode := OutputModePromptJSON
+	if provider == "openai" || provider == "groq" || provider == "localai" || provider == "customrest" || provider == "googlevertexai" {
+		outputMode = OutputModeJSON
+	}
+	if configured := strings.TrimSpace(os.Getenv("FIXORA_AI_OUTPUT_MODE")); configured != "" {
+		outputMode = OutputMode(configured)
+	}
+	if outputMode != OutputModePromptJSON && outputMode != OutputModeJSON && outputMode != OutputModeJSONSchema {
+		return Client{}, fmt.Errorf("FIXORA_AI_OUTPUT_MODE must be prompt-json, json, or json-schema")
+	}
+	if !hasOutputMode(spec, outputMode) {
+		return Client{}, fmt.Errorf("AI provider %q does not support output mode %q", provider, outputMode)
+	}
+	if (provider == "azureopenai" || provider == "customrest" || provider == "watsonxai" || provider == "ibmwatsonxai" || provider == "amazonsagemaker" || provider == "oci") && baseURL == "" {
 		return Client{}, fmt.Errorf("FIXORA_AI_BASE_URL is required for %s", provider)
 	}
 	return Client{
-		Provider: provider,
-		BaseURL:  baseURL,
-		APIKey:   key,
-		Model:    model,
-		HTTP:     &http.Client{Timeout: 60 * time.Second},
+		Provider:   provider,
+		Protocol:   protocol,
+		OutputMode: outputMode,
+		Spec:       spec,
+		Profile:    strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_PROFILE"), cfg.Profile)),
+		BaseURL:    baseURL,
+		APIKey:     key,
+		Model:      model,
+		HTTP:       &http.Client{Timeout: 60 * time.Second},
 	}, nil
 }
 
@@ -64,6 +132,13 @@ func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyze
 }
 
 func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
+	resolved, err := ResolveProvider(c.Provider)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.UnsupportedReason != "" {
+		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
+	}
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
@@ -72,8 +147,8 @@ func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*ana
 		return nil, err
 	}
 	cfg, _ := config.Load()
-	if profile := strings.TrimSpace(os.Getenv("FIXORA_AI_PROFILE")); profile != "" {
-		cfg.Profile = profile
+	if c.Profile != "" {
+		cfg.Profile = c.Profile
 	}
 	payloadWithProfile := config.ProfilePrompt(cfg.Profile) + "\n\nFinding:\n" + string(payload)
 	switch c.Provider {
@@ -84,13 +159,19 @@ func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*ana
 	case "gemini", "google":
 		return c.explainGemini(ctx, payloadWithProfile)
 	case "cohere":
-		return c.explainCohere(ctx, payloadWithProfile)
+		return c.explainWithAdapter(ctx, NewCohereAdapter(c.HTTP), payloadWithProfile)
 	case "huggingface":
-		return c.explainHuggingFace(ctx, payloadWithProfile)
+		return c.explainWithAdapter(ctx, NewHuggingFaceAdapter(c.HTTP), payloadWithProfile)
 	case "watsonxai", "ibmwatsonxai":
-		return c.explainTextGeneration(ctx, payloadWithProfile, "Watsonx")
-	case "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
-		return c.explainCloudGateway(ctx, payloadWithProfile)
+		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
+	case "googlevertexai":
+		return c.explainWithAdapter(ctx, NewVertexAdapter(c.HTTP, nil), payloadWithProfile)
+	case "amazonbedrockconverse":
+		return c.explainWithAdapter(ctx, NewBedrockConverseAdapter(nil), payloadWithProfile)
+	case "amazonbedrock":
+		return c.explainWithAdapter(ctx, NewBedrockInvokeAdapter(nil), payloadWithProfile)
+	case "amazonsagemaker", "oci":
+		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
 	case "azureopenai":
 		return c.explainAzureOpenAI(ctx, payloadWithProfile)
 	case "noop":
@@ -213,7 +294,12 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 	if err != nil {
 		return nil, err
 	}
-	return NewOpenAIChatAdapter(c.HTTP).Explain(ctx, Request{
+	spec = c.providerSpec(spec)
+	adapter := NewOpenAIChatAdapter(c.HTTP)
+	if spec.Protocol == ProtocolOpenAIResponses {
+		adapter = NewOpenAIResponsesAdapter(c.HTTP)
+	}
+	return adapter.Explain(ctx, Request{
 		Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
 		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
 		UserPrompt:   "Analyze this redacted Kubernetes finding. Prefer GitOps-safe advice and explicit verification steps. Finding:\n" + payload,
@@ -226,6 +312,7 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 	if err != nil {
 		return nil, err
 	}
+	spec = c.providerSpec(spec)
 	return NewOpenAIChatAdapter(c.HTTP).Explain(ctx, Request{
 		Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
 		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract(),
@@ -239,6 +326,7 @@ func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AI
 	if err != nil {
 		return nil, err
 	}
+	spec = c.providerSpec(spec)
 	return NewGeminiAdapter(c.HTTP).Explain(ctx, Request{Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
 		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract(),
 		UserPrompt:   "Analyze this redacted Kubernetes finding:\n" + payload, Contract: OutputContract{Schema: remediationSchema()}})
@@ -288,9 +376,35 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 	if err != nil {
 		return nil, err
 	}
+	spec = c.providerSpec(spec)
 	return NewAnthropicAdapter(c.HTTP).Explain(ctx, Request{Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
 		SystemPrompt: "You are Fixora CLI. " + jsonContract(),
 		UserPrompt:   "Analyze this redacted Kubernetes finding:\n" + payload, Contract: OutputContract{Schema: remediationSchema()}})
+}
+
+func (c Client) providerSpec(spec ProviderSpec) ProviderSpec {
+	if c.Spec.ID != "" {
+		spec = c.Spec
+	}
+	if c.Protocol != "" {
+		spec.Protocol = c.Protocol
+	}
+	if c.OutputMode != "" {
+		spec.OutputModes = []OutputMode{c.OutputMode}
+	}
+	return spec
+}
+
+func (c Client) explainWithAdapter(ctx context.Context, adapter Adapter, payload string) (*analyzer.AIResult, error) {
+	spec, err := ResolveProvider(c.Provider)
+	if err != nil {
+		return nil, err
+	}
+	spec = c.providerSpec(spec)
+	return adapter.Explain(ctx, Request{Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
+		UserPrompt:   "Analyze this redacted Kubernetes finding. Prefer GitOps-safe advice and explicit verification steps. Finding:\n" + payload,
+		Contract:     OutputContract{Schema: remediationSchema()}})
 }
 
 func defaultBaseURL(provider string) string {
@@ -306,7 +420,7 @@ func defaultBaseURL(provider string) string {
 	case "cohere":
 		return "https://api.cohere.com"
 	case "huggingface":
-		return "https://api-inference.huggingface.co/models"
+		return "https://router.huggingface.co/v1"
 	case "localai":
 		return "http://localhost:8080/v1"
 	case "azureopenai", "customrest", "watsonxai", "ibmwatsonxai", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
@@ -321,15 +435,17 @@ func defaultModel(provider string) string {
 	case "ollama":
 		return "llama3.1"
 	case "anthropic":
-		return "claude-3-5-sonnet-latest"
-	case "gemini", "google":
-		return "gemini-1.5-flash"
+		return "claude-sonnet-4-6"
+	case "gemini", "google", "googlevertexai":
+		return "gemini-3.8-flash"
+	case "amazonbedrock", "amazonbedrockconverse":
+		return "global.anthropic.claude-sonnet-5"
 	case "groq":
 		return "llama-3.1-70b-versatile"
 	case "cohere":
 		return "command-r-plus"
 	case "huggingface":
-		return "mistralai/Mistral-7B-Instruct-v0.3"
+		return "Qwen/Qwen3-Coder-480B-A35B-Instruct:fastest"
 	default:
 		return "gpt-4o-mini"
 	}
@@ -337,7 +453,7 @@ func defaultModel(provider string) string {
 
 func providerAllowsNoKey(provider string) bool {
 	switch strings.ToLower(provider) {
-	case "ollama", "noop", "localai", "customrest":
+	case "ollama", "noop", "localai", "customrest", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
 		return true
 	default:
 		return false

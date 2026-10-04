@@ -24,10 +24,16 @@ Provider IDs select an API protocol and default authentication style. Model acce
 | `amazonbedrock`, `amazonbedrockconverse` | Bedrock InvokeModel / Converse | AWS credential chain | Configure region and model ID. |
 | `groq`, `localai`, `customrest` | OpenAI-compatible Chat Completions | Bearer key or optional key | Configure the provider's OpenAI-compatible base URL. |
 | `ollama` | Ollama chat | None by default | Defaults to `http://localhost:11434`; configure the model. |
-| `cohere`, `huggingface`, `amazonsagemaker`, `oci`, `watsonxai`, `ibmwatsonxai` | Provider-specific API | Provider-specific key or credentials | Configure the provider endpoint and model/deployment details. |
+| `cohere` | Cohere v2 Chat | Bearer API key | Defaults to `https://api.cohere.com`; Fixora validates text response blocks. |
+| `huggingface` | Hugging Face Inference Providers Chat Completions | Bearer token | Defaults to `https://router.huggingface.co/v1`; the endpoint implements OpenAI Chat Completions. |
+| `amazonsagemaker`, `oci`, `watsonxai`, `ibmwatsonxai` | Not implemented | Provider-specific | Accepted by config validation for migration compatibility; `ai doctor` gives the current limitation and safe alternative. |
 | `noop` | No network API | None | Returns deterministic-only guidance. |
 
-The adapter test matrix is the source of truth for provider/API combinations validated in a given release. Providers can accept different output constraints; Fixora validates every response against its remediation contract before use.
+OpenAI also supports the Responses API by explicit protocol selection. `FIXORA_AI_PROTOCOL` accepts `openai-chat-completions` or `openai-responses` for `openai`; Fixora does not guess based on a model name. `FIXORA_AI_OUTPUT_MODE` accepts `prompt-json`, `json`, or `json-schema`. The default is JSON mode for OpenAI-compatible APIs and Gemini, and prompt-only JSON for providers whose structured-output support varies by model. Fixora validates every response against its remediation contract before use and never retries a rejected output mode as a different mode.
+
+Validated adapters include OpenAI Chat and Responses, Azure OpenAI Chat, Anthropic Messages, Gemini `generateContent`, Vertex AI Gemini with application-default credentials, Bedrock InvokeModel/Converse using the AWS credential chain, Groq/LocalAI/custom REST only when their endpoint implements OpenAI Chat Completions, Ollama, Cohere v2 Chat, and Hugging Face text-generation inference. These integrations have offline request/response tests; account access, model availability, endpoint-specific features, and credentials still depend on the upstream service.
+
+`amazonsagemaker`, `oci`, `watsonxai`, and `ibmwatsonxai` remain accepted by configuration validation for compatibility, but `ai doctor` reports that their native protocol/auth adapters are not implemented. Fixora does not send these through an unrelated API. Use `customrest` only when the endpoint actually supports OpenAI Chat Completions; otherwise select a provider with a tested native adapter.
 
 ## Configure a provider
 
@@ -38,10 +44,11 @@ Use an environment variable for a production key rather than storing a long-live
 ```bash
 export FIXORA_AI_PROVIDER=openai
 export FIXORA_AI_API_KEY='your-key-from-a-secret-manager'
-kubectl fixora doctor
+export FIXORA_AI_MODEL=gpt-4o-mini
+kubectl fixora ai doctor
 ```
 
-In v0.8.0, `doctor` is the AI setup check. The branch introduces `ai doctor` and a separate cluster `doctor` (**Upcoming**). `auth set` can store credentials locally, but review how that machine is protected. `config view` and `config export` are intended to avoid printing the API key.
+`ai doctor` reports the provider, model, selected protocol, and endpoint host without printing endpoint credentials or query values. OpenAI Responses can be selected with `export FIXORA_AI_PROTOCOL=openai-responses`; for broader compatibility use `export FIXORA_AI_OUTPUT_MODE=json`. Google Vertex requires `FIXORA_AI_PROJECT` and `FIXORA_AI_LOCATION`; Bedrock requires `AWS_REGION` (or `AWS_DEFAULT_REGION`) and the normal AWS SDK credential chain. `auth set` can store credentials locally, but review how that machine is protected. `config view` and `config export` are intended to avoid printing the API key.
 
 ## Request an explanation
 
