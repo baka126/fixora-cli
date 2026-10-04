@@ -14,4 +14,5 @@ These pages are based on the v0.8.0 release. Branch-only additions are marked **
 | --- | --- |
 | Commands, aliases, and workflow flags | [Command reference]({{ '/reference/commands/' | relative_url }}) |
 | Analyzer catalog and defaults | [Analyzers]({{ '/reference/analyzers/' | relative_url }}) |
+| Diagnosis, repair, verification, and rollback coverage (upcoming) | [Remediation coverage]({{ '/reference/remediation-coverage/' | relative_url }}) |
 | Settings, output formats, and exits | [Configuration and output]({{ '/reference/configuration-and-output/' | relative_url }}) |

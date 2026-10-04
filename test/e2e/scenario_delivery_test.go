@@ -43,7 +43,7 @@ func assertOutcome(t *testing.T, ns, deploy string, want outcome, stdout string)
 
 // TestScenarioDelivery runs the real fix pipeline — diagnose, AI patch,
 // shadow-verify, apply — against every curated failure scenario and asserts
-// the workload recovers. It mutates the cluster. It needs a real AI provider
+// recovery or the expected safe refusal. It mutates the cluster. It needs a real AI provider
 // (FIXORA_AI_* env) and runs only via the e2e-delivery workflow.
 func TestScenarioDelivery(t *testing.T) {
 	if os.Getenv("FIXORA_AI_API_KEY") == "" {

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Reviewed remediation coverage for every registered analyzer and named finding, with provider-independent demo regression tests and an inventory drift check.
 - Include evidence-based diagnosis and available AI explanation in structured why/fix output.
 - Provide AI with bounded live workload configuration and display diagnostic commands and caveats.
 - `fix --startup-baseline <manifest>` restores command/args from an explicit matching Deployment baseline, requires shadow verification, and prevents AI revisions of the baseline.

@@ -1,0 +1,657 @@
+{
+  "asOf": "2026-10-04",
+  "checkpoint": "fffb721",
+  "analyzers": [
+    "ConfigMap",
+    "CronJob",
+    "DaemonSet",
+    "Deployment",
+    "Gateway",
+    "GatewayClass",
+    "HPA",
+    "HTTPRoute",
+    "Ingress",
+    "Job",
+    "KedaScaledObject",
+    "KyvernoPolicyReport",
+    "MutatingWebhook",
+    "NetworkPolicy",
+    "Node",
+    "OLMCatalogSource",
+    "OLMClusterCatalog",
+    "OLMClusterExtension",
+    "OLMClusterServiceVersion",
+    "OLMInstallPlan",
+    "OLMOperatorGroup",
+    "OLMSubscription",
+    "PDB",
+    "PVC",
+    "Pod",
+    "ReplicaSet",
+    "ResourceClaim",
+    "Secret",
+    "Service",
+    "StatefulSet",
+    "StorageClass",
+    "TrivyConfigAuditReport",
+    "TrivyVulnerabilityReport",
+    "ValidatingWebhook"
+  ],
+  "precisionChecks": [
+    "service-endpoints",
+    "service-ports",
+    "ingress-backends",
+    "hpa-targets",
+    "pdb-disruptions",
+    "webhook-backends",
+    "gateway-api",
+    "network-policy",
+    "rbac-risk",
+    "pod-security",
+    "node-conditions",
+    "pvc",
+    "storage",
+    "configmap",
+    "olm-operators",
+    "resource-claim",
+    "deployment-replicas",
+    "daemonset",
+    "statefulset",
+    "job",
+    "cronjob",
+    "replicaset",
+    "secret",
+    "pod-terminating"
+  ],
+  "findings": [
+    {
+      "source": "analyzer.go",
+      "status": "ConnectionRefused",
+      "profile": "connection"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "CrashLoopBackOff",
+      "profile": "startup"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "CreateContainerConfigError",
+      "profile": "config"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "CreateContainerError",
+      "profile": "review"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "ErrImagePull",
+      "profile": "image"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "Healthy",
+      "profile": "healthy"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "ImagePullBackOff",
+      "profile": "image"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "NoOwnedPods",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "OK",
+      "profile": "healthy"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "OOMKilled",
+      "profile": "resources"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "OwnedPodsHealthy",
+      "profile": "healthy"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "Pending",
+      "profile": "resources"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "PodFailed",
+      "profile": "review"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "PodsUnreadable",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "ProbeFailure",
+      "profile": "probe"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "ProblemDetected",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "RunContainerError",
+      "profile": "review"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "Unknown",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "Unschedulable",
+      "profile": "resources"
+    },
+    {
+      "source": "certexpiry.go",
+      "status": "TLSCertExpired",
+      "profile": "review"
+    },
+    {
+      "source": "certexpiry.go",
+      "status": "TLSCertExpiringSoon",
+      "profile": "review"
+    },
+    {
+      "source": "configmap.go",
+      "status": "ConfigMapInvalidFormat",
+      "profile": "review"
+    },
+    {
+      "source": "configmap.go",
+      "status": "ConfigMapShared",
+      "profile": "review"
+    },
+    {
+      "source": "configmap.go",
+      "status": "Empty",
+      "profile": "review"
+    },
+    {
+      "source": "configmap.go",
+      "status": "Large",
+      "profile": "review"
+    },
+    {
+      "source": "configmap.go",
+      "status": "PodListUnavailable",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "configmap.go",
+      "status": "Unused",
+      "profile": "review"
+    },
+    {
+      "source": "cronjob.go",
+      "status": "CronJobOverlap",
+      "profile": "review"
+    },
+    {
+      "source": "cronjob.go",
+      "status": "Suspended",
+      "profile": "review"
+    },
+    {
+      "source": "daemonset.go",
+      "status": "DaemonSetFleetHeterogeneous",
+      "profile": "review"
+    },
+    {
+      "source": "daemonset.go",
+      "status": "DaemonSetUnderScheduled",
+      "profile": "review"
+    },
+    {
+      "source": "daemonset.go",
+      "status": "NotReady",
+      "profile": "review"
+    },
+    {
+      "source": "deployment.go",
+      "status": "ReplicasMismatch",
+      "profile": "review"
+    },
+    {
+      "source": "gateway_api.go",
+      "status": "BackendPortMismatch",
+      "profile": "review"
+    },
+    {
+      "source": "gateway_api.go",
+      "status": "ConditionFalse",
+      "profile": "review"
+    },
+    {
+      "source": "gateway_api.go",
+      "status": "MissingBackendRef",
+      "profile": "review"
+    },
+    {
+      "source": "gateway_api.go",
+      "status": "MissingParentRef",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MissingResourceRequests",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MissingScaleTarget",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MissingScaleTargetRef",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "ScaleTargetUnreadable",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "IngressPortMismatch",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "MissingBackendService",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "MissingIngressClass",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "MissingTLSSecret",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "TLSCertUnreadable",
+      "profile": "review"
+    },
+    {
+      "source": "ingress.go",
+      "status": "TLSSecretUnreadable",
+      "profile": "review"
+    },
+    {
+      "source": "job.go",
+      "status": "Failed",
+      "profile": "review"
+    },
+    {
+      "source": "job.go",
+      "status": "JobRetrying",
+      "profile": "review"
+    },
+    {
+      "source": "job.go",
+      "status": "Suspended",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "ApplicationPanic",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "AuthenticationFailed",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "ConfigParseError",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "DatabaseUnreachable",
+      "profile": "connection"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "DependencyTimeout",
+      "profile": "connection"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "DiskFull",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "DNSResolutionFailed",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "ExecFormatError",
+      "profile": "image"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "MissingEnvVar",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "PermissionDenied",
+      "profile": "filesystem"
+    },
+    {
+      "source": "logsignals.go",
+      "status": "TLSHandshakeError",
+      "profile": "review"
+    },
+    {
+      "source": "networkpolicy.go",
+      "status": "EmptyPodSelector",
+      "profile": "review"
+    },
+    {
+      "source": "networkpolicy.go",
+      "status": "NoSelectedPods",
+      "profile": "review"
+    },
+    {
+      "source": "networkpolicy.go",
+      "status": "PodListUnavailable",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "olm.go",
+      "status": "CatalogSourceConnectionUnhealthy",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "ClusterCatalogUnhealthy",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "ClusterExtensionUnhealthy",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "CSVNotSucceeded",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "InstallPlanIncomplete",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "MultipleOperatorGroups",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
+      "status": "SubscriptionNotCurrent",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "DisruptionsBlocked",
+      "profile": "review"
+    },
+    {
+      "source": "pod_security.go",
+      "status": "DefaultServiceAccount",
+      "profile": "review"
+    },
+    {
+      "source": "pod_security.go",
+      "status": "HostNamespaceEnabled",
+      "profile": "review"
+    },
+    {
+      "source": "pod_security.go",
+      "status": "PrivilegedContainer/",
+      "profile": "review"
+    },
+    {
+      "source": "pod_security.go",
+      "status": "RunAsNonRootMissing/",
+      "profile": "review"
+    },
+    {
+      "source": "pod_terminating.go",
+      "status": "PodStuckTerminating",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "Lost",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "MissingStorageClass",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "Pending",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "ProvisioningFailed",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "SmallStorageRequest",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "StorageClassNotFound",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "VolumeAttachFailed",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "VolumeAwaitingConsumer",
+      "profile": "review"
+    },
+    {
+      "source": "pvc.go",
+      "status": "VolumeResizePending",
+      "profile": "review"
+    },
+    {
+      "source": "rbac.go",
+      "status": "ClusterAdminBinding",
+      "profile": "review"
+    },
+    {
+      "source": "rbac.go",
+      "status": "WildcardRBAC",
+      "profile": "review"
+    },
+    {
+      "source": "registry.go",
+      "status": "Unhealthy",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "replicaset.go",
+      "status": "FailedCreate",
+      "profile": "review"
+    },
+    {
+      "source": "resourceclaim.go",
+      "status": "DeviceClassNotFound",
+      "profile": "review"
+    },
+    {
+      "source": "secret.go",
+      "status": "MissingPullSecret",
+      "profile": "review"
+    },
+    {
+      "source": "secret.go",
+      "status": "SecretInvalidBase64",
+      "profile": "review"
+    },
+    {
+      "source": "secret.go",
+      "status": "SecretMissingKey",
+      "profile": "review"
+    },
+    {
+      "source": "service_ports.go",
+      "status": "ServicePortMismatch",
+      "profile": "review"
+    },
+    {
+      "source": "service.go",
+      "status": "EndpointsBlockedByReadinessGate",
+      "profile": "review"
+    },
+    {
+      "source": "service.go",
+      "status": "NoEndpoints",
+      "profile": "review"
+    },
+    {
+      "source": "service.go",
+      "status": "NotReadyEndpoints",
+      "profile": "review"
+    },
+    {
+      "source": "statefulset.go",
+      "status": "HeadlessServiceMissing",
+      "profile": "review"
+    },
+    {
+      "source": "statefulset.go",
+      "status": "ReplicasMismatch",
+      "profile": "review"
+    },
+    {
+      "source": "statefulset.go",
+      "status": "StatefulSetRolloutBlocked",
+      "profile": "review"
+    },
+    {
+      "source": "statefulset.go",
+      "status": "StatefulSetStorageUnbindable",
+      "profile": "review"
+    },
+    {
+      "source": "storage.go",
+      "status": "Failed",
+      "profile": "review"
+    },
+    {
+      "source": "storage.go",
+      "status": "MultipleDefaultStorageClasses",
+      "profile": "review"
+    },
+    {
+      "source": "storage.go",
+      "status": "Released",
+      "profile": "review"
+    },
+    {
+      "source": "webhook.go",
+      "status": "FailClosedWebhook/",
+      "profile": "review"
+    },
+    {
+      "source": "webhook.go",
+      "status": "HighWebhookTimeout/",
+      "profile": "review"
+    },
+    {
+      "source": "webhook.go",
+      "status": "MissingWebhookService/",
+      "profile": "review"
+    },
+    {
+      "source": "webhook.go",
+      "status": "WebhookServiceUnreadable/",
+      "profile": "review"
+    }
+  ],
+  "dynamicFindings": [
+    {
+      "source": "registry.go",
+      "status": "compactMap(object.status)",
+      "profile": "review",
+      "description": "All registered kinds may emit an API status summary; not a stable enum or proof of root cause."
+    },
+    {
+      "source": "analyzer.go",
+      "status": "container waiting/termination reason or pod.status.reason",
+      "profile": "review",
+      "description": "Unknown Kubernetes/runtime reasons remain evidence collection; recognized image/config/OOM reasons use their named profiles. Controller findings can inherit these statuses from owned pods."
+    },
+    {
+      "source": "node.go",
+      "status": "condition.reason or condition.type",
+      "profile": "review",
+      "description": "NotReady/pressure context; no automatic node operations."
+    },
+    {
+      "source": "gateway_api.go",
+      "status": "condition.reason or ConditionFalse",
+      "profile": "review",
+      "description": "Route/listener/controller conditions; no automated cross-resource verification."
+    },
+    {
+      "source": "storage.go",
+      "status": "PersistentVolume phase Released or Failed",
+      "profile": "review",
+      "description": "Persistent data and reclaim/binding changes require review."
+    },
+    {
+      "source": "webhook.go",
+      "status": "named status prefix + webhook name",
+      "profile": "review",
+      "description": "Documented prefixes ending in / carry the webhook identity."
+    },
+    {
+      "source": "pod_security.go",
+      "status": "named status prefix + container name",
+      "profile": "review",
+      "description": "Documented prefixes ending in / carry container identity."
+    }
+  ]
+}
