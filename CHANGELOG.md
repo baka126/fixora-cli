@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Include evidence-based diagnosis and available AI explanation in structured why/fix output.
+- Provide AI with bounded live workload configuration and display diagnostic commands and caveats.
+- `fix --startup-baseline <manifest>` restores command/args from an explicit matching Deployment baseline, requires shadow verification, and prevents AI revisions of the baseline.
+- Infer database endpoint ConfigMap references from an explicit workload source annotation after checking current failure, ownership, command consumption, and ready Service endpoints.
+
+### Fixed
+- Evaluate AI repair proposals even when a deterministic candidate exists; validate their actual change fields independently of the initial symptom or known patch templates.
+- Preserve model confidence and require shadow verification for AI-generated cluster repairs, including quick mode. Keep rejected alternatives from replacing a usable deterministic repair.
+- Explain proven probe endpoint failures without AI while declining ambiguous historical event attribution.
+- Decode merged shadow patches into a fresh Pod so removing an environment literal cannot leave stale values behind.
+- Scope server-side apply ownership to each repair proposal so partial manifests do not inherit omitted fields from earlier repairs.
+- Report already healthy workloads as requiring no repair.
+- Preserve the OOM root cause during CrashLoopBackOff; infer memory headroom from proven stress allocations or memory-backed dd writes when metrics are absent or clipped.
+- Infer a narrowly scoped writable emptyDir cache mount for proven read-only filesystem failures while retaining non-root and read-only controls; require shadow verification for delivery.
+- Honor `--yes` during verified cluster delivery and retain noninteractive rollback refusal.
+- Honor `--yes` for shadow deployment confirmation while retaining patch and delivery validation.
+- Request typed Gemini remediation JSON and reject truncated responses; surface successful AI explanations in diagnosis output.
+- Key AI cache entries by workload evidence, provider, model, endpoint, and prompt profile.
+- Bind AI patches to the generated workload identity before safety validation or review-only delivery; reject plans without canonical identity.
+- Retry transient AI failures with jittered exponential backoff and honor `Retry-After` within the caller’s deadline.
+- Stop the fix walkthrough when no concrete repair exists; show a compact diagnosis with command, exit evidence, recent log, and next action. Full evidence is opt-in through `--proof` or `--verbose`.
+- Exclude unrelated namespace/category matches from AI evidence; require a workload, pod, owner, or referenced-node relationship.
+- Include configured container commands, arguments, and observed exit codes in crash-loop diagnostics.
+- Treat successful empty EndpointSlice lists as authoritative, avoiding unnecessary deprecated Endpoints reads during analysis.
+- Combine Gemini answer parts while excluding thought parts; distinguish empty, invalid JSON, and missing-explanation AI responses without printing raw provider output.
+
 ## [0.8.1]
 
 ### Added

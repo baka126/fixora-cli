@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -584,8 +585,7 @@ func TestFindingPreviousOnlyLogEvidence(t *testing.T) {
 }
 
 func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
-	// No endpointslices key present (GetResourceItems returns nil,nil); the
-	// analyzer must consult legacy Endpoints rather than fabricate NoEndpoints.
+	// An unavailable EndpointSlice API falls back to legacy Endpoints.
 	ctx := scanContextWithItems(map[string][]map[string]any{
 		"services": {
 			{
@@ -602,6 +602,9 @@ func TestServiceAnalyzerFallsBackToLegacyEndpoints(t *testing.T) {
 			},
 		},
 	})
+	reader := ctx.Reader.(fakeReader)
+	reader.itemErrs = map[string]error{"endpointslices.discovery.k8s.io": fmt.Errorf("API unavailable")}
+	ctx.Reader = reader
 	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeServiceEndpoints(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -966,5 +969,56 @@ func TestSummaryForStatusProbeFailure(t *testing.T) {
 	}
 	if got == summaryForStatus("SomethingElse") {
 		t.Fatal("ProbeFailure must not fall through to the generic summary")
+	}
+}
+
+func TestEmptyEndpointSlicesAreAuthoritative(t *testing.T) {
+	reader := fakeReader{items: map[string][]map[string]any{"endpointslices.discovery.k8s.io": {}, "endpoints": {{"metadata": map[string]any{"name": "api", "namespace": "prod"}, "subsets": []any{map[string]any{"addresses": []any{map[string]any{"ip": "10.0.0.1"}}}}}}}}
+	counts, err := serviceEndpointCounts(NewScanContext(context.Background(), reader, Options{}), "prod", false)
+	if err != nil || len(counts) != 0 {
+		t.Fatalf("successful empty slice list must not fall back to legacy: %v %v", counts, err)
+	}
+}
+
+func TestCrashFindingIncludesConfiguredCommandAndExit(t *testing.T) {
+	var pod kube.Pod
+	if err := json.Unmarshal([]byte(`{"metadata":{"name":"api","namespace":"prod"},"spec":{"containers":[{"name":"broken-app","image":"busybox","command":["sh","-c","exit 1"]}]},"status":{"containerStatuses":[{"name":"broken-app","state":{"waiting":{"reason":"CrashLoopBackOff"}},"lastState":{"terminated":{"exitCode":1,"reason":"Error"}}}]}}`), &pod); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := New(fakeReader{}, Options{}).findingForPod(context.Background(), nil, pod, nil)
+	if !ok {
+		t.Fatal("missing finding")
+	}
+	if !strings.Contains(f.Summary, "broken-app exited with code 1") {
+		t.Fatalf("generic crash summary: %s", f.Summary)
+	}
+	text := fmt.Sprint(f.Evidence)
+	if !strings.Contains(text, "Failing container broken-app") {
+		t.Fatalf("missing current failing container identity: %s", text)
+	}
+	if !strings.Contains(text, "exit 1") || !strings.Contains(text, "Exit code broken-app 1") {
+		t.Fatalf("missing runtime evidence: %s", text)
+	}
+}
+
+func TestCrashLoopPreservesOOMCause(t *testing.T) {
+	pod := kube.Pod{Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+		Name: "app", State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+		LastState: map[string]kube.StatusState{"terminated": {Reason: "OOMKilled", ExitCode: 137}},
+	}}}}
+	status, category, _ := podProblem(pod)
+	if status != "OOMKilled" || category != "resources" {
+		t.Fatalf("want OOM resource diagnosis, got %s/%s", status, category)
+	}
+}
+
+func TestCrashLoopRecognizesContainerRuntimeOOMStartError(t *testing.T) {
+	pod := kube.Pod{Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+		Name: "memory-hog", State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}},
+		LastState: map[string]kube.StatusState{"terminated": {Reason: "StartError", ExitCode: 128, Message: "failed to create containerd task: container init was OOM-killed (memory limit too low?)"}},
+	}}}}
+	status, category, _ := podProblem(pod)
+	if status != "OOMKilled" || category != "resources" {
+		t.Fatalf("container runtime OOM during startup must retain resource diagnosis, got %s/%s", status, category)
 	}
 }

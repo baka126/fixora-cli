@@ -201,3 +201,32 @@ func TestBuildClonePlanRejectsNewContainerFromPatch(t *testing.T) {
 		t.Fatal("patch-added container accepted")
 	}
 }
+
+func TestApplyPatchClearsRemovedLiteralEnvValue(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "busybox", Env: []corev1.EnvVar{{Name: "DB_HOST", Value: "wrong-host"}, {Name: "UNCHANGED", Value: "keep"}}}}}}
+	patch := `apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: DB_HOST
+          value: null
+          valueFrom:
+            configMapKeyRef: {name: connection, key: DB_HOST}
+`
+	if err := applyPatchToPod(pod, patch); err != nil {
+		t.Fatal(err)
+	}
+	env := pod.Spec.Containers[0].Env
+	for _, e := range env {
+		if e.Name == "DB_HOST" && (e.Value != "" || e.ValueFrom == nil || e.ValueFrom.ConfigMapKeyRef == nil) {
+			t.Fatalf("old literal survived merge: %+v", e)
+		}
+		if e.Name == "UNCHANGED" && e.Value != "keep" {
+			t.Fatalf("unrelated env changed: %+v", e)
+		}
+	}
+}

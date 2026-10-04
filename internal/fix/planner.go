@@ -8,27 +8,28 @@ import (
 )
 
 type Plan struct {
-	Resource         string   `json:"resource"`
-	Namespace        string   `json:"namespace"`
-	Status           string   `json:"status"`
-	Strategy         string   `json:"strategy"`
-	Safe             bool     `json:"safe"`
-	CanApply         bool     `json:"canApply"`
-	ApplyEligible    bool     `json:"applyEligible"`
-	Confidence       int      `json:"confidence"`
-	Risk             string   `json:"risk"`
-	AutoFixRequested bool     `json:"autoFixRequested"`
-	Patches          []Patch  `json:"patches,omitempty"`
-	Commands         []string `json:"commands,omitempty"`
-	Verification     []string `json:"verification,omitempty"`
-	Rollback         []string `json:"rollback,omitempty"`
-	Steps            []string `json:"steps"`
-	Warnings         []string `json:"warnings,omitempty"`
-	BlockedReasons   []string `json:"blockedReasons,omitempty"`
-	Guardrails       []string `json:"guardrails,omitempty"`
-	PatchTemplate    string   `json:"patchTemplate"`
-	RollbackCommand  string   `json:"rollbackCommand,omitempty"`
-	Recovered        bool     `json:"recovered,omitempty"`
+	Diagnosis        *analyzer.Finding `json:"diagnosis,omitempty"`
+	Resource         string            `json:"resource"`
+	Namespace        string            `json:"namespace"`
+	Status           string            `json:"status"`
+	Strategy         string            `json:"strategy"`
+	Safe             bool              `json:"safe"`
+	CanApply         bool              `json:"canApply"`
+	ApplyEligible    bool              `json:"applyEligible"`
+	Confidence       int               `json:"confidence"`
+	Risk             string            `json:"risk"`
+	AutoFixRequested bool              `json:"autoFixRequested"`
+	Patches          []Patch           `json:"patches,omitempty"`
+	Commands         []string          `json:"commands,omitempty"`
+	Verification     []string          `json:"verification,omitempty"`
+	Rollback         []string          `json:"rollback,omitempty"`
+	Steps            []string          `json:"steps"`
+	Warnings         []string          `json:"warnings,omitempty"`
+	BlockedReasons   []string          `json:"blockedReasons,omitempty"`
+	Guardrails       []string          `json:"guardrails,omitempty"`
+	PatchTemplate    string            `json:"patchTemplate"`
+	RollbackCommand  string            `json:"rollbackCommand,omitempty"`
+	Recovered        bool              `json:"recovered,omitempty"`
 }
 
 type Patch struct {
@@ -55,6 +56,7 @@ type ConcreteOptions struct {
 func BuildPlan(finding analyzer.Finding) Plan {
 	resource := finding.ResourceKind + "/" + finding.ResourceName
 	plan := Plan{
+		Diagnosis:  &finding,
 		Resource:   resource,
 		Namespace:  finding.Namespace,
 		Status:     finding.Status,
@@ -260,7 +262,7 @@ func WithValidatedAIPatch(plan Plan, patch string, confidence int) Plan {
 	plan.CanApply = true
 	plan.Safe = true
 	plan.Risk = "low"
-	plan.Confidence = max(plan.Confidence, max(confidence, 90))
+	plan.Confidence = confidence
 	plan.BlockedReasons = nil
 	plan.Guardrails = appendUnique(plan.Guardrails, "ai-patch-safety-validated")
 	plan.Warnings = appendUnique(plan.Warnings, "AI generated this patch from redacted evidence; review the diff before shadow verification or apply.")
@@ -268,9 +270,8 @@ func WithValidatedAIPatch(plan Plan, patch string, confidence int) Plan {
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: plan.Resource, Description: "AI-generated Kubernetes remediation patch.", Preview: patch})
 	} else {
 		plan.Patches[0].Preview = patch
-		if plan.Patches[0].Description == "" {
-			plan.Patches[0].Description = "AI-generated Kubernetes remediation patch."
-		}
+		plan.Patches[0].Type = "strategic-merge"
+		plan.Patches[0].Description = "AI-generated Kubernetes remediation patch."
 	}
 	plan.refreshApplyEligibility(false)
 	return plan

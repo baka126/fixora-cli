@@ -477,6 +477,41 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		}
 	}
 
+	if status == "OOMKilled" {
+		for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+			current := cs.State["terminated"]
+			previous := cs.LastState["terminated"]
+			if !cs.Ready && (current.Reason == "OOMKilled" || previous.Reason == "OOMKilled") {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Failing container", Value: cs.Name})
+			}
+		}
+	}
+	if status == "CrashLoopBackOff" {
+		for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+			if len(container.Command) > 0 {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Container command " + container.Name, Value: a.redact(fmt.Sprint(container.Command))})
+			}
+			if len(container.Args) > 0 {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Container args " + container.Name, Value: a.redact(fmt.Sprint(container.Args))})
+			}
+		}
+		for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+			if cs.State["waiting"].Reason == "CrashLoopBackOff" {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Failing container", Value: cs.Name})
+			}
+			terminated, ok := cs.State["terminated"]
+			if !ok {
+				terminated, ok = cs.LastState["terminated"]
+			}
+			if ok {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Exit code " + cs.Name, Value: strconv.Itoa(terminated.ExitCode)})
+				if cs.State["waiting"].Reason == "CrashLoopBackOff" {
+					f.Summary = fmt.Sprintf("Container %s exited with code %d (%s) and is repeatedly restarting. Review its configured startup command and logs to establish the cause.", cs.Name, terminated.ExitCode, terminated.Reason)
+				}
+			}
+		}
+	}
+
 	// A Pending/Unschedulable pod whose summed requests exceed every node's
 	// allocatable is fixable by lowering the requests (the resources strategy).
 	// Taints, affinity and PVC binding are also Pending causes, are not fixed
@@ -510,6 +545,9 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
 	}
 
+	if diagnosis := probeFailureDiagnosis(pod, status, events); diagnosis != "" {
+		f.Summary = a.redact(diagnosis)
+	}
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
 	f.RecentChanges = recent
@@ -843,6 +881,9 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 			reason := firstNonEmpty(state.Reason, stateName)
 			switch {
 			case strings.Contains(reason, "CrashLoopBackOff"):
+				if terminated, ok := cs.LastState["terminated"]; ok && terminated.IsOOMKilled() {
+					return "OOMKilled", "resources", "high"
+				}
 				return "CrashLoopBackOff", "runtime", "critical"
 			case strings.Contains(reason, "ImagePullBackOff"), strings.Contains(reason, "ErrImagePull"):
 				return reason, "image", "high"
@@ -854,7 +895,7 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 		}
 		if term, ok := cs.State["terminated"]; ok {
 			switch {
-			case strings.Contains(term.Reason, "OOMKilled"):
+			case term.IsOOMKilled():
 				return "OOMKilled", "resources", "high"
 			case cs.RestartCount >= 1 && (term.ExitCode != 0 || term.Reason == "Error"):
 				// A container currently reported as terminated with a non-zero
@@ -866,7 +907,7 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 			}
 		}
 		for _, state := range cs.LastState {
-			if strings.Contains(state.Reason, "OOMKilled") {
+			if state.IsOOMKilled() {
 				return "OOMKilled", "resources", "high"
 			}
 		}

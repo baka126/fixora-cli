@@ -13,9 +13,11 @@ type kubeReader = kube.Reader
 
 // Result is one inferrer's proposal plus the provenance shown to the user.
 type Result struct {
-	Options   fix.ConcreteOptions
-	Guardrail string // guardrail token added to the plan
-	Warning   string // surfaced in the plan and reviewed before shadow
+	Options          fix.ConcreteOptions
+	EphemeralCache   *fix.EphemeralCache
+	ConnectionConfig *fix.ConnectionConfig
+	Guardrail        string // guardrail token added to the plan
+	Warning          string // surfaced in the plan and reviewed before shadow
 }
 
 // Inferrer derives concrete patch values for one strategy.
@@ -42,6 +44,12 @@ func concreteWith(ctx context.Context, r kubeReader, f analyzer.Finding, p fix.P
 			continue
 		}
 		candidate := fix.Concretize(p, result.Options)
+		if result.EphemeralCache != nil {
+			candidate = fix.WithEphemeralCachePatch(p, *result.EphemeralCache)
+		}
+		if result.ConnectionConfig != nil {
+			candidate = fix.WithConnectionConfigPatch(p, *result.ConnectionConfig)
+		}
 		if !candidate.ApplyEligible {
 			continue
 		}

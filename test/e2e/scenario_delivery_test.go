@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// outcome is what a scenario is expected to achieve. Three fixtures exist to
+// outcome is what a scenario is expected to achieve. Two fixtures exist to
 // prove fixora refuses a fix it cannot make safely — asserting the refusal is
 // what catches a safety regression, which a uniform rollout assertion cannot.
 type outcome int
@@ -25,7 +25,7 @@ const refusalMarker = "No production mutation was attempted."
 
 func assertOutcome(t *testing.T, ns, deploy string, want outcome, stdout string) {
 	t.Helper()
-	refused := strings.Contains(stdout, refusalMarker)
+	refused := strings.Contains(stdout, refusalMarker) || strings.Contains(stdout, "No repair proposed; no changes made.")
 	switch want {
 	case delivered:
 		if refused {
@@ -64,7 +64,7 @@ func TestScenarioDelivery(t *testing.T) {
 		{"crashloop.yaml", "crashloop-demo", "CrashLoopBackOff", "", "broken-app", adviceOnly},
 		{"missing-config.yaml", "missing-config-demo", "CreateContainerConfigError", "", "config-consumer", delivered},
 		{"pending.yaml", "pending-demo", "", "Pending", "greedy-container", delivered},
-		{"security.yaml", "security-demo", "", "", "restricted-app", adviceOnly},
+		{"security.yaml", "security-demo", "", "", "restricted-app", delivered},
 		{"oomkilled.yaml", "oomkilled-demo", "", "", "memory-hog", delivered},
 		{"probe.yaml", "probe-demo", "", "", "web-app", delivered},
 		{"dependency.yaml", "dependency-demo", "CrashLoopBackOff", "", "db-client", adviceOnly},

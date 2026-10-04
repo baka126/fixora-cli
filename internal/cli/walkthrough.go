@@ -35,6 +35,14 @@ func runFixWalkthrough(ctx context.Context, stdout, stderr io.Writer, opts optio
 	uiOpts := termui.Options{Wide: true, NoColor: opts.noColor}
 	in := inputFor(opts)
 
+	if !plan.ApplyEligible && !hasConcreteReviewPatch(plan) {
+		termui.UnresolvedFix(stdout, finding, plan, opts.proof || opts.verbose, uiOpts)
+		if hint := nextConcreteFixHint(resourceArg, plan); hint != "" {
+			fmt.Fprintf(stdout, "Details: %s\n", hint)
+		}
+		return 0
+	}
+
 	// Step 1/4 — Root cause (proof hidden until [w]).
 	fmt.Fprintln(stdout, "Step 1/4  Root cause")
 	termui.Why(stdout, finding, plan, false, uiOpts)

@@ -35,7 +35,7 @@ func ValidateCandidatePatch(patch, strategy, resource, namespace string) error {
 		reasons = append(reasons, "patch namespace differs from plan namespace")
 	}
 	reasons = append(reasons, validateCandidateShape(obj, parts[0])...)
-	reasons = append(reasons, validatePatchObject(withoutIdentity(obj))...)
+	reasons = append(reasons, validatePatchObject(withoutIdentity(obj), strategy)...)
 	spec, ok := patchPodSpec(obj)
 	if ok {
 		if !candidateHasStrategyField(spec, strategy) {
@@ -58,6 +58,13 @@ func ValidateCandidatePatch(patch, strategy, resource, namespace string) error {
 		case "env":
 			allowed["env"] = true
 			reasons = append(reasons, validateCandidateEnv(spec)...)
+		case "restore-command":
+			allowed["command"] = true
+			allowed["args"] = true
+			reasons = append(reasons, validateStartupSpec(spec)...)
+		case "filesystem":
+			allowed["volumeMounts"] = true
+			reasons = append(reasons, validateFilesystemSpec(spec)...)
 		case "probe":
 			allowed["readinessProbe"] = true
 			allowed["livenessProbe"] = true
@@ -120,6 +127,16 @@ func validateCandidateEnv(spec map[string]any) []string {
 		for _, container := range sliceMaps(spec[section]) {
 			name := stringValue(container["name"])
 			for _, env := range sliceMaps(container["env"]) {
+				// null removes an obsolete literal when switching to valueFrom.
+				if literal, exists := env["value"]; exists && literal == nil {
+					copy := map[string]any{}
+					for key, value := range env {
+						if key != "value" {
+							copy[key] = value
+						}
+					}
+					env = copy
+				}
 				if len(env) != 2 || stringValue(env["name"]) == "" {
 					reasons = append(reasons, fmt.Sprintf("%s.%s env entry must contain only name and valueFrom", section, name))
 					continue
@@ -186,6 +203,14 @@ func candidateHasStrategyField(spec map[string]any, strategy string) bool {
 				}
 			case "env":
 				if len(sliceMaps(container["env"])) > 0 {
+					return true
+				}
+			case "restore-command":
+				if command, ok := container["command"].([]any); ok && len(command) > 0 {
+					return true
+				}
+			case "filesystem":
+				if len(sliceMaps(container["volumeMounts"])) > 0 {
 					return true
 				}
 			case "probe":

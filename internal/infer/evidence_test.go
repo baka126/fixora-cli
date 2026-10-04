@@ -33,3 +33,18 @@ func TestEvidenceValueByPrefix(t *testing.T) {
 		t.Fatalf("want empty for missing prefix, got %q", got)
 	}
 }
+
+func TestContainerNamePrioritizesFailingContainer(t *testing.T) {
+	f := analyzer.Finding{Evidence: []analyzer.Evidence{
+		{Label: "Container image sidecar", Value: "busybox"},
+		{Label: "Container image app", Value: "polinux/stress"},
+		{Label: "Failing container", Value: "app"},
+	}}
+	if got := ContainerName(f); got != "app" {
+		t.Fatalf("want app, got %q", got)
+	}
+	f.Evidence = append(f.Evidence, analyzer.Evidence{Label: "Failing container", Value: "sidecar"})
+	if got := ContainerName(f); got != "" {
+		t.Fatalf("conflicting target must decline, got %q", got)
+	}
+}

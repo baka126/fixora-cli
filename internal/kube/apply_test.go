@@ -58,7 +58,7 @@ func hasArg(args []string, want string) bool {
 func TestApplyUsesServerSideApply(t *testing.T) {
 	argsFile := fakeKubectl(t)
 
-	if err := NewKubectl("").Apply(context.Background(), "/tmp/fixora-patch.yaml"); err != nil {
+	if err := NewKubectl("").Apply(context.Background(), syntheticPatch(t, "kind: Deployment\nmetadata: {name: worker}\n")); err != nil {
 		t.Fatalf("Apply returned an error: %v", err)
 	}
 
@@ -80,7 +80,7 @@ func TestApplyUsesServerSideApply(t *testing.T) {
 func TestDryRunApplyUsesServerSideApply(t *testing.T) {
 	argsFile := fakeKubectl(t)
 
-	if err := NewKubectl("").DryRunApply(context.Background(), "/tmp/fixora-patch.yaml"); err != nil {
+	if err := NewKubectl("").DryRunApply(context.Background(), syntheticPatch(t, "kind: Deployment\nmetadata: {name: worker}\n")); err != nil {
 		t.Fatalf("DryRunApply returned an error: %v", err)
 	}
 
@@ -95,5 +95,90 @@ func TestDryRunApplyUsesServerSideApply(t *testing.T) {
 	}
 	if !hasArg(args, "--dry-run=server") {
 		t.Fatalf("DryRunApply must stay a server dry-run. args=%v", args)
+	}
+}
+
+func syntheticPatch(t *testing.T, contents string) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "patch.yaml")
+	if err := os.WriteFile(file, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+func applyManager(args []string) string {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--field-manager=") {
+			return strings.TrimPrefix(arg, "--field-manager=")
+		}
+	}
+	return ""
+}
+func TestApplyProposalManagerStableAcrossDryRunAndApply(t *testing.T) {
+	argsFile := fakeKubectl(t)
+	file := syntheticPatch(t, "kind: Deployment\nmetadata: {name: worker}\n")
+	k := NewKubectl("")
+	if err := k.DryRunApply(context.Background(), file); err != nil {
+		t.Fatal(err)
+	}
+	dry := applyManager(recordedArgs(t, argsFile))
+	if err := k.Apply(context.Background(), file); err != nil {
+		t.Fatal(err)
+	}
+	actual := applyManager(recordedArgs(t, argsFile))
+	if !strings.HasPrefix(dry, "fixora-") || len(dry) != 23 || dry != actual {
+		t.Fatalf("dryrun manager=%q apply=%q", dry, actual)
+	}
+	secondPath := syntheticPatch(t, "kind: Deployment\nmetadata: {name: worker}\n")
+	if err := k.Apply(context.Background(), secondPath); err != nil {
+		t.Fatal(err)
+	}
+	if again := applyManager(recordedArgs(t, argsFile)); again != actual {
+		t.Fatalf("same proposal with different filename changed manager %q -> %q", actual, again)
+	}
+}
+func TestApplyDifferentProposalUsesDifferentManager(t *testing.T) {
+	argsFile := fakeKubectl(t)
+	k := NewKubectl("")
+	first := syntheticPatch(t, "spec: {template: {spec: {containers: [{name: app, image: busybox:1.36}]}}}\n")
+	second := syntheticPatch(t, "spec: {template: {spec: {containers: [{name: app, args: [httpd]}]}}}\n")
+	if err := k.Apply(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	firstManager := applyManager(recordedArgs(t, argsFile))
+	if err := k.Apply(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	secondManager := applyManager(recordedArgs(t, argsFile))
+	if firstManager == "" || firstManager == secondManager {
+		t.Fatalf("different proposals shared manager %q", firstManager)
+	}
+	if err := os.WriteFile(second, []byte("spec: {template: {spec: {containers: [{name: app, args: [httpd, -f]}]}}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Apply(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if changed := applyManager(recordedArgs(t, argsFile)); changed == secondManager {
+		t.Fatalf("updated proposal bytes at the same filename retained manager %q", changed)
+	}
+}
+func TestApplyMissingProposalFailsBeforeKubectl(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		argsFile := fakeKubectl(t)
+		file := filepath.Join(t.TempDir(), "missing.yaml")
+		k := NewKubectl("")
+		var err error
+		if dry {
+			err = k.DryRunApply(context.Background(), file)
+		} else {
+			err = k.Apply(context.Background(), file)
+		}
+		if err == nil {
+			t.Fatal("missing proposal should fail")
+		}
+		if _, statErr := os.Stat(argsFile); !os.IsNotExist(statErr) {
+			t.Fatalf("kubectl ran before the proposal could be read: %v", statErr)
+		}
 	}
 }

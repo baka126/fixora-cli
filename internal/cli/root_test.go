@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -592,6 +593,9 @@ func TestApplyAIPatchIfSafeAcceptsValidatedPatch(t *testing.T) {
 	plan := applyAIPatchIfSafe(context.Background(), fix.BuildPlan(finding), finding, &bytes.Buffer{}, true)
 	if !plan.ApplyEligible {
 		t.Fatalf("expected AI patch to become apply eligible: %#v", plan)
+	}
+	if !strings.Contains(plan.PatchTemplate, "name: api") || !strings.Contains(plan.PatchTemplate, "namespace: prod") {
+		t.Fatalf("partial patch must retain target identity: %s", plan.PatchTemplate)
 	}
 	if !strings.Contains(plan.PatchTemplate, "image: repo/api:v2") {
 		t.Fatalf("expected AI patch in plan:\n%s", plan.PatchTemplate)
@@ -1271,5 +1275,112 @@ func TestAugmentWithAIReportsDeterministicFallback(t *testing.T) {
 	augmentWithAI(context.Background(), &finding, options{redact: true}, &stderr)
 	if finding.AI != nil || !strings.Contains(stderr.String(), "deterministic plan") || !strings.Contains(stderr.String(), "HTTP 400") || strings.Contains(stderr.String(), "private provider detail") {
 		t.Fatalf("AI=%#v warning=%q", finding.AI, stderr.String())
+	}
+}
+
+func TestRelatedFindingsRequireAnActualRelationship(t *testing.T) {
+	target := analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", PodName: "api-abc", Category: "runtime", Evidence: []analyzer.Evidence{{Label: "Node", Value: "node-a"}}}
+	candidates := []analyzer.Finding{
+		{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "other", Category: "runtime"},
+		{Namespace: "staging", ResourceKind: "Deployment", ResourceName: "api", Category: "runtime"},
+		{Namespace: "prod", ResourceKind: "Service", ResourceName: "unrelated"},
+		{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", Status: "ReplicasMismatch"},
+		{ResourceKind: "Node", ResourceName: "node-a"},
+	}
+	got := relatedFindings(target, candidates, 8)
+	if len(got) != 2 {
+		t.Fatalf("only same workload and its actual node are related: %#v", got)
+	}
+	for _, f := range got {
+		if f.ResourceName != "api" && f.ResourceName != "node-a" {
+			t.Fatalf("unrelated candidate: %#v", f)
+		}
+	}
+}
+
+func TestAIPatchKeepsWorkloadIdentity(t *testing.T) {
+	f := analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", Status: "OOMKilled", AI: &analyzer.AIResult{Confidence: 95, PatchYAML: "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\n  namespace: prod\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          limits:\n            memory: 256Mi\n"}}
+	p := applyAIPatchIfSafe(context.Background(), fix.BuildPlan(f), f, &bytes.Buffer{}, true)
+	if !p.ApplyEligible || !strings.Contains(p.PatchTemplate, "name: api") || !strings.Contains(p.PatchTemplate, "namespace: prod") {
+		t.Fatalf("matching identity must produce a deliverable patch: %#v", p)
+	}
+	f.AI.PatchYAML = strings.Replace(f.AI.PatchYAML, "name: api", "name: other", 1)
+	p = applyAIPatchIfSafe(context.Background(), fix.BuildPlan(f), f, &bytes.Buffer{}, true)
+	if p.ApplyEligible || hasConcreteReviewPatch(p) {
+		t.Fatal("wrong-workload patch must be rejected rather than offered for review")
+	}
+}
+
+func TestAIPatchRejectsMissingCanonicalIdentity(t *testing.T) {
+	original := "spec:\n  resources:\n    requests:\n      memory: 128Mi\n"
+	_, err := bindAIPatchIdentity(original, "kind: Deployment\nmetadata:\n  name: unrelated\n")
+	if err == nil {
+		t.Fatal("cannot bind a patch without proven target identity")
+	}
+}
+
+func TestShadowYesSkipsInteractiveConfirmation(t *testing.T) {
+	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing-kubeconfig"))
+	var out, errb bytes.Buffer
+	p := fix.Plan{ApplyEligible: true}
+	_, _, code := verifyInShadow(context.Background(), &out, &errb, options{yes: true, promptInput: bufio.NewReader(strings.NewReader(""))}, kube.Kubectl{}, analyzer.Finding{}, p, true)
+	if strings.Contains(out.String(), "Deploy shadow clone?") || !strings.Contains(out.String(), "Starting shadow verification") {
+		t.Fatalf("--yes must reach verification without prompting: %s", out.String())
+	}
+	if code == 0 {
+		t.Fatal("missing Kubernetes config must fail verification")
+	}
+}
+
+func TestVerifiedClusterDeliveryHonorsYes(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + calls + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	var out, errb bytes.Buffer
+	proposal := filepath.Join(dir, "patch.yaml")
+	if err := os.WriteFile(proposal, []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: api, namespace: prod}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	opts := options{yes: true, applyDryRun: true, outFile: proposal, output: "text", promptInput: bufio.NewReader(strings.NewReader(""))}
+	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}
+	code := deliverVerifiedFix(context.Background(), &out, &errb, opts, kube.Kubectl{}, finding, fix.Plan{}, shadow.Result{Verified: true}, shadow.DeliveryCluster, true)
+	data, _ := os.ReadFile(calls)
+	applied := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "apply --server-side --force-conflicts") && !strings.Contains(line, "--dry-run=server") && strings.Contains(line, "-f "+proposal) {
+			applied = true
+		}
+	}
+	if code != 0 || strings.Contains(out.String(), "Would you like") || !applied {
+		t.Fatalf("--yes must deliver without a second prompt: code=%d out=%s calls=%s err=%s", code, out.String(), data, errb.String())
+	}
+}
+
+func TestFilesystemDeliveryRequiresVerifiedShadow(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := deliverVerifiedFix(context.Background(), &out, &errb, options{yes: true}, kube.Kubectl{}, analyzer.Finding{}, fix.Plan{Strategy: "filesystem"}, shadow.Result{}, shadow.DeliveryCluster, false)
+	if code == 0 || !strings.Contains(errb.String(), "shadow") {
+		t.Fatalf("filesystem mutation must require verification: %d %s", code, errb.String())
+	}
+}
+
+func TestStartupBaselineFlagDocumented(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := Execute([]string{"help", "fix"}, &out, &errb)
+	if code != 0 || !strings.Contains(out.String(), "--startup-baseline") {
+		t.Fatalf("startup baseline flag missing: %s %s", out.String(), errb.String())
+	}
+}
+
+func TestGuidedFixReportsAlreadyHealthy(t *testing.T) {
+	var out, errb bytes.Buffer
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "app", Namespace: "demo", Status: "OwnedPodsHealthy", Summary: "No failing owned pods"}
+	code := runGuidedFix(context.Background(), &out, &errb, options{output: "text", yes: true}, kube.Kubectl{}, f, fix.BuildPlan(f), "Deployment/app")
+	if code != 0 || !strings.Contains(out.String(), "No repair needed") || strings.Contains(out.String(), "Next:") {
+		t.Fatalf("healthy workload must not look unresolved: code=%d out=%s", code, out.String())
 	}
 }

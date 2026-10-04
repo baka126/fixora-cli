@@ -41,7 +41,7 @@ func (envInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Finding, 
 	// shadow-verified — and this design lets nothing reach apply unverified.
 	// This holds even when a near-match Secret exists: the remedy is
 	// `kubectl create secret`, not a patch.
-	if strings.EqualFold(kind, "secret") {
+	if !strings.EqualFold(kind, "ConfigMap") {
 		return Result{}, false, nil
 	}
 	key := EvidenceValue(f, "Env reference key")
@@ -51,6 +51,14 @@ func (envInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Finding, 
 	items, err := r.GetResourceItems(ctx, f.Namespace, false, "configmaps")
 	if err != nil {
 		return Result{}, false, err
+	}
+	for _, item := range items {
+		if configMapName(item) == missing {
+			// An existing object disproves a missing-name typo. A missing key
+			// or another failing reference needs its own diagnosis; redirecting
+			// this reference to a similar object could change valid config.
+			return Result{}, false, nil
+		}
 	}
 	match := ""
 	for _, item := range items {

@@ -465,7 +465,14 @@ func applyPatchToPod(pod *corev1.Pod, patchYAML string) error {
 	if err != nil {
 		return fmt.Errorf("merge patch into shadow pod: %w", err)
 	}
-	return json.Unmarshal(merged, pod)
+	// Decode into a fresh object: decoding into the source can retain omitted
+	// scalar fields on reused slice entries after strategic-merge deletion.
+	var revised corev1.Pod
+	if err := json.Unmarshal(merged, &revised); err != nil {
+		return err
+	}
+	*pod = revised
+	return nil
 }
 
 func podStrategicPatch(obj map[string]any) ([]byte, error) {
