@@ -15,6 +15,23 @@ var defaultOutputContract = OutputContract{
 	RequiredFields: []string{"summary", "rootCause", "recommendedFix"},
 }
 
+func remediationSchema() map[string]any {
+	properties := map[string]any{}
+	for _, key := range []string{"summary", "rootCause", "recommendedFix", "patchYAML", "strategy"} {
+		properties[key] = map[string]any{"type": "string"}
+	}
+	for _, key := range []string{"analyzers", "commands", "warnings"} {
+		properties[key] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}
+	}
+	properties["confidence"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 100}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"required":             []string{"summary", "rootCause", "recommendedFix", "patchYAML", "strategy", "confidence", "analyzers", "commands", "warnings"},
+		"additionalProperties": false,
+	}
+}
+
 func ValidateAIResult(content []byte) (*analyzer.AIResult, error) {
 	content = []byte(stripJSONFence(strings.TrimSpace(string(content))))
 	if len(bytes.TrimSpace(content)) == 0 {

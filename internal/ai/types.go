@@ -39,6 +39,7 @@ const (
 	ErrorRateLimit      ErrorKind = "rate-limit"
 	ErrorTransient      ErrorKind = "transient"
 	ErrorIncomplete     ErrorKind = "incomplete"
+	ErrorRefusal        ErrorKind = "refusal"
 	ErrorContract       ErrorKind = "contract"
 	ErrorResponseSize   ErrorKind = "response-size"
 )
@@ -73,6 +74,8 @@ func (e *ProviderError) summary() string {
 		message = "AI provider is temporarily unavailable"
 	case ErrorIncomplete:
 		message = "AI provider response was incomplete"
+	case ErrorRefusal:
+		message = "AI provider declined to analyze the request"
 	case ErrorContract:
 		message = "AI response did not satisfy Fixora's response contract"
 	case ErrorResponseSize:

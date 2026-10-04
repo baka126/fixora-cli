@@ -22,24 +22,9 @@ type Client struct {
 	HTTP     *http.Client
 }
 
-type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-}
-
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
-}
-
-type chatResponse struct {
-	Choices []struct {
-		Message chatMessage `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
 }
 
 func NewFromEnv() (Client, error) {
@@ -223,104 +208,30 @@ func (c Client) explainTextGeneration(ctx context.Context, payload, providerName
 }
 
 func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AIResult, error) {
-	reqBody := chatRequest{
-		Model:       c.Model,
-		Temperature: 0.1,
-		Messages: []chatMessage{
-			{
-				Role:    "system",
-				Content: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
-			},
-			{
-				Role:    "user",
-				Content: "Analyze this redacted Kubernetes finding. Prefer GitOps-safe advice and explicit verification steps. Finding:\n" + payload,
-			},
-		},
-	}
-	body, err := json.Marshal(reqBody)
+	provider := firstNonEmpty(c.Provider, "openai")
+	spec, err := ResolveProvider(provider)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := readProviderResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-	var decoded chatResponse
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
-	}
-	if decoded.Error != nil {
-		return nil, fmt.Errorf("%s", decoded.Error.Message)
-	}
-	if len(decoded.Choices) == 0 {
-		return nil, fmt.Errorf("AI provider returned no choices")
-	}
-	return parseAIContent(decoded.Choices[0].Message.Content)
+	return NewOpenAIChatAdapter(c.HTTP).Explain(ctx, Request{
+		Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
+		UserPrompt:   "Analyze this redacted Kubernetes finding. Prefer GitOps-safe advice and explicit verification steps. Finding:\n" + payload,
+		Contract:     OutputContract{Schema: remediationSchema()},
+	})
 }
 
 func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyzer.AIResult, error) {
-	reqBody := chatRequest{
-		Model:       c.Model,
-		Temperature: 0.1,
-		Messages: []chatMessage{
-			{Role: "system", Content: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract()},
-			{Role: "user", Content: "Analyze this redacted Kubernetes finding:\n" + payload},
-		},
-	}
-	body, err := json.Marshal(reqBody)
+	spec, err := ResolveProvider("azureopenai")
 	if err != nil {
 		return nil, err
 	}
-	url := strings.TrimRight(c.BaseURL, "/")
-	if !strings.Contains(url, "/chat/completions") {
-		url += "/chat/completions"
-	}
-	if !strings.Contains(url, "api-version=") {
-		separator := "?"
-		if strings.Contains(url, "?") {
-			separator = "&"
-		}
-		url += separator + "api-version=2024-02-15-preview"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("api-key", c.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := readProviderResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-	var decoded chatResponse
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
-	}
-	if decoded.Error != nil {
-		return nil, fmt.Errorf("%s", decoded.Error.Message)
-	}
-	if len(decoded.Choices) == 0 {
-		return nil, fmt.Errorf("AI provider returned no choices")
-	}
-	return parseAIContent(decoded.Choices[0].Message.Content)
+	return NewOpenAIChatAdapter(c.HTTP).Explain(ctx, Request{
+		Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract(),
+		UserPrompt:   "Analyze this redacted Kubernetes finding:\n" + payload,
+		Contract:     OutputContract{Schema: remediationSchema()},
+	})
 }
 
 func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AIResult, error) {

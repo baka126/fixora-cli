@@ -9,6 +9,7 @@ type Protocol string
 
 const (
 	ProtocolOpenAIChat      Protocol = "openai-chat-completions"
+	ProtocolOpenAIResponses Protocol = "openai-responses"
 	ProtocolOllama          Protocol = "ollama-chat"
 	ProtocolAnthropic       Protocol = "anthropic-messages"
 	ProtocolGemini          Protocol = "gemini-generate-content"
@@ -50,7 +51,7 @@ var providerSpecs = map[string]ProviderSpec{
 	"google":                {ID: "gemini", Protocol: ProtocolGemini, DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthMode: "google-api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"groq":                  {ID: "groq", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "https://api.groq.com/openai/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
 	"localai":               {ID: "localai", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "http://localhost:8080/v1", AuthMode: "optional-bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
-	"azureopenai":           {ID: "azureopenai", Protocol: ProtocolAzureOpenAI, AuthMode: "azure-key", OutputModes: []OutputMode{OutputModePromptJSON}},
+	"azureopenai":           {ID: "azureopenai", Protocol: ProtocolAzureOpenAI, AuthMode: "azure-key", OutputModes: []OutputMode{OutputModePromptJSON}, EndpointOptions: map[string]string{"api-version": "2024-02-15-preview"}},
 	"customrest":            {ID: "customrest", Protocol: ProtocolOpenAIChat, AuthMode: "optional-bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},
 	"cohere":                {ID: "cohere", Protocol: ProtocolCohere, DefaultBaseURL: "https://api.cohere.com", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
 	"huggingface":           {ID: "huggingface", Protocol: ProtocolHuggingFace, DefaultBaseURL: "https://api-inference.huggingface.co/models", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON}},
