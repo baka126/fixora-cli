@@ -10,6 +10,25 @@ section: guides
 
 Fixora's deterministic checks work without an AI key. AI can add an explanation and patch suggestion, but the answer must be checked against proof, the diff, and policy gates. Provider availability and model quality vary.
 
+## Provider presets
+
+Provider IDs select an API protocol and default authentication style. Model access and optional structured-output features still depend on the provider account and model. A custom base URL must implement the selected protocol.
+
+| Provider ID | API protocol | Authentication | Endpoint/model notes |
+| --- | --- | --- | --- |
+| `openai` | OpenAI Chat Completions | Bearer API key | Defaults to `https://api.openai.com/v1`; model is configurable. |
+| `google`, `gemini` | Gemini `generateContent` | Google API key | Defaults to the Gemini API v1beta endpoint. |
+| `anthropic` | Anthropic Messages | Anthropic API key | Defaults to `https://api.anthropic.com`; model is configurable. |
+| `azureopenai` | Azure OpenAI Chat Completions | Azure API key | Configure the Azure endpoint, deployment, and API version. |
+| `googlevertexai` | Vertex AI Gemini generation | Google credentials | Configure project and location. |
+| `amazonbedrock`, `amazonbedrockconverse` | Bedrock InvokeModel / Converse | AWS credential chain | Configure region and model ID. |
+| `groq`, `localai`, `customrest` | OpenAI-compatible Chat Completions | Bearer key or optional key | Configure the provider's OpenAI-compatible base URL. |
+| `ollama` | Ollama chat | None by default | Defaults to `http://localhost:11434`; configure the model. |
+| `cohere`, `huggingface`, `amazonsagemaker`, `oci`, `watsonxai`, `ibmwatsonxai` | Provider-specific API | Provider-specific key or credentials | Configure the provider endpoint and model/deployment details. |
+| `noop` | No network API | None | Returns deterministic-only guidance. |
+
+The adapter test matrix is the source of truth for provider/API combinations validated in a given release. Providers can accept different output constraints; Fixora validates every response against its remediation contract before use.
+
 ## Configure a provider
 
 Use an environment variable for a production key rather than storing a long-lived key in the local config file. Set the provider, model, and optional base URL for your chosen endpoint.

@@ -537,7 +537,7 @@ func Reset() error {
 
 func Validate(cfg Config) ValidationResult {
 	result := ValidationResult{Valid: true}
-	providers := []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "cohere", "huggingface", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "watsonxai", "ibmwatsonxai", "noop"}
+	providers := AIProviders()
 	if !slices.Contains(providers, strings.ToLower(cfg.AIProvider)) {
 		result.Errors = append(result.Errors, "aiProvider must be one of "+strings.Join(providers, ", "))
 	}
@@ -570,6 +570,12 @@ func Validate(cfg Config) ValidationResult {
 	}
 	result.Valid = len(result.Errors) == 0
 	return result
+}
+
+// AIProviders returns the provider IDs accepted by configuration validation.
+// Keep this list in sync with the AI adapter matrix.
+func AIProviders() []string {
+	return []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "cohere", "huggingface", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "watsonxai", "ibmwatsonxai", "noop"}
 }
 
 func FirstNonEmpty(values ...string) string {
