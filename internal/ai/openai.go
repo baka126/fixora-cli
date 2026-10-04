@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -74,72 +72,10 @@ func NewFromEnv() (Client, error) {
 	}, nil
 }
 
-type providerHTTPError struct{ StatusCode int }
-
-const maxAIResponseBytes = 1 << 20
-
-func readProviderResponse(resp *http.Response) ([]byte, error) {
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, providerHTTPError{StatusCode: resp.StatusCode}
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAIResponseBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxAIResponseBytes {
-		return nil, fmt.Errorf("AI provider response exceeds 1 MiB")
-	}
-	return data, nil
-}
-
-func (e providerHTTPError) Error() string {
-	return fmt.Sprintf("AI provider returned HTTP %d", e.StatusCode)
-}
-
-// FailureSummary keeps provider response details and request URLs out of CLI output.
-func FailureSummary(err error) string {
-	var httpErr providerHTTPError
-	if errors.As(err, &httpErr) {
-		return httpErr.Error()
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "request deadline exceeded"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "request cancelled"
-	}
-	return "provider request failed"
-}
-
-func (e providerHTTPError) retryable() bool {
-	switch e.StatusCode {
-	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	}
-	return false
-}
-
 func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
-	var result *analyzer.AIResult
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		result, err = c.explainOnce(ctx, finding)
-		var httpErr providerHTTPError
-		if err == nil || !errors.As(err, &httpErr) || !httpErr.retryable() || attempt == 2 {
-			return result, err
-		}
-		timer := time.NewTimer(time.Duration(200<<attempt) * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-	return result, err
+	return retryProviderCall(ctx, func() (*analyzer.AIResult, error) {
+		return c.explainOnce(ctx, finding)
+	})
 }
 
 func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
@@ -525,37 +461,6 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 		return nil, fmt.Errorf("AI provider returned no content")
 	}
 	return parseAIContent(decoded.Content[0].Text)
-}
-
-// parseAIContent enforces the JSON contract for every provider: malformed
-// content, or a syntactically valid but empty object, yields an Unstructured
-// result so callers fall back to the deterministic plan instead of failing
-// hard or surfacing blank AI sections.
-func parseAIContent(content string) (*analyzer.AIResult, error) {
-	content = strings.TrimSpace(content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-	var result analyzer.AIResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return unstructuredAIResult(content), nil
-	}
-	if strings.TrimSpace(result.Summary) == "" &&
-		strings.TrimSpace(result.RootCause) == "" &&
-		strings.TrimSpace(result.RecommendedFix) == "" {
-		return unstructuredAIResult(content), nil
-	}
-	return &result, nil
-}
-
-func unstructuredAIResult(content string) *analyzer.AIResult {
-	return &analyzer.AIResult{
-		Summary:      "AI response did not satisfy the JSON contract.",
-		RootCause:    content,
-		Warnings:     []string{"AI response could not be parsed; falling back to the deterministic plan."},
-		Unstructured: true,
-	}
 }
 
 func defaultBaseURL(provider string) string {
