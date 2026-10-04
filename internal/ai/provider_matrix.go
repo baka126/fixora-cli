@@ -46,7 +46,7 @@ type ProviderSpec struct {
 var providerSpecs = map[string]ProviderSpec{
 	"openai":                {ID: "openai", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "https://api.openai.com/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"ollama":                {ID: "ollama", Protocol: ProtocolOllama, DefaultBaseURL: "http://localhost:11434", AuthMode: "none", OutputModes: []OutputMode{OutputModePromptJSON}},
-	"anthropic":             {ID: "anthropic", Protocol: ProtocolAnthropic, DefaultBaseURL: "https://api.anthropic.com", AuthMode: "api-key", OutputModes: []OutputMode{OutputModePromptJSON}},
+	"anthropic":             {ID: "anthropic", Protocol: ProtocolAnthropic, DefaultBaseURL: "https://api.anthropic.com", AuthMode: "api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSONSchema}},
 	"gemini":                {ID: "gemini", Protocol: ProtocolGemini, DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthMode: "google-api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"google":                {ID: "gemini", Protocol: ProtocolGemini, DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthMode: "google-api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"groq":                  {ID: "groq", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "https://api.groq.com/openai/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON}},

@@ -235,62 +235,13 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 }
 
 func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AIResult, error) {
-	body, err := json.Marshal(map[string]any{
-		"systemInstruction": map[string]any{
-			"parts": []map[string]string{{"text": "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract()}},
-		},
-		"contents": []map[string]any{{
-			"role":  "user",
-			"parts": []map[string]string{{"text": "Analyze this redacted Kubernetes finding:\n" + payload}},
-		}},
-		"generationConfig": map[string]any{
-			"temperature":      0.1,
-			"responseMimeType": "application/json",
-		},
-	})
+	spec, err := ResolveProvider(firstNonEmpty(c.Provider, "gemini"))
 	if err != nil {
 		return nil, err
 	}
-	endpoint := fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(c.BaseURL, "/"), c.Model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	if c.APIKey != "" {
-		req.Header.Set("x-goog-api-key", c.APIKey)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := readProviderResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-	var decoded struct {
-		Candidates []struct {
-			Content struct {
-				Parts []struct {
-					Text string `json:"text"`
-				} `json:"parts"`
-			} `json:"content"`
-		} `json:"candidates"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
-	}
-	if decoded.Error != nil {
-		return nil, fmt.Errorf("%s", decoded.Error.Message)
-	}
-	if len(decoded.Candidates) == 0 || len(decoded.Candidates[0].Content.Parts) == 0 {
-		return nil, fmt.Errorf("AI provider returned no content")
-	}
-	return parseAIContent(decoded.Candidates[0].Content.Parts[0].Text)
+	return NewGeminiAdapter(c.HTTP).Explain(ctx, Request{Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. " + jsonContract(),
+		UserPrompt:   "Analyze this redacted Kubernetes finding:\n" + payload, Contract: OutputContract{Schema: remediationSchema()}})
 }
 
 func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AIResult, error) {
@@ -333,45 +284,13 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 }
 
 func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer.AIResult, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":      c.Model,
-		"max_tokens": 1200,
-		"system":     "You are Fixora CLI. " + jsonContract(),
-		"messages": []map[string]string{
-			{"role": "user", "content": "Analyze this redacted Kubernetes finding:\n" + payload},
-		},
-	})
+	spec, err := ResolveProvider("anthropic")
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("x-api-key", c.APIKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := readProviderResponse(resp)
-	if err != nil {
-		return nil, err
-	}
-	var decoded struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return nil, err
-	}
-	if len(decoded.Content) == 0 {
-		return nil, fmt.Errorf("AI provider returned no content")
-	}
-	return parseAIContent(decoded.Content[0].Text)
+	return NewAnthropicAdapter(c.HTTP).Explain(ctx, Request{Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		SystemPrompt: "You are Fixora CLI. " + jsonContract(),
+		UserPrompt:   "Analyze this redacted Kubernetes finding:\n" + payload, Contract: OutputContract{Schema: remediationSchema()}})
 }
 
 func defaultBaseURL(provider string) string {
