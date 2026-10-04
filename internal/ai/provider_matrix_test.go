@@ -1,9 +1,15 @@
 package ai
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/config"
 )
 
@@ -46,6 +52,29 @@ func TestResolveProviderConfigurationMatrix(t *testing.T) {
 				t.Fatalf("configured ID = %q, want %q", spec.ConfiguredID, tc.id)
 			}
 		})
+	}
+}
+
+func TestSupportedProviderDocsMatchRegistry(t *testing.T) {
+	docs, err := os.ReadFile("../../docs/guides/ai.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range SupportedProviderIDs() {
+		if !strings.Contains(string(docs), "`"+id+"`") {
+			t.Errorf("supported provider %q is missing from AI guide", id)
+		}
+	}
+}
+
+func TestUnknownProviderFailsBeforeNetwork(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++ }))
+	defer server.Close()
+	client := Client{Provider: "openaai", BaseURL: server.URL, APIKey: "test", Model: "test", HTTP: server.Client()}
+	_, err := client.Explain(context.Background(), analyzer.Finding{Summary: "finding"})
+	if err == nil || calls != 0 {
+		t.Fatalf("unknown provider request count=%d error=%v", calls, err)
 	}
 }
 

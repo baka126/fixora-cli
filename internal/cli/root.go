@@ -1657,20 +1657,19 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	if opts.redact {
 		aiFinding = analyzer.RedactFindingForAI(aiFinding)
 	}
+	client, err := ai.NewFromEnv()
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: AI configuration unavailable (%v); using the deterministic plan.\n", err)
+		return
+	}
+	cacheKey := cache.AIKey(aiFinding, client.Provider, string(client.Protocol), client.Model, client.BaseURL, client.Profile, string(client.OutputMode))
 	if cfg.CacheEnabled {
 		store := cache.New()
 		var cached analyzer.AIResult
-		if store.Get(cache.Key(aiFinding), &cached) {
+		if store.Get(cacheKey, &cached) {
 			finding.AI = &cached
 			return
 		}
-	}
-	client, err := ai.NewFromEnv()
-	if err != nil {
-		if opts.verbose {
-			fmt.Fprintf(stderr, "ai disabled: %v\n", err)
-		}
-		return
 	}
 	aiCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -1682,7 +1681,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	finding.AI = result
 	handleUnstructuredAI(finding, stderr)
 	if finding.AI != nil && cfg.CacheEnabled {
-		_ = cache.New().Set(cache.Key(aiFinding), result)
+		_ = cache.New().Set(cacheKey, result)
 	}
 }
 
@@ -2730,7 +2729,7 @@ Common flags:
       --context string         Kube context
   -l, --selector string        Label selector, for example app=api,tier!=cache
   -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
-      --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
+      --ai                     Use the configured AI provider adapter
       --no-ai                  Disable AI remediation for this command
       --repo string            Local manifest, Helm chart, or Kustomize overlay path
       --delivery string        patch, cluster, or pr (default "patch")
