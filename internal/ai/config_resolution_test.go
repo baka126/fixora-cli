@@ -52,3 +52,18 @@ func TestNewFromEnvResolvesVertexADCWithoutAPIKey(t *testing.T) {
 		t.Fatalf("vertex selection = %#v, endpoint %q", client.Spec.EndpointOptions, client.BaseURL)
 	}
 }
+
+func TestNewFromEnvDefaultsGeminiToJSONMode(t *testing.T) {
+	t.Setenv("FIXORA_AI_PROVIDER", "gemini")
+	t.Setenv("FIXORA_AI_API_KEY", "google-test")
+	t.Setenv("FIXORA_AI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
+	t.Setenv("FIXORA_AI_MODEL", "gemini-3.8-flash")
+	t.Setenv("FIXORA_AI_OUTPUT_MODE", "")
+	client, err := NewFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.OutputMode != OutputModeJSON {
+		t.Fatalf("Gemini output mode = %q, want JSON", client.OutputMode)
+	}
+}

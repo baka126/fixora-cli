@@ -28,14 +28,14 @@ func Doctor(ctx context.Context) DoctorResult {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(client.BaseURL, "/")+"/api/tags", nil)
 		if err != nil {
 			result.Status = "error"
-			result.Detail = err.Error()
+			result.Detail = "ollama endpoint URL is invalid"
 			return result
 		}
 		httpClient := &http.Client{Timeout: 3 * time.Second}
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			result.Status = "error"
-			result.Detail = err.Error()
+			result.Detail = "ollama endpoint is unreachable"
 			return result
 		}
 		defer resp.Body.Close()

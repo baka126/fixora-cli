@@ -97,7 +97,7 @@ func NewFromEnv() (Client, error) {
 		}
 	}
 	outputMode := OutputModePromptJSON
-	if provider == "openai" || provider == "groq" || provider == "localai" || provider == "customrest" || provider == "googlevertexai" {
+	if provider == "openai" || provider == "groq" || provider == "localai" || provider == "customrest" || provider == "gemini" || provider == "google" || provider == "googlevertexai" {
 		outputMode = OutputModeJSON
 	}
 	if configured := strings.TrimSpace(os.Getenv("FIXORA_AI_OUTPUT_MODE")); configured != "" {
