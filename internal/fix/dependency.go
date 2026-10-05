@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"github.com/fixora/kubectl-fixora/internal/kube"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"strings"
@@ -17,7 +18,7 @@ func WithConnectionConfigPatch(p Plan, c ConnectionConfig) Plan {
 		return p
 	}
 	kind, name, ok := strings.Cut(p.Resource, "/")
-	if !ok || kind != "Deployment" || len(validation.IsDNS1123Subdomain(name)) > 0 || len(validation.IsDNS1123Label(p.Namespace)) > 0 {
+	if !ok || kube.WorkloadVersion(kind) == "" || len(validation.IsDNS1123Subdomain(name)) > 0 || len(validation.IsDNS1123Label(p.Namespace)) > 0 {
 		return p
 	}
 	for _, reason := range p.BlockedReasons {
@@ -34,7 +35,10 @@ func WithConnectionConfigPatch(p Plan, c ConnectionConfig) Plan {
 		seen[key] = true
 		env = append(env, map[string]any{"name": key, "value": nil, "valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": c.ConfigMap, "key": key}}})
 	}
-	patch := map[string]any{"apiVersion": "apps/v1", "kind": kind, "metadata": map[string]any{"name": name, "namespace": p.Namespace}, "spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{map[string]any{"name": c.Container, "env": env}}}}}}
+	patch, err := kube.WorkloadPatch(kind, name, p.Namespace, map[string]any{"containers": []any{map[string]any{"name": c.Container, "env": env}}})
+	if err != nil {
+		return p
+	}
 	data, err := yaml.Marshal(patch)
 	if err != nil {
 		return p

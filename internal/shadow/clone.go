@@ -476,26 +476,11 @@ func applyPatchToPod(pod *corev1.Pod, patchYAML string) error {
 }
 
 func podStrategicPatch(obj map[string]any) ([]byte, error) {
-	kind := strings.ToLower(fmt.Sprint(obj["kind"]))
-	if kind == "pod" || kind == "" {
-		return json.Marshal(removeIdentity(obj))
-	}
-	spec, ok := nestedMap(obj, "spec")
+	spec, ok := kube.WorkloadPodSpec(obj)
 	if !ok {
-		return nil, fmt.Errorf("patch does not include a spec")
+		return nil, fmt.Errorf("patch must target a correctly nested Pod spec")
 	}
-	template, ok := nestedMap(spec, "template")
-	if ok {
-		templateSpec, ok := nestedMap(template, "spec")
-		if !ok {
-			return nil, fmt.Errorf("workload patch does not include spec.template.spec")
-		}
-		return json.Marshal(map[string]any{"spec": templateSpec})
-	}
-	if _, ok := spec["containers"]; ok {
-		return json.Marshal(map[string]any{"spec": spec})
-	}
-	return nil, fmt.Errorf("cannot project %s patch into a shadow pod; only pod template spec changes are supported", kind)
+	return json.Marshal(map[string]any{"spec": spec})
 }
 
 func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1.NetworkPolicy {

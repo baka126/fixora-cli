@@ -378,6 +378,16 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 				opts.shadowVerify = true
 			}
 		}
+		if plan.ApplyEligible && !strings.HasPrefix(plan.Resource, "Deployment/") {
+			if uid, preflightErr := ops.PreflightController(analysisCtx, reader, finding, plan); preflightErr != nil {
+				plan = fix.WithControllerReview(plan, "Live target requires source review: "+preflightErr.Error())
+			} else {
+				plan.TargetUID = uid
+			}
+		}
+		if slices.Contains(plan.Guardrails, "controller-preflight-required") && plan.ApplyEligible {
+			opts.shadowVerify = true
+		}
 		if inferred {
 			opts.shadowVerify = true
 		}
@@ -1034,16 +1044,31 @@ type rolloutGate interface {
 // the resource-aware rollback. It never auto-rolls-back without explicit
 // interactive confirmation.
 func gateRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, finding analyzer.Finding, plan fix.Plan, timeout time.Duration) int {
+	return reportRollout(ctx, stdout, stderr, in, assumeYes, k, liveOutcome(ctx, k, finding, plan, timeout))
+}
+func liveOutcome(ctx context.Context, k rolloutGate, finding analyzer.Finding, plan fix.Plan, timeout time.Duration) ops.RolloutOutcome {
 	var outcome ops.RolloutOutcome
 	switch strings.ToLower(strings.TrimSpace(finding.ResourceKind)) {
+	case "pod":
+		reader, ok := k.(ops.TargetReader)
+		if !ok {
+			return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: "live Pod readiness reader unavailable"}
+		}
+		outcome = ops.VerifyPod(ctx, reader, finding, plan, timeout)
 	case "job", "cronjob":
 		outcome = ops.VerifyCompletion(ctx, k, finding, plan, timeout)
 	default:
 		outcome = ops.VerifyRollout(ctx, k, finding, plan, timeout)
 	}
+	return outcome
+}
+func reportRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, outcome ops.RolloutOutcome) int {
 	switch outcome.Class {
 	case ops.RolloutHealthy, ops.CompletionSucceeded, ops.CronJobHealthy:
 		fmt.Fprintf(stderr, "rollout healthy: %s\n", outcome.Summary)
+		return 0
+	case ops.CronJobPending:
+		fmt.Fprintf(stderr, "verification pending: %s\n", outcome.Summary)
 		return 0
 	case ops.RolloutSkipped, ops.RolloutUnknown,
 		ops.CompletionPending, ops.CompletionUnknown,
@@ -1092,8 +1117,13 @@ func deliveryHeadline(verified bool, parity int) string {
 }
 
 func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, result shadow.Result, mode shadow.DeliveryMode, verified bool) int {
+	plan = fix.WithTargetPolicy(plan)
 	if mode == shadow.DeliveryCluster && (plan.Strategy == "filesystem" || plan.Strategy == "restore-command" || slices.Contains(plan.Guardrails, "shadow-required")) && !verified {
 		fmt.Fprintln(stderr, "error: this repair requires successful shadow verification before cluster delivery")
+		return 1
+	}
+	if mode == shadow.DeliveryCluster && !plan.ApplyEligible {
+		fmt.Fprintln(stderr, "error: cluster delivery is blocked by repair policy")
 		return 1
 	}
 	switch mode {
@@ -1112,8 +1142,24 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		return output.Write(stdout, opts.output, result)
 	case shadow.DeliveryCluster:
-		if opts.applyDryRun {
-			if err := k.DryRunApply(ctx, opts.outFile); err != nil {
+		applyFile := opts.outFile
+		if !strings.HasPrefix(plan.Resource, "Deployment/") || plan.TargetUID != "" {
+			snapshot, err := ops.PreflightControllerSnapshot(ctx, k, finding, plan)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: controller preflight: %v\n", err)
+				return 1
+			}
+			plan.TargetUID = snapshot.UID
+			guarded, cleanup, err := kube.GuardedApplyFile(opts.outFile, snapshot.UID, snapshot.ResourceVersion)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: pin apply preconditions: %v\n", err)
+				return 1
+			}
+			defer cleanup()
+			applyFile = guarded
+		}
+		if opts.applyDryRun || plan.TargetUID != "" {
+			if err := k.DryRunApply(ctx, applyFile); err != nil {
 				fmt.Fprintf(stderr, "error: server dry-run rejected verified patch: %v\n", err)
 				return 1
 			}
@@ -1122,11 +1168,13 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 			fmt.Fprintln(stdout, "verified apply cancelled")
 			return 0
 		}
-		if err := k.Apply(ctx, opts.outFile); err != nil {
+		if err := k.Apply(ctx, applyFile); err != nil {
 			fmt.Fprintf(stderr, "error: apply verified patch: %v\n", err)
 			return 1
 		}
 		result.Delivery = "cluster"
+		outcome := liveOutcome(ctx, k, finding, plan, opts.rolloutTimeout)
+		result.LiveVerification, result.LiveSummary = outcome.Class, outcome.Summary
 		if opts.output != "text" {
 			if code := output.Write(stdout, opts.output, result); code != 0 {
 				return code
@@ -1134,11 +1182,7 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		} else {
 			fmt.Fprintf(stdout, "%s\napplied patch\n", deliveryHeadline(verified, result.Parity))
 		}
-		code := gateRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, finding, plan, opts.rolloutTimeout)
-		if code == 0 && opts.output == "text" {
-			fmt.Fprintln(stdout, "Outcome: Patch applied to cluster; rollout result above.")
-		}
-		return code
+		return reportRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, outcome)
 	case shadow.DeliveryPR:
 		sourcePatch, err := repo.WriteSourcePatch(opts.repoPath, opts.outFile, finding, plan)
 		if err != nil {
@@ -1422,6 +1466,10 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 		return output.Write(stdout, opts.output, sourcePatch)
 	}
 	if opts.apply {
+		if slices.Contains(plan.Guardrails, "shadow-required") {
+			fmt.Fprintln(stderr, "error: this repair requires shadow verification before direct apply")
+			return 1
+		}
 		if sourceManaged(finding) {
 			failNext(stderr, "direct apply is blocked for Helm/GitOps-managed resources", "use --delivery=pr with --repo to deliver a validated source change")
 			return 2

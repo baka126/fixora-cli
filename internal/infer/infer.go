@@ -2,6 +2,8 @@ package infer
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
@@ -29,7 +31,7 @@ type Inferrer interface {
 
 // Concrete runs the first registered inferrer that handles the plan. It
 // returns the original plan and false unless the concretized result comes back
-// ApplyEligible — there is no half-concretized intermediate state.
+// concrete and eligible or a controller-specific source review proposal.
 func Concrete(ctx context.Context, r kubeReader, f analyzer.Finding, p fix.Plan) (fix.Plan, bool) {
 	return concreteWith(ctx, r, f, p, registered)
 }
@@ -50,7 +52,7 @@ func concreteWith(ctx context.Context, r kubeReader, f analyzer.Finding, p fix.P
 		if result.ConnectionConfig != nil {
 			candidate = fix.WithConnectionConfigPatch(p, *result.ConnectionConfig)
 		}
-		if !candidate.ApplyEligible {
+		if !candidate.ApplyEligible && !(slices.Contains(candidate.Guardrails, "controller-review-only") && candidate.PatchTemplate != "" && !strings.Contains(candidate.PatchTemplate, "TODO_") && candidate.Strategy != "runtime" && candidate.Strategy != "security") {
 			continue
 		}
 		if result.Guardrail != "" {

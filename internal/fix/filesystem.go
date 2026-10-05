@@ -2,6 +2,7 @@ package fix
 
 import (
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 	"gopkg.in/yaml.v3"
 	"path"
 	"strings"
@@ -22,9 +23,7 @@ func WithEphemeralCachePatch(p Plan, c EphemeralCache) Plan {
 	if !ok || name == "" || p.Namespace == "" {
 		return p
 	}
-	switch kind {
-	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
-	default:
+	if kube.WorkloadVersion(kind) == "" {
 		return p
 	}
 	for _, reason := range p.BlockedReasons {
@@ -33,7 +32,11 @@ func WithEphemeralCachePatch(p Plan, c EphemeralCache) Plan {
 		}
 	}
 	spec := map[string]any{"securityContext": map[string]any{"fsGroup": c.Group}, "volumes": []any{map[string]any{"name": "fixora-cache", "emptyDir": map[string]any{}}}, "containers": []any{map[string]any{"name": c.Container, "volumeMounts": []any{map[string]any{"name": "fixora-cache", "mountPath": c.Directory}}}}}
-	data, err := yaml.Marshal(map[string]any{"apiVersion": "apps/v1", "kind": kind, "metadata": map[string]any{"name": name, "namespace": p.Namespace}, "spec": map[string]any{"template": map[string]any{"spec": spec}}})
+	obj, err := kube.WorkloadPatch(kind, name, p.Namespace, spec)
+	if err != nil {
+		return p
+	}
+	data, err := yaml.Marshal(obj)
 	if err != nil {
 		return p
 	}

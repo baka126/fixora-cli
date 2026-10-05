@@ -2,6 +2,7 @@ package shadow
 
 import (
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 	"sort"
 	"strings"
 )
@@ -97,26 +98,8 @@ func validateCandidateShape(obj map[string]any, kind string) []string {
 			}
 		}
 	}
-	spec, ok := nestedMap(obj, "spec")
-	if !ok {
-		return append(reasons, "spec must be an object")
-	}
-	if strings.EqualFold(kind, "Pod") {
-		return reasons
-	}
-	for key := range spec {
-		if key != "template" {
-			reasons = append(reasons, "spec."+key+" is not allowed")
-		}
-	}
-	template, ok := nestedMap(spec, "template")
-	if !ok {
-		return append(reasons, "spec.template must be an object")
-	}
-	for key := range template {
-		if key != "spec" {
-			reasons = append(reasons, "spec.template."+key+" is not allowed")
-		}
+	if err := kube.ValidateWorkloadPatchEnvelope(obj, kind); err != nil {
+		reasons = append(reasons, err.Error())
 	}
 	return reasons
 }

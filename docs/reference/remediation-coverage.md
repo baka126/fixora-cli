@@ -14,6 +14,8 @@ Without AI, Fixora supplies the observed cause/context and deterministic advice;
 
 The versioned [machine-readable inventory](https://github.com/baka126/fixora-cli/blob/codex/fix-crashloop-guidance/test/coverage/remediation.json) records each named finding's outcome profile. `go test ./test/coverage` checks registry entries, precision checks, and known static status emission sites against it, and tests that a status alone cannot enable apply. Dynamic reasons need manual classification; static extraction is not a complete analysis of all possible runtime strings.
 
+Controller proposal and delivery semantics have since been extended in the [controller repair checkpoint](controller-repairs.md), reviewed 2026-10-05. The inventory above remains the analyzer-status baseline; target-specific delivery gates apply to every concrete proposal.
+
 ## Outcome profiles
 
 An AI proposal is possible for every failing profile when enough evidence is available. Automatic candidate selection depends on the **actual changed fields**, not the analyzer name or original status. Non-template proposals, mixed change families, arbitrary startup commands, scheduling/security-policy changes, and unsupported fields remain review-only or are rejected.

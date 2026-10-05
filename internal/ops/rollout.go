@@ -51,6 +51,35 @@ func VerifyRollout(ctx context.Context, checker RolloutChecker, finding analyzer
 	if err != nil {
 		return RolloutOutcome{Class: RolloutUnknown, Summary: "could not verify rollout: " + err.Error()}
 	}
+	if ok && plan.TargetUID != "" && (kind == "statefulset" || kind == "daemonset") {
+		reader, hasReader := checker.(TargetReader)
+		if !hasReader {
+			return RolloutOutcome{Class: RolloutUnknown, Summary: "live controller readiness reader unavailable"}
+		}
+		obj, readErr := reader.GetResource(ctx, ns, kind+"/"+name)
+		if readErr != nil {
+			return RolloutOutcome{Class: RolloutUnknown, Summary: "recheck controller: " + readErr.Error()}
+		}
+		meta, _ := obj["metadata"].(map[string]any)
+		status, _ := obj["status"].(map[string]any)
+		spec, _ := obj["spec"].(map[string]any)
+		if meta["uid"] != plan.TargetUID || number(status["observedGeneration"]) < number(meta["generation"]) || !appliedTemplateMatches(obj, plan.PatchTemplate) {
+			return RolloutOutcome{Class: RolloutUnknown, Summary: "controller identity/generation changed during verification"}
+		}
+		if kind == "statefulset" {
+			replicas := number(spec["replicas"])
+			if spec["replicas"] == nil {
+				replicas = 1
+			}
+			ok = replicas > 0 && number(status["readyReplicas"]) == replicas && number(status["updatedReplicas"]) == replicas && status["currentRevision"] != nil && status["currentRevision"] == status["updateRevision"]
+		} else {
+			desired := number(status["desiredNumberScheduled"])
+			ok = desired > 0 && number(status["updatedNumberScheduled"]) == desired && number(status["numberReady"]) == desired && number(status["numberAvailable"]) == desired && number(status["numberUnavailable"]) == 0
+		}
+		if !ok {
+			return RolloutOutcome{Class: RolloutUnknown, Summary: "controller reported rollout completion but all updated replicas are not confirmed Ready"}
+		}
+	}
 	if ok {
 		return RolloutOutcome{Class: RolloutHealthy, Summary: finding.ResourceKind + "/" + name + " rolled out successfully"}
 	}

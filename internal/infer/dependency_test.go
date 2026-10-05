@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/kube"
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -43,9 +45,9 @@ func depFixture(t *testing.T) (dependencyReader, analyzer.Finding) {
 	}
 	c := `{"name":"client","image":"busybox:1.36","command":["sh","-c","while true; do nc -z -w 3 $DB_HOST $DB_PORT || exit 1; sleep 60; done"],"env":[{"name":"DB_HOST","value":"wrong-host"},{"name":"DB_PORT","value":"1234"}]}`
 	r := dependencyReader{objects: map[string]map[string]any{
-		"pod/client-pod":       decode(`{"metadata":{"name":"client-pod","namespace":"demo","ownerReferences":[{"kind":"ReplicaSet","name":"client-rs"}]},"spec":{"containers":[` + c + `]},"status":{"containerStatuses":[{"name":"client","ready":false,"state":{"waiting":{"reason":"CrashLoopBackOff"}},"lastState":{"terminated":{"reason":"Error","exitCode":1}}}]}}`),
-		"replicaset/client-rs": decode(`{"metadata":{"name":"client-rs","namespace":"demo","ownerReferences":[{"kind":"Deployment","name":"client"}]}}`),
-		"deployment/client":    decode(`{"metadata":{"name":"client","namespace":"demo","annotations":{"fixora.io/connection-configmap":"connection"}},"spec":{"template":{"spec":{"containers":[` + c + `]}}}}`),
+		"pod/client-pod":       decode(`{"apiVersion":"v1","kind":"Pod","metadata":{"uid":"p","name":"client-pod","namespace":"demo","ownerReferences":[{"kind":"ReplicaSet","apiVersion":"apps/v1","name":"client-rs","uid":"r","controller":true}]},"spec":{"containers":[` + c + `]},"status":{"containerStatuses":[{"name":"client","ready":false,"state":{"waiting":{"reason":"CrashLoopBackOff"}},"lastState":{"terminated":{"reason":"Error","exitCode":1}}}]}}`),
+		"replicaset/client-rs": decode(`{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"uid":"r","name":"client-rs","namespace":"demo","ownerReferences":[{"kind":"Deployment","apiVersion":"apps/v1","name":"client","uid":"d","controller":true}]}}`),
+		"deployment/client":    decode(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"uid":"d","name":"client","namespace":"demo","annotations":{"fixora.io/connection-configmap":"connection"}},"spec":{"template":{"spec":{"containers":[` + c + `]}}}}`),
 		"configmap/connection": decode(`{"metadata":{"name":"connection","namespace":"demo"},"data":{"DB_HOST":"database","DB_PORT":"5432"}}`),
 		"service/database":     decode(`{"metadata":{"name":"database","namespace":"demo"},"spec":{"ports":[{"name":"db","protocol":"TCP","port":5432,"targetPort":5432}]}}`),
 	}, slices: []map[string]any{decode(`{"metadata":{"namespace":"demo","labels":{"kubernetes.io/service-name":"database"}},"ports":[{"name":"db","protocol":"TCP","port":5432}],"endpoints":[{"addresses":["10.0.0.4"],"conditions":{"ready":true}}]}`)}}
@@ -122,5 +124,46 @@ func TestDependencyInferrerRequiresNCToConsumeConnectionVariables(t *testing.T) 
 	r.objects["deployment/client"]["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["command"] = command
 	if _, ok, _ := (dependencyInferrer{}).Infer(context.Background(), r, f, fix.BuildPlan(f)); ok {
 		t.Fatal("echoing nc and unrelated endpoint variables cannot prove consumption")
+	}
+}
+
+func TestDependencyProposalAcrossControllerKinds(t *testing.T) {
+	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "CronJob", "Pod"} {
+		t.Run(kind, func(t *testing.T) {
+			r, f := depFixture(t)
+			f.ResourceKind = kind
+			old := r.objects["deployment/client"]
+			template, _ := kube.WorkloadPodSpec(old)
+			target, _ := kube.WorkloadPatch(kind, "client", "demo", template)
+			target["metadata"].(map[string]any)["uid"] = "d"
+			target["metadata"].(map[string]any)["annotations"] = map[string]any{"fixora.io/connection-configmap": "connection"}
+			pod := r.objects["pod/client-pod"]
+			switch kind {
+			case "Deployment":
+			case "CronJob":
+				job, _ := kube.WorkloadPatch("Job", "client-job", "demo", template)
+				job["metadata"].(map[string]any)["uid"] = "j"
+				job["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"kind": "CronJob", "name": "client", "uid": "d", "apiVersion": "batch/v1", "controller": true}}
+				r.objects["job/client-job"] = job
+				pod["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"kind": "Job", "name": "client-job", "uid": "j", "apiVersion": "batch/v1", "controller": true}}
+			case "Pod":
+				f.ResourceName = "client-pod"
+				target = pod
+				meta := target["metadata"].(map[string]any)
+				delete(meta, "ownerReferences")
+				meta["annotations"] = map[string]any{"fixora.io/connection-configmap": "connection"}
+			default:
+				pod["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"kind": kind, "name": "client", "uid": "d", "apiVersion": kube.WorkloadVersion(kind), "controller": true}}
+			}
+			r.objects[strings.ToLower(kind)+"/"+f.ResourceName] = target
+			p, ok := Concrete(context.Background(), r, f, fix.BuildPlan(f))
+			if !ok || p.Strategy != "env" || strings.Contains(p.PatchYAML(), "TODO_") {
+				t.Fatalf("no concrete proposal: %+v", p)
+			}
+			want := kind != "Pod" && kind != "Job" && kind != "ReplicaSet"
+			if p.ApplyEligible != want {
+				t.Fatalf("eligible %v want %v", p.ApplyEligible, want)
+			}
+		})
 	}
 }

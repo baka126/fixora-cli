@@ -8,6 +8,8 @@ import (
 )
 
 type Plan struct {
+	TargetPodUID     string            `json:"targetPodUid,omitempty"`
+	TargetUID        string            `json:"targetUid,omitempty"`
 	Diagnosis        *analyzer.Finding `json:"diagnosis,omitempty"`
 	Resource         string            `json:"resource"`
 	Namespace        string            `json:"namespace"`
@@ -56,7 +58,8 @@ type ConcreteOptions struct {
 func BuildPlan(finding analyzer.Finding) Plan {
 	resource := finding.ResourceKind + "/" + finding.ResourceName
 	plan := Plan{
-		Diagnosis:  &finding,
+		Diagnosis: &finding,
+		TargetUID: finding.ResourceUID, TargetPodUID: finding.PodUID,
 		Resource:   resource,
 		Namespace:  finding.Namespace,
 		Status:     finding.Status,
@@ -206,6 +209,12 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Risk = "low"
 	}
 	plan.refreshApplyEligibility(false)
+	for _, e := range finding.Evidence {
+		if e.Label == "Ownership unverified" {
+			plan.Guardrails = appendUnique(plan.Guardrails, "ownership-unverified")
+		}
+	}
+	plan = WithTargetPolicy(plan)
 	return plan
 }
 
@@ -334,6 +343,7 @@ func validateConcretePatch(plan Plan) ([]string, []string) {
 }
 
 func (p *Plan) refreshApplyEligibility(forceRisky bool) {
+	*p = WithTargetPolicy(*p)
 	p.ApplyEligible = p.CanApply && p.Confidence >= 90 && len(p.BlockedReasons) == 0 && (p.Safe || forceRisky) && (!p.Recovered || forceRisky)
 	if p.CanApply && !p.ApplyEligible {
 		if p.Confidence < 90 {

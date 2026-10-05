@@ -162,6 +162,8 @@ type ScanSummary struct {
 }
 
 type Finding struct {
+	ResourceUID       string           `json:"resourceUid,omitempty"`
+	PodUID            string           `json:"podUid,omitempty"`
 	ID                string           `json:"id"`
 	Namespace         string           `json:"namespace"`
 	ResourceKind      string           `json:"resourceKind"`

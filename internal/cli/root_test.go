@@ -1347,7 +1347,7 @@ func TestVerifiedClusterDeliveryHonorsYes(t *testing.T) {
 	}
 	opts := options{yes: true, applyDryRun: true, outFile: proposal, output: "text", promptInput: bufio.NewReader(strings.NewReader(""))}
 	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}
-	code := deliverVerifiedFix(context.Background(), &out, &errb, opts, kube.Kubectl{}, finding, fix.Plan{}, shadow.Result{Verified: true}, shadow.DeliveryCluster, true)
+	code := deliverVerifiedFix(context.Background(), &out, &errb, opts, kube.Kubectl{}, finding, fix.Plan{Resource: "Deployment/api", Namespace: "prod", Strategy: "image", CanApply: true, ApplyEligible: true, Confidence: 95, Safe: true}, shadow.Result{Verified: true}, shadow.DeliveryCluster, true)
 	data, _ := os.ReadFile(calls)
 	applied := false
 	for _, line := range strings.Split(string(data), "\n") {

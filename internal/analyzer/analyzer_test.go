@@ -183,14 +183,15 @@ func TestTopOwnerKeepsJobIdentity(t *testing.T) {
 func TestAnalyzeDeploymentInspectsOwnedFailingPod(t *testing.T) {
 	reader := fakeReader{
 		resource: map[string]any{
-			"metadata": map[string]any{"name": "api", "namespace": "prod"},
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]any{"uid": "d", "name": "api", "namespace": "prod"},
 			"spec": map[string]any{
 				"selector": map[string]any{"matchLabels": map[string]any{"app": "api"}},
 			},
 			"status": map[string]any{"availableReplicas": 0},
 		},
 		pods: kube.PodList{Items: []kube.Pod{{
-			Metadata: kube.ObjectMeta{Name: "api-abc", Namespace: "prod", Labels: map[string]string{"app": "api"}},
+			Metadata: kube.ObjectMeta{Name: "api-abc", Namespace: "prod", Labels: map[string]string{"app": "api"}, OwnerRefs: []kube.OwnerReference{{Kind: "ReplicaSet", Name: "test-rs", UID: "r", APIVersion: "apps/v1", Controller: boolPointer(true)}}},
 			Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
 				Name:  "api",
 				State: map[string]kube.StatusState{"waiting": {Reason: "ImagePullBackOff"}},
@@ -198,6 +199,7 @@ func TestAnalyzeDeploymentInspectsOwnedFailingPod(t *testing.T) {
 		}}},
 		events: []kube.Event{{Metadata: kube.ObjectMeta{Namespace: "prod"}, InvolvedObject: kube.ObjectReference{Name: "api-abc"}, Reason: "Failed", Message: "api-abc image pull failed"}},
 	}
+	reader.owners = testDeploymentOwner(reader.resource)
 	finding, err := New(reader, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "deployment/api")
 	if err != nil {
 		t.Fatal(err)
@@ -630,6 +632,7 @@ func TestScanReportLabelsForbiddenEventsAsRBAC(t *testing.T) {
 }
 
 type fakeReader struct {
+	owners           map[string]map[string]any
 	pods             kube.PodList
 	podsErr          error
 	events           []kube.Event
@@ -656,7 +659,10 @@ func (f fakeReader) GetPod(context.Context, string, string) (kube.Pod, error) {
 	return kube.Pod{}, fmt.Errorf("not implemented")
 }
 
-func (f fakeReader) GetResource(context.Context, string, string) (map[string]any, error) {
+func (f fakeReader) GetResource(_ context.Context, _ string, resource string) (map[string]any, error) {
+	if obj := f.owners[strings.ToLower(resource)]; obj != nil {
+		return obj, nil
+	}
 	if f.getResourceCalls != nil {
 		atomic.AddInt32(f.getResourceCalls, 1)
 	}
@@ -1021,4 +1027,10 @@ func TestCrashLoopRecognizesContainerRuntimeOOMStartError(t *testing.T) {
 	if status != "OOMKilled" || category != "resources" {
 		t.Fatalf("container runtime OOM during startup must retain resource diagnosis, got %s/%s", status, category)
 	}
+}
+
+func boolPointer(v bool) *bool { return &v }
+func testDeploymentOwner(deployment map[string]any) map[string]map[string]any {
+	meta := deployment["metadata"].(map[string]any)
+	return map[string]map[string]any{"deployment/" + meta["name"].(string): deployment, "replicaset/test-rs": {"apiVersion": "apps/v1", "kind": "ReplicaSet", "metadata": map[string]any{"name": "test-rs", "namespace": meta["namespace"], "uid": "r", "ownerReferences": []any{map[string]any{"kind": "Deployment", "apiVersion": "apps/v1", "name": meta["name"], "uid": "d", "controller": true}}}}}
 }

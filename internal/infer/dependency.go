@@ -32,35 +32,39 @@ func (dependencyInferrer) Handles(p fix.Plan) bool {
 // the owning Deployment. A ready in-cluster Service alone never establishes
 // intent, and this path neither reads secrets nor creates dependencies.
 func (dependencyInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Finding, _ fix.Plan) (Result, bool, error) {
-	if r == nil || f.Recovered || f.ResourceKind != "Deployment" || f.Namespace == "" || f.PodName == "" || f.ResourceName == "" || !dependencyFailureLog(f) {
+	if r == nil || f.Recovered || kube.WorkloadVersion(f.ResourceKind) == "" || f.Namespace == "" || f.PodName == "" || f.ResourceName == "" || !dependencyFailureLog(f) {
 		return Result{}, false, nil
 	}
 	var pod kube.Pod
 	if !dependencyRead(ctx, r, f.Namespace, "pod/"+f.PodName, &pod) || pod.Metadata.Name != f.PodName || pod.Metadata.Namespace != f.Namespace {
 		return Result{}, false, nil
 	}
-	if len(pod.Metadata.OwnerRefs) != 1 || pod.Metadata.OwnerRefs[0].Kind != "ReplicaSet" {
+	owner, err := kube.ResolveWorkloadOwner(ctx, r, pod)
+	if err != nil || owner.Kind != f.ResourceKind || owner.Name != f.ResourceName {
 		return Result{}, false, nil
 	}
-	rsName := pod.Metadata.OwnerRefs[0].Name
-	var rs struct {
-		Metadata kube.ObjectMeta `json:"metadata"`
+	live := owner.Object
+	if live == nil {
+		live, err = r.GetResource(ctx, f.Namespace, "pod/"+f.ResourceName)
+		if err != nil {
+			return Result{}, false, nil
+		}
 	}
-	if !dependencyRead(ctx, r, f.Namespace, "replicaset/"+rsName, &rs) || rs.Metadata.Name != rsName || rs.Metadata.Namespace != f.Namespace || len(rs.Metadata.OwnerRefs) != 1 || rs.Metadata.OwnerRefs[0].Kind != "Deployment" || rs.Metadata.OwnerRefs[0].Name != f.ResourceName {
+	spec, ok := kube.WorkloadPodSpec(live)
+	if !ok {
 		return Result{}, false, nil
 	}
-	var deployment struct {
-		Metadata kube.ObjectMeta `json:"metadata"`
-		Spec     struct {
-			Template struct {
-				Spec kube.PodSpec `json:"spec"`
-			} `json:"template"`
-		} `json:"spec"`
-	}
-	if !dependencyRead(ctx, r, f.Namespace, "deployment/"+f.ResourceName, &deployment) || deployment.Metadata.Name != f.ResourceName || deployment.Metadata.Namespace != f.Namespace {
+	var template kube.PodSpec
+	data, _ := json.Marshal(spec)
+	if json.Unmarshal(data, &template) != nil {
 		return Result{}, false, nil
 	}
-	source := deployment.Metadata.Annotations["fixora.io/connection-configmap"]
+	var metadata kube.ObjectMeta
+	data, _ = json.Marshal(live["metadata"])
+	if json.Unmarshal(data, &metadata) != nil {
+		return Result{}, false, nil
+	}
+	source := metadata.Annotations["fixora.io/connection-configmap"]
 	if source == "" || len(validation.IsDNS1123Subdomain(source)) > 0 {
 		return Result{}, false, nil
 	}
@@ -94,7 +98,7 @@ func (dependencyInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Fi
 		return Result{}, false, nil
 	}
 	matched := 0
-	for _, c := range deployment.Spec.Template.Spec.Containers {
+	for _, c := range template.Containers {
 		if c.Name == name && c.Image == selected.Image && reflect.DeepEqual(c.Command, selected.Command) && reflect.DeepEqual(c.Args, selected.Args) && reflect.DeepEqual(c.Env, selected.Env) {
 			matched++
 		}
@@ -171,7 +175,7 @@ func (dependencyInferrer) Infer(ctx context.Context, r kubeReader, f analyzer.Fi
 	if len(keys) == 0 {
 		return Result{}, false, nil
 	}
-	return Result{ConnectionConfig: &fix.ConnectionConfig{Container: name, ConfigMap: source, Keys: keys}, Guardrail: "inferred-connection-from-approved-configmap", Warning: fmt.Sprintf("The owning Deployment names ConfigMap %s as its connection source. Its database endpoint resolves to ready TCP Service %s:%d in namespace %s; shadow verification must confirm the client connects.", source, serviceName, port, f.Namespace)}, true, nil
+	return Result{ConnectionConfig: &fix.ConnectionConfig{Container: name, ConfigMap: source, Keys: keys}, Guardrail: "inferred-connection-from-approved-configmap", Warning: fmt.Sprintf("The owning %s names ConfigMap %s as its connection source. Its database endpoint resolves to ready TCP Service %s:%d in namespace %s; shadow verification must confirm the client connects.", f.ResourceKind, source, serviceName, port, f.Namespace)}, true, nil
 }
 
 func dependencyRead(ctx context.Context, r kubeReader, namespace, resource string, target any) bool {

@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/fixora/kubectl-fixora/internal/image"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
@@ -151,9 +152,27 @@ func allowedRevisionStrategy(strategy string) bool {
 
 func validatePatchObject(obj map[string]any, strategy ...string) []string {
 	var reasons []string
-	meta, _ := nestedMap(obj, "metadata")
-	for _, key := range []string{"name", "namespace", "labels", "annotations", "ownerReferences"} {
-		if _, ok := meta[key]; ok {
+	kind, _ := obj["kind"].(string)
+	if kind == "" {
+		spec, _ := obj["spec"].(map[string]any)
+		kind = "Pod"
+		if spec["template"] != nil {
+			kind = "Deployment"
+		}
+		if spec["jobTemplate"] != nil {
+			kind = "CronJob"
+		}
+	}
+	if err := kube.ValidateWorkloadPatchEnvelope(obj, kind); err != nil {
+		reasons = append(reasons, err.Error())
+	}
+	for key := range obj {
+		if key != "spec" && key != "metadata" && key != "kind" && key != "apiVersion" {
+			reasons = append(reasons, "top-level "+key+" changes are not allowed")
+		}
+	}
+	if metadata, ok := obj["metadata"].(map[string]any); ok {
+		for key := range metadata {
 			reasons = append(reasons, "metadata."+key+" changes are not allowed")
 		}
 	}
@@ -397,23 +416,7 @@ func containerNames(value any) map[string]bool {
 }
 
 func patchPodSpec(obj map[string]any) (map[string]any, bool) {
-	if spec, ok := nestedMap(obj, "spec"); ok {
-		if template, ok := nestedMap(spec, "template"); ok {
-			if tplSpec, ok := nestedMap(template, "spec"); ok {
-				return tplSpec, true
-			}
-		}
-		if _, ok := spec["containers"]; ok {
-			return spec, true
-		}
-		if _, ok := spec["initContainers"]; ok {
-			return spec, true
-		}
-	}
-	if _, ok := obj["containers"]; ok {
-		return obj, true
-	}
-	return nil, false
+	return kube.WorkloadPodSpec(obj)
 }
 
 func sliceMaps(value any) []map[string]any {

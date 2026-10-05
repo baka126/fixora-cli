@@ -124,7 +124,7 @@ func selectAIRepair(ctx context.Context, reader kube.Reader, fallback fix.Plan, 
 	if !candidate.ApplyEligible {
 		candidate.BlockedReasons = appendUniqueString(candidate.BlockedReasons, "AI confidence is below the automatic verification threshold; review this proposal.")
 	}
-	return candidate
+	return fix.WithTargetPolicy(candidate)
 }
 
 func aiReviewWithoutPatch(plan fix.Plan, reason string) fix.Plan {
@@ -142,13 +142,8 @@ func aiReviewWithoutPatch(plan fix.Plan, reason string) fix.Plan {
 }
 
 func aiPodSpec(obj map[string]any) map[string]any {
-	spec, _ := obj["spec"].(map[string]any)
-	if strings.EqualFold(fmt.Sprint(obj["kind"]), "Pod") {
-		return spec
-	}
-	template, _ := spec["template"].(map[string]any)
-	pod, _ := template["spec"].(map[string]any)
-	return pod
+	spec, _ := kube.WorkloadPodSpec(obj)
+	return spec
 }
 
 func validateAILiveTarget(live, patch map[string]any, f analyzer.Finding) error {
