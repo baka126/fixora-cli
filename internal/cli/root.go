@@ -36,6 +36,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/ops"
 	"github.com/fixora/kubectl-fixora/internal/output"
 	"github.com/fixora/kubectl-fixora/internal/redact"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	"github.com/fixora/kubectl-fixora/internal/repo"
 	"github.com/fixora/kubectl-fixora/internal/report"
 	"github.com/fixora/kubectl-fixora/internal/server"
@@ -710,7 +711,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
-	fs.StringVar(&opts.startupBaseline, "startup-baseline", "", "restore command/args from an explicit matching Deployment manifest; requires shadow verification")
+	fs.StringVar(&opts.startupBaseline, "startup-baseline", "", "restore command/args from an explicit matching workload manifest; requires shadow verification")
 	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
 	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
 	fs.DurationVar(&opts.rolloutTimeout, "rollout-timeout", 2*time.Minute, "post-apply rollout verification timeout")
@@ -1142,6 +1143,37 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		return output.Write(stdout, opts.output, result)
 	case shadow.DeliveryCluster:
+		if plan.Strategy == "restore-command" {
+			if err := result.PolicyReceipt.Check(plan.PolicyProof, plan.PatchYAML()); err != nil {
+				fmt.Fprintf(stderr, "error: startup delivery: %v\n", err)
+				return 1
+			}
+			if err := repairpolicy.Revalidate(ctx, k, plan.PolicyProof, plan.PatchYAML()); err != nil {
+				fmt.Fprintf(stderr, "error: startup preflight: %v\n", err)
+				return 1
+			}
+			content, err := os.ReadFile(opts.outFile)
+			if err != nil || string(content) != plan.PatchYAML() {
+				fmt.Fprintln(stderr, "error: outgoing patch differs from verified startup candidate")
+				return 1
+			}
+			pinned, err := os.CreateTemp("", "fixora-verified-*.yaml")
+			if err != nil {
+				fmt.Fprintf(stderr, "error: pin verified candidate: %v\n", err)
+				return 1
+			}
+			defer os.Remove(pinned.Name())
+			if _, err = pinned.WriteString(plan.PatchYAML()); err != nil {
+				pinned.Close()
+				fmt.Fprintln(stderr, "error: pin verified candidate")
+				return 1
+			}
+			if err = pinned.Close(); err != nil {
+				fmt.Fprintln(stderr, "error: close verified candidate")
+				return 1
+			}
+			opts.outFile = pinned.Name()
+		}
 		applyFile := opts.outFile
 		if !strings.HasPrefix(plan.Resource, "Deployment/") || plan.TargetUID != "" {
 			snapshot, err := ops.PreflightControllerSnapshot(ctx, k, finding, plan)
@@ -3020,7 +3052,7 @@ Global flags:
       --max-logs-bytes int     Maximum bytes per pod log stream
       --apply-dry-run          Run server-side dry-run before --apply
       --source-patch           Write patch into --repo for GitOps source review
-      --startup-baseline file  Restore command/args from a matching operator Deployment baseline
+      --startup-baseline file  Restore command/args from a matching operator workload baseline
       --shadow                 Verify patch in an isolated shadow clone before delivery
       --shadow-timeout duration Shadow clone verification timeout
       --shadow-retries int     Shadow re-clone attempts after failure

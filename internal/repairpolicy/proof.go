@@ -37,6 +37,7 @@ type Authority struct {
 	digest string
 }
 type Proof struct {
+	baseline                              *Authority
 	family, binding, candidate, authority string
 	target                                Target
 	summary                               Summary
@@ -120,7 +121,7 @@ func bind(s Snapshot, patch, family string, a *Authority, fields []string) (*Pro
 			return nil, errors.New("invalid repair authority")
 		}
 	}
-	return &Proof{family: family, binding: binding, candidate: digest(patch), authority: authority, target: s.Target, summary: Summary{Family: family, Result: "bound", Detail: "Candidate bound to the inspected workload; verification is required.", ChangedFields: append([]string(nil), fields...)}}, nil
+	return &Proof{family: family, binding: binding, candidate: digest(patch), authority: authority, baseline: a, target: s.Target, summary: Summary{Family: family, Result: "bound", Detail: "Candidate bound to the inspected workload; verification is required.", ChangedFields: append([]string(nil), fields...)}}, nil
 }
 func snapshotBinding(s Snapshot) (string, error) {
 	meta, _ := s.Object["metadata"].(map[string]any)
@@ -204,7 +205,7 @@ func witness(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, patch 
 	if err != nil {
 		return nil, err
 	}
-	if live.Metadata.UID == "" || live.Metadata.UID != pod.Metadata.UID || live.Metadata.Namespace != p.target.Namespace || live.Metadata.Labels["fixora.io/session"] == "" || live.Metadata.Labels["fixora.io/session"] != pod.Metadata.Labels["fixora.io/session"] || live.Metadata.UID == p.target.PodUID || !reflect.DeepEqual(live.Spec, pod.Spec) {
+	if live.Metadata.UID == "" || live.Metadata.UID != pod.Metadata.UID || live.Metadata.Namespace != p.target.Namespace || live.Metadata.Labels["fixora.io/sandbox"] != "true" || live.Metadata.Labels["fixora.io/session"] == "" || live.Metadata.Labels["fixora.io/session"] != pod.Metadata.Labels["fixora.io/session"] || live.Metadata.UID == p.target.PodUID || !reflect.DeepEqual(live.Spec, pod.Spec) {
 		return nil, errors.New("shadow witness identity or specification changed")
 	}
 	ready := false
@@ -213,11 +214,17 @@ func witness(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, patch 
 			ready = true
 		}
 	}
-	if !ready || live.Status.Phase != "Running" || len(live.Status.ContainerStatuses) != len(live.Spec.Containers) {
-		return nil, errors.New("shadow witness is not Ready")
+	complete := live.Status.Phase == "Succeeded" && (p.target.Kind == "Job" || p.target.Kind == "CronJob")
+	if (!complete && (!ready || live.Status.Phase != "Running")) || len(live.Status.ContainerStatuses) != len(live.Spec.Containers) {
+		return nil, errors.New("shadow witness has no healthy runtime or successful batch completion")
 	}
 	for _, c := range live.Status.ContainerStatuses {
-		if !c.Ready {
+		if complete {
+			term, ok := c.State["terminated"]
+			if !ok || term.ExitCode != 0 {
+				return nil, errors.New("shadow batch did not complete successfully")
+			}
+		} else if !c.Ready {
 			return nil, errors.New("shadow container is not Ready")
 		}
 	}
@@ -315,4 +322,23 @@ func matchesFields(expected, actual any) bool {
 	default:
 		return reflect.DeepEqual(copyValue(expected), copyValue(actual))
 	}
+}
+
+// Revalidate reads current identity and template; no restored JSON state is used.
+func Revalidate(ctx context.Context, r kube.Reader, p *Proof, patch string) error {
+	if p == nil || p.binding == "" {
+		return errors.New("fresh in-memory repair proof is required")
+	}
+	s, err := Collect(ctx, r, p.target)
+	if err != nil {
+		return err
+	}
+	if err = p.Check(s, patch); err != nil {
+		return err
+	}
+	if p.family == "restore-command" {
+		_, _, err = Startup(s, p.baseline, "")
+		return err
+	}
+	return nil
 }

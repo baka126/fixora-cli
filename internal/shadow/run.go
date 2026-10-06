@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 )
 
 func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) {
@@ -21,6 +22,19 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	}
 	if req.Resource == "" {
 		req.Resource = req.Finding.ResourceKind + "/" + req.Finding.ResourceName
+	}
+	if req.Plan.Strategy == "restore-command" {
+		if req.Plan.PolicyProof == nil || req.Plan.PolicyProof.Family() != req.Plan.Strategy {
+			return Result{}, fmt.Errorf("trusted startup proof is required before shadow execution")
+		}
+		if err := ValidateCandidatePatch(req.Patch, req.Plan.Strategy, req.Resource, req.Namespace); err != nil {
+			return Result{}, err
+		}
+		if err := repairpolicy.Revalidate(ctx, c, req.Plan.PolicyProof, req.Patch); err != nil {
+			return Result{}, err
+		}
+		req.Retries = 0
+		req.AI = nil
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = 10 * time.Minute
@@ -44,6 +58,11 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		if err != nil {
 			return result, err
 		}
+		if req.Plan.PolicyProof != nil {
+			if err := repairpolicy.Revalidate(ctx, c, req.Plan.PolicyProof, req.Patch); err != nil {
+				return result, err
+			}
+		}
 		lastPlan = plan
 		result.Warnings = appendUnique(result.Warnings, plan.Warnings...)
 		result.CloneName = plan.Clone.Name
@@ -59,6 +78,23 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready
+		if result.Verified && req.Plan.PolicyProof != nil {
+			pod, err := c.GetPod(ctx, plan.Clone.Namespace, plan.Clone.Name)
+			if err == nil {
+				if req.Plan.Strategy == "restore-command" {
+					result.PolicyReceipt, err = repairpolicy.VerifyStartup(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else {
+					result.PolicyReceipt, err = repairpolicy.VerifyCommon(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				}
+			}
+			if err != nil {
+				result.Verified = false
+				result.Warnings = appendUnique(result.Warnings, "policy verification failed: "+err.Error())
+				break
+			}
+			summary := result.PolicyReceipt.Summary()
+			result.PolicySummary = &summary
+		}
 		if result.Verified {
 			result.Caveats = appendUnique(result.Caveats, partialPassCaveats(plan.Original, plan.NamespaceMetadata)...)
 			break

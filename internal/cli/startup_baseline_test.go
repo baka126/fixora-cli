@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,21 @@ type baselineReader struct {
 	object map[string]any
 }
 
-func (r baselineReader) GetResource(_ context.Context, _, _ string) (map[string]any, error) {
+func (r baselineReader) GetResource(_ context.Context, ns, resource string) (map[string]any, error) {
+	if resource == "replicaset/worker-rs" {
+		controller := true
+		return map[string]any{"apiVersion": "apps/v1", "kind": "ReplicaSet", "metadata": map[string]any{"name": "worker-rs", "namespace": ns, "uid": "rs-1", "ownerReferences": []any{map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "name": "worker", "uid": "owner-1", "controller": controller}}}}, nil
+	}
 	return r.object, nil
+}
+
+func (r baselineReader) GetPod(_ context.Context, ns, name string) (kube.Pod, error) {
+	spec, _ := kube.WorkloadPodSpec(r.object)
+	raw, _ := json.Marshal(spec)
+	var ps kube.PodSpec
+	_ = json.Unmarshal(raw, &ps)
+	controller := true
+	return kube.Pod{Metadata: kube.ObjectMeta{Name: name, Namespace: ns, UID: "pod-1", OwnerRefs: []kube.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: "worker-rs", UID: "rs-1", Controller: &controller}}}, Spec: ps, Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{Name: "app", State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}}}}}}, nil
 }
 
 const validStartupBaseline = `apiVersion: apps/v1
@@ -41,10 +55,10 @@ func startupFixture(t *testing.T, baseline string) (string, baselineReader, anal
 	if err := os.WriteFile(p, []byte(baseline), 0600); err != nil {
 		t.Fatal(err)
 	}
-	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "worker", Namespace: "demo", Status: "CrashLoopBackOff"}
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "worker", Namespace: "demo", Status: "CrashLoopBackOff", ResourceUID: "owner-1", PodName: "worker-pod", PodUID: "pod-1"}
 	c := map[string]any{"name": "app", "image": "busybox:1.36", "command": []any{"sh", "-c", "exit 1"}}
 	spec := map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{c}}}}
-	r := baselineReader{object: map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "worker", "namespace": "demo"}, "spec": spec}}
+	r := baselineReader{object: map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "worker", "namespace": "demo", "uid": "owner-1"}, "spec": spec}}
 
 	return p, r, f, fix.BuildPlan(f)
 }
