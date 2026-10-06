@@ -1,6 +1,7 @@
 package shadow
 
 import (
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	"strings"
 	"time"
 
@@ -39,22 +40,24 @@ type Request struct {
 }
 
 type Result struct {
-	LiveVerification  string    `json:"liveVerification,omitempty"`
-	LiveSummary       string    `json:"liveSummary,omitempty"`
-	Verified          bool      `json:"verified"`
-	Parity            int       `json:"parity"`
-	Resource          string    `json:"resource"`
-	Namespace         string    `json:"namespace"`
-	CloneName         string    `json:"cloneName,omitempty"`
-	NetworkPolicyName string    `json:"networkPolicyName,omitempty"`
-	Delivery          string    `json:"delivery,omitempty"`
-	PRURL             string    `json:"prUrl,omitempty"`
-	Attempts          []Attempt `json:"attempts"`
-	Warnings          []string  `json:"warnings,omitempty"`
-	Cleanup           []string  `json:"cleanup,omitempty"`
-	VerifiedPatch     string    `json:"verifiedPatch,omitempty"`
-	FailureClass      string    `json:"failureClass,omitempty"`
-	FailureSummary    string    `json:"failureSummary,omitempty"`
+	PolicyReceipt     *repairpolicy.Receipt `json:"-"`
+	PolicySummary     *repairpolicy.Summary `json:"policySummary,omitempty"`
+	LiveVerification  string                `json:"liveVerification,omitempty"`
+	LiveSummary       string                `json:"liveSummary,omitempty"`
+	Verified          bool                  `json:"verified"`
+	Parity            int                   `json:"parity"`
+	Resource          string                `json:"resource"`
+	Namespace         string                `json:"namespace"`
+	CloneName         string                `json:"cloneName,omitempty"`
+	NetworkPolicyName string                `json:"networkPolicyName,omitempty"`
+	Delivery          string                `json:"delivery,omitempty"`
+	PRURL             string                `json:"prUrl,omitempty"`
+	Attempts          []Attempt             `json:"attempts"`
+	Warnings          []string              `json:"warnings,omitempty"`
+	Cleanup           []string              `json:"cleanup,omitempty"`
+	VerifiedPatch     string                `json:"verifiedPatch,omitempty"`
+	FailureClass      string                `json:"failureClass,omitempty"`
+	FailureSummary    string                `json:"failureSummary,omitempty"`
 	// Caveats lists non-blocked production surfaces a PASS did not actually
 	// exercise. It lowers stated confidence only; it never feeds the apply gate
 	// (fix.Plan.ApplyEligible).

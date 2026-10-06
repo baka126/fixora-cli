@@ -2,36 +2,41 @@ package fix
 
 import (
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
 
 type Plan struct {
-	TargetPodUID     string            `json:"targetPodUid,omitempty"`
-	TargetUID        string            `json:"targetUid,omitempty"`
-	Diagnosis        *analyzer.Finding `json:"diagnosis,omitempty"`
-	Resource         string            `json:"resource"`
-	Namespace        string            `json:"namespace"`
-	Status           string            `json:"status"`
-	Strategy         string            `json:"strategy"`
-	Safe             bool              `json:"safe"`
-	CanApply         bool              `json:"canApply"`
-	ApplyEligible    bool              `json:"applyEligible"`
-	Confidence       int               `json:"confidence"`
-	Risk             string            `json:"risk"`
-	AutoFixRequested bool              `json:"autoFixRequested"`
-	Patches          []Patch           `json:"patches,omitempty"`
-	Commands         []string          `json:"commands,omitempty"`
-	Verification     []string          `json:"verification,omitempty"`
-	Rollback         []string          `json:"rollback,omitempty"`
-	Steps            []string          `json:"steps"`
-	Warnings         []string          `json:"warnings,omitempty"`
-	BlockedReasons   []string          `json:"blockedReasons,omitempty"`
-	Guardrails       []string          `json:"guardrails,omitempty"`
-	PatchTemplate    string            `json:"patchTemplate"`
-	RollbackCommand  string            `json:"rollbackCommand,omitempty"`
-	Recovered        bool              `json:"recovered,omitempty"`
+	PolicyAuthority  *repairpolicy.Authority `json:"-"`
+	PolicyProof      *repairpolicy.Proof     `json:"-"`
+	PolicySelection  string                  `json:"policySelection,omitempty"`
+	PolicySummary    *repairpolicy.Summary   `json:"policySummary,omitempty"`
+	TargetPodUID     string                  `json:"targetPodUid,omitempty"`
+	TargetUID        string                  `json:"targetUid,omitempty"`
+	Diagnosis        *analyzer.Finding       `json:"diagnosis,omitempty"`
+	Resource         string                  `json:"resource"`
+	Namespace        string                  `json:"namespace"`
+	Status           string                  `json:"status"`
+	Strategy         string                  `json:"strategy"`
+	Safe             bool                    `json:"safe"`
+	CanApply         bool                    `json:"canApply"`
+	ApplyEligible    bool                    `json:"applyEligible"`
+	Confidence       int                     `json:"confidence"`
+	Risk             string                  `json:"risk"`
+	AutoFixRequested bool                    `json:"autoFixRequested"`
+	Patches          []Patch                 `json:"patches,omitempty"`
+	Commands         []string                `json:"commands,omitempty"`
+	Verification     []string                `json:"verification,omitempty"`
+	Rollback         []string                `json:"rollback,omitempty"`
+	Steps            []string                `json:"steps"`
+	Warnings         []string                `json:"warnings,omitempty"`
+	BlockedReasons   []string                `json:"blockedReasons,omitempty"`
+	Guardrails       []string                `json:"guardrails,omitempty"`
+	PatchTemplate    string                  `json:"patchTemplate"`
+	RollbackCommand  string                  `json:"rollbackCommand,omitempty"`
+	Recovered        bool                    `json:"recovered,omitempty"`
 }
 
 type Patch struct {
