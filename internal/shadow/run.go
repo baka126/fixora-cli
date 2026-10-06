@@ -3,6 +3,7 @@ package shadow
 import (
 	"context"
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 				return result, err
 			}
 		}
+		if req.Plan.Strategy == "security-strengthen" {
+			if _, err := c.Clientset.CoreV1().Pods(plan.Clone.Namespace).Create(ctx, plan.Clone, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+				return result, fmt.Errorf("security shadow admission dry-run: %w", err)
+			}
+		}
 		lastPlan = plan
 		result.Warnings = appendUnique(result.Warnings, plan.Warnings...)
 		result.CloneName = plan.Clone.Name
@@ -90,6 +96,8 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 					result.PolicyReceipt, err = repairpolicy.VerifyStartup(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
 				} else if req.Plan.Strategy == "restore-placement" {
 					result.PolicyReceipt, err = repairpolicy.VerifyPlacement(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else if req.Plan.Strategy == "security-strengthen" {
+					result.PolicyReceipt, err = repairpolicy.VerifySecurity(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
 				} else {
 					result.PolicyReceipt, err = repairpolicy.VerifyCommon(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
 				}

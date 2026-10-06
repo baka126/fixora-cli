@@ -1,5 +1,5 @@
 {
-  "asOf": "2026-10-04",
+  "asOf": "2026-10-05",
   "checkpoint": "fffb721",
   "analyzers": [
     "ConfigMap",
@@ -88,6 +88,11 @@
       "source": "analyzer.go",
       "status": "ErrImagePull",
       "profile": "image"
+    },
+    {
+      "source": "analyzer.go",
+      "status": "FailedCreate",
+      "profile": "security"
     },
     {
       "source": "analyzer.go",
@@ -331,6 +336,11 @@
     },
     {
       "source": "logsignals.go",
+      "status": "DNSResolutionFailed",
+      "profile": "review"
+    },
+    {
+      "source": "logsignals.go",
       "status": "DatabaseUnreachable",
       "profile": "connection"
     },
@@ -342,11 +352,6 @@
     {
       "source": "logsignals.go",
       "status": "DiskFull",
-      "profile": "review"
-    },
-    {
-      "source": "logsignals.go",
-      "status": "DNSResolutionFailed",
       "profile": "review"
     },
     {
@@ -386,6 +391,11 @@
     },
     {
       "source": "olm.go",
+      "status": "CSVNotSucceeded",
+      "profile": "review"
+    },
+    {
+      "source": "olm.go",
       "status": "CatalogSourceConnectionUnhealthy",
       "profile": "review"
     },
@@ -397,11 +407,6 @@
     {
       "source": "olm.go",
       "status": "ClusterExtensionUnhealthy",
-      "profile": "review"
-    },
-    {
-      "source": "olm.go",
-      "status": "CSVNotSucceeded",
       "profile": "review"
     },
     {
@@ -535,11 +540,6 @@
       "profile": "review"
     },
     {
-      "source": "service_ports.go",
-      "status": "ServicePortMismatch",
-      "profile": "review"
-    },
-    {
       "source": "service.go",
       "status": "EndpointsBlockedByReadinessGate",
       "profile": "review"
@@ -552,6 +552,11 @@
     {
       "source": "service.go",
       "status": "NotReadyEndpoints",
+      "profile": "review"
+    },
+    {
+      "source": "service_ports.go",
+      "status": "ServicePortMismatch",
       "profile": "review"
     },
     {

@@ -1088,6 +1088,14 @@ func liveOutcome(ctx context.Context, k rolloutGate, finding analyzer.Finding, p
 			}
 			return verified
 		}
+		if plan.Strategy == "security-strengthen" {
+			verified, err := ops.VerifySecurityRollout(ctx, reader, finding, plan)
+			if err != nil {
+				return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: err.Error()}
+			}
+			return verified
+		}
+
 	}
 	return outcome
 }

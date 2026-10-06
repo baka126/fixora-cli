@@ -105,7 +105,7 @@ func TestRemediationInventoryCoversDetectors(t *testing.T) {
 	}
 	checkNames(t, "precision check", precision, inv.PrecisionChecks)
 	documented := map[string]bool{}
-	profiles := map[string]bool{"diagnosis": true, "review": true, "image": true, "resources": true, "startup": true, "config": true, "probe": true, "filesystem": true, "connection": true, "healthy": true}
+	profiles := map[string]bool{"diagnosis": true, "review": true, "image": true, "resources": true, "startup": true, "config": true, "probe": true, "filesystem": true, "connection": true, "healthy": true, "security": true}
 	for _, e := range inv.Findings {
 		key := e.Source + ":" + e.Status
 		if documented[key] {

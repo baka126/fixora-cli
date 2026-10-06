@@ -229,6 +229,17 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 		return finding, nil
 	}
 	events, _ := a.k.GetEvents(ctx, namespace, "")
+	if denied, err := kube.CurrentAdmissionFailure(ctx, a.k, obj, events); err == nil && denied != nil {
+		meta, _ := obj["metadata"].(map[string]any)
+		finding.ResourceUID, _ = meta["uid"].(string)
+		finding.Status = "FailedCreate"
+		finding.Severity = "critical"
+		finding.Category = "security"
+		finding.Summary = "Current owned revision is denied by Pod Security Admission: " + denied.Message
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Current admission failure", Value: denied.Message})
+		finding.Recommendations = []Recommendation{{Title: "Restore approved security settings", Description: "Review the enforced namespace policy and preserve the application's existing UID/GID; verify any approved strengthening in shadow.", PatchType: "security", SafeByDefault: false}}
+		return finding, nil
+	}
 	var related []kube.Pod
 	for _, pod := range pods.Items {
 		if pod.Metadata.Namespace != namespace {

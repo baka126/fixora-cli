@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
@@ -66,7 +65,10 @@ func withRepairBaseline(ctx context.Context, r kube.Reader, opts options, f anal
 		}
 	} else {
 		p.Strategy = "security-strengthen"
-		err = fmt.Errorf("security proof validation is not available yet")
+		s, err = repairpolicy.CollectSecurity(ctx, r, s)
+		if err == nil {
+			p.PolicyProof, err = repairpolicy.Security(s, a, patch)
+		}
 	}
 	if err != nil || f.Recovered || sourceManaged(f) {
 		reason := "Policy candidate requires review"

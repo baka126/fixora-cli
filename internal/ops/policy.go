@@ -59,3 +59,10 @@ func verifyPolicyRollout(ctx context.Context, r kube.Reader, f analyzer.Finding,
 	}
 	return RolloutOutcome{Class: RolloutHealthy, Summary: f.ResourceKind + "/" + f.ResourceName + " updated Pods satisfy the approved policy and are Ready"}, nil
 }
+
+func VerifySecurityRollout(ctx context.Context, r kube.Reader, f analyzer.Finding, p fix.Plan) (RolloutOutcome, error) {
+	if p.Strategy != "security-strengthen" {
+		return RolloutOutcome{}, errors.New("security plan required")
+	}
+	return verifyPolicyRollout(ctx, r, f, p)
+}

@@ -8,7 +8,7 @@ section: reference
 
 # Remediation coverage
 
-**Upcoming — reviewed 2026-10-04 against checkpoint `fffb721`.** This is a capability inventory, not a promise to repair every cluster failure. There are **34 registered analyzer definitions, 24 precision checks, and 109 named source/status entries**. The earlier audit's count of 36 registrations was incorrect. Dynamic API reasons and status summaries are listed separately.
+**Upcoming — reviewed 2026-10-04 against checkpoint `fffb721`.** This is a capability inventory, not a promise to repair every cluster failure. There are **34 registered analyzer definitions, 24 precision checks, and 110 named source/status entries**. The earlier audit's count of 36 registrations was incorrect. Dynamic API reasons and status summaries are listed separately.
 
 Without AI, Fixora supplies the observed cause/context and deterministic advice; some checks identify configuration risks rather than a proven incident root cause. With AI, it can explain evidence and uncertainty and propose a workload-specific patch. A model narrative or confidence score alone cannot authorize a repair.
 
@@ -22,6 +22,7 @@ An AI proposal is possible for every failing profile when enough evidence is ava
 
 | Profile | Without AI / prerequisites | AI validation | Shadow | Delivery |
 | --- | --- | --- | --- | --- |
+| security | Exact operator baseline + current revision/UID-linked enforced PSA denial; existing positive UID for non-root strengthening | Narrative alone supplies no authority | Exact admitted settings, unchanged UID/GID and runtime success | Conditional controller delivery; unsupported policy versions and privilege/storage sources remain review |
 | image | Verified ranked digest/platform evidence → image candidate | Image patch; architecture/repository check | Yes, if source is cloneable | Conditional cluster or raw/Kustomize source delivery |
 | resources | OOM usage/declared demand or proven request > allocatable → sized candidate | Resource-only patch | Yes, if source is cloneable | Conditional; capacity/usage assumptions still need review |
 | config | Unique existing ConfigMap/key for a broken reference → env candidate; missing Secret → operator action | Env references; AI checks referenced ConfigMap keys | ConfigMap path only; Secret-bearing sources blocked | Conditional ConfigMap patch; no invented values/Secrets |
@@ -118,6 +119,7 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | pvc.go | `Lost`, `MissingStorageClass`, `Pending`, `ProvisioningFailed`, `SmallStorageRequest`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer`, `VolumeResizePending` | review |
 | rbac.go | `ClusterAdminBinding`, `WildcardRBAC` | review |
 | registry.go | `Unhealthy` | diagnosis |
+| analyzer.go | `FailedCreate` (current revision-linked PSA denial) | security |
 | replicaset.go | `FailedCreate` | review |
 | resourceclaim.go | `DeviceClassNotFound` | review |
 | secret.go | `MissingPullSecret`, `SecretInvalidBase64`, `SecretMissingKey` | review |

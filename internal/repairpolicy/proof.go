@@ -19,6 +19,7 @@ import (
 
 type Target struct{ Kind, Name, Namespace, UID, PodName, PodUID string }
 type Snapshot struct {
+	Revision  map[string]any
 	Target    Target
 	Object    map[string]any
 	Pod       *kube.Pod
@@ -38,6 +39,9 @@ type Authority struct {
 	digest string
 }
 type Proof struct {
+	revision                              string
+	namespace                             string
+	identities                            map[string]string
 	inspect                               func(context.Context, string) (image.Result, error)
 	placement                             map[string]any
 	nodes                                 map[string]string
@@ -373,6 +377,21 @@ func Revalidate(ctx context.Context, r kube.Reader, p *Proof, patch string) erro
 		return CheckPlacementCapacity(ctx, r, p)
 	}
 
+	if p.family == "security-strengthen" {
+		s, err = CollectSecurity(ctx, r, s)
+		if err != nil {
+			return err
+		}
+		if securityRevisionBinding(s.Revision) != p.revision {
+			return errors.New("admission revision changed")
+		}
+		if digest(s.Namespace) != p.namespace {
+			return errors.New("namespace security policy changed")
+		}
+		_, err = Security(s, p.baseline, patch)
+		return err
+	}
+
 	return nil
 }
 
@@ -430,6 +449,18 @@ func CheckLivePod(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, p
 			}
 		}
 		return errors.New("updated Pod is outside the approved eligible placement")
+	}
+	if p.family == "security-strengthen" {
+		namespace, err := r.GetResource(ctx, "", "namespace/"+p.target.Namespace)
+		if err != nil {
+			return err
+		}
+		if digest(namespace) != p.namespace {
+			return errors.New("namespace security policy changed")
+		}
+		if !reflect.DeepEqual(securityIdentityBindings(observed), p.identities) {
+			return errors.New("live admitted application identity changed")
+		}
 	}
 	return nil
 }
