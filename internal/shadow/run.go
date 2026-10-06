@@ -23,12 +23,17 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	if req.Resource == "" {
 		req.Resource = req.Finding.ResourceKind + "/" + req.Finding.ResourceName
 	}
-	if req.Plan.Strategy == "restore-command" {
+	if err := requirePolicyForFields(req); err != nil {
+		return Result{}, err
+	}
+	if repairpolicy.Dedicated(req.Plan.Strategy) {
 		if req.Plan.PolicyProof == nil || req.Plan.PolicyProof.Family() != req.Plan.Strategy {
-			return Result{}, fmt.Errorf("trusted startup proof is required before shadow execution")
+			return Result{}, fmt.Errorf("matching policy proof is required before shadow execution")
 		}
-		if err := ValidateCandidatePatch(req.Patch, req.Plan.Strategy, req.Resource, req.Namespace); err != nil {
-			return Result{}, err
+		if req.Plan.Strategy == "restore-command" {
+			if err := ValidateCandidatePatch(req.Patch, req.Plan.Strategy, req.Resource, req.Namespace); err != nil {
+				return Result{}, err
+			}
 		}
 		if err := repairpolicy.Revalidate(ctx, c, req.Plan.PolicyProof, req.Patch); err != nil {
 			return Result{}, err
@@ -83,6 +88,8 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			if err == nil {
 				if req.Plan.Strategy == "restore-command" {
 					result.PolicyReceipt, err = repairpolicy.VerifyStartup(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else if req.Plan.Strategy == "restore-placement" {
+					result.PolicyReceipt, err = repairpolicy.VerifyPlacement(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
 				} else {
 					result.PolicyReceipt, err = repairpolicy.VerifyCommon(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
 				}

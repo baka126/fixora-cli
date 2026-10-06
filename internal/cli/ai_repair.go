@@ -18,7 +18,7 @@ import (
 // deterministic inference already supplied a candidate. Model claims about
 // strategy or confidence never establish workload identity or verification.
 func selectAIRepair(ctx context.Context, reader kube.Reader, fallback fix.Plan, f analyzer.Finding, stderr io.Writer, verbose bool) fix.Plan {
-	if f.AI == nil || f.Recovered || fallback.Recovered || f.Status == "Healthy" || f.Status == "OwnedPodsHealthy" || fallback.Strategy == "restore-command" {
+	if f.AI == nil || f.Recovered || fallback.Recovered || f.Status == "Healthy" || f.Status == "OwnedPodsHealthy" || fallback.Strategy == "restore-command" || fallback.PolicyAuthority != nil {
 		return fallback
 	}
 	patch := aiPatchCandidate(*f.AI)

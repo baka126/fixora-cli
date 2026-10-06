@@ -35,8 +35,9 @@ func makeNode(name string, labels map[string]string, taints []map[string]any) ku
 	return kube.Node{
 		Metadata: kube.ObjectMeta{Name: name, Labels: labels},
 		Spec: struct {
-			ProviderID string           `json:"providerID"`
-			Taints     []map[string]any `json:"taints"`
+			Unschedulable bool             `json:"unschedulable"`
+			ProviderID    string           `json:"providerID"`
+			Taints        []map[string]any `json:"taints"`
 		}{Taints: taints},
 	}
 }

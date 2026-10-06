@@ -48,6 +48,8 @@ type Pod struct {
 }
 
 type PodSpec struct {
+	Overhead        map[string]string `json:"overhead,omitempty"`
+	Affinity        map[string]any    `json:"affinity"`
 	SecurityContext map[string]any    `json:"securityContext"`
 	Volumes         []map[string]any  `json:"volumes"`
 	NodeName        string            `json:"nodeName"`
@@ -59,6 +61,7 @@ type PodSpec struct {
 }
 
 type Container struct {
+	RestartPolicy   string               `json:"restartPolicy,omitempty"`
 	Command         []string             `json:"command"`
 	Args            []string             `json:"args"`
 	Name            string               `json:"name"`
@@ -184,8 +187,9 @@ type NodeList struct {
 type Node struct {
 	Metadata ObjectMeta `json:"metadata"`
 	Spec     struct {
-		ProviderID string           `json:"providerID"`
-		Taints     []map[string]any `json:"taints"`
+		Unschedulable bool             `json:"unschedulable"`
+		ProviderID    string           `json:"providerID"`
+		Taints        []map[string]any `json:"taints"`
 	} `json:"spec"`
 	Status struct {
 		Allocatable map[string]string `json:"allocatable"`

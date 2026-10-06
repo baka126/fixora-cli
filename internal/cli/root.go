@@ -50,6 +50,8 @@ import (
 )
 
 type options struct {
+	repairBaseline  string
+	repairPolicy    string
 	namespace       string
 	allNS           bool
 	context         string
@@ -372,6 +374,17 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 			opts.shadowVerify = true
 			opts.shadowRetries = 0 // AI must not revise an explicit operator command.
+		}
+		if opts.repairBaseline != "" {
+			plan, err = withRepairBaseline(analysisCtx, reader, opts, finding, plan)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: repair baseline: %v\n", err)
+				return 1
+			}
+			if plan.ApplyEligible {
+				opts.shadowVerify = true
+				opts.shadowRetries = 0
+			}
 		}
 		if opts.useAI {
 			plan = selectAIRepair(analysisCtx, reader, plan, finding, stderr, opts.verbose)
@@ -711,6 +724,8 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
+	fs.StringVar(&opts.repairBaseline, "repair-baseline", "", "operator-approved placement or security manifest; requires proof and shadow verification")
+	fs.StringVar(&opts.repairPolicy, "repair-policy", "", "baseline policy: placement or security (required if ambiguous)")
 	fs.StringVar(&opts.startupBaseline, "startup-baseline", "", "restore command/args from an explicit matching workload manifest; requires shadow verification")
 	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
 	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
@@ -1061,6 +1076,19 @@ func liveOutcome(ctx context.Context, k rolloutGate, finding analyzer.Finding, p
 	default:
 		outcome = ops.VerifyRollout(ctx, k, finding, plan, timeout)
 	}
+	if outcome.Class == ops.RolloutHealthy && repairpolicy.Dedicated(plan.Strategy) {
+		reader, ok := k.(kube.Reader)
+		if !ok {
+			return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: "policy runtime reader unavailable"}
+		}
+		if plan.Strategy == "restore-placement" {
+			verified, err := ops.VerifyPlacementRollout(ctx, reader, finding, plan)
+			if err != nil {
+				return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: err.Error()}
+			}
+			return verified
+		}
+	}
 	return outcome
 }
 func reportRollout(ctx context.Context, stdout, stderr io.Writer, in io.Reader, assumeYes bool, k rolloutGate, outcome ops.RolloutOutcome) int {
@@ -1143,18 +1171,18 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		return output.Write(stdout, opts.output, result)
 	case shadow.DeliveryCluster:
-		if plan.Strategy == "restore-command" {
+		if repairpolicy.Dedicated(plan.Strategy) {
 			if err := result.PolicyReceipt.Check(plan.PolicyProof, plan.PatchYAML()); err != nil {
-				fmt.Fprintf(stderr, "error: startup delivery: %v\n", err)
+				fmt.Fprintf(stderr, "error: policy delivery: %v\n", err)
 				return 1
 			}
 			if err := repairpolicy.Revalidate(ctx, k, plan.PolicyProof, plan.PatchYAML()); err != nil {
-				fmt.Fprintf(stderr, "error: startup preflight: %v\n", err)
+				fmt.Fprintf(stderr, "error: policy preflight: %v\n", err)
 				return 1
 			}
 			content, err := os.ReadFile(opts.outFile)
 			if err != nil || string(content) != plan.PatchYAML() {
-				fmt.Fprintln(stderr, "error: outgoing patch differs from verified startup candidate")
+				fmt.Fprintln(stderr, "error: outgoing patch differs from verified policy candidate")
 				return 1
 			}
 			pinned, err := os.CreateTemp("", "fixora-verified-*.yaml")
@@ -3052,6 +3080,8 @@ Global flags:
       --max-logs-bytes int     Maximum bytes per pod log stream
       --apply-dry-run          Run server-side dry-run before --apply
       --source-patch           Write patch into --repo for GitOps source review
+      --repair-baseline file   Operator-approved placement/security baseline
+      --repair-policy family   placement or security; required for ambiguous baselines
       --startup-baseline file  Restore command/args from a matching operator workload baseline
       --shadow                 Verify patch in an isolated shadow clone before delivery
       --shadow-timeout duration Shadow clone verification timeout

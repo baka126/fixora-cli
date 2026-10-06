@@ -25,3 +25,20 @@ func TestUntrustedShadowRequestCannotExecuteStartupMutation(t *testing.T) {
 		t.Fatal("untrusted request touched the cluster")
 	}
 }
+
+func TestPolicyFieldsCannotBeRelabeledToBypassProof(t *testing.T) {
+	for _, patch := range []string{startupPatch, `apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: prod}
+spec: {template: {spec: {nodeSelector: {pool: approved}}}}
+`} {
+		c := &kube.TypedClient{Clientset: fake.NewClientset()}
+		_, err := Run(context.Background(), c, Request{Resource: "Deployment/api", Namespace: "prod", Patch: patch, Plan: fix.Plan{Strategy: "image"}})
+		if err == nil || !strings.Contains(err.Error(), "proof") {
+			t.Fatalf("relabelled candidate accepted: %v", err)
+		}
+		if len(c.Clientset.(*fake.Clientset).Actions()) != 0 {
+			t.Fatal("unproved request reached cluster")
+		}
+	}
+}

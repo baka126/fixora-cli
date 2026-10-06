@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/fixora/kubectl-fixora/internal/image"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"gopkg.in/yaml.v3"
 )
@@ -37,6 +38,10 @@ type Authority struct {
 	digest string
 }
 type Proof struct {
+	inspect                               func(context.Context, string) (image.Result, error)
+	placement                             map[string]any
+	nodes                                 map[string]string
+	platforms                             map[string]image.Result
 	baseline                              *Authority
 	family, binding, candidate, authority string
 	target                                Target
@@ -339,6 +344,92 @@ func Revalidate(ctx context.Context, r kube.Reader, p *Proof, patch string) erro
 	if p.family == "restore-command" {
 		_, _, err = Startup(s, p.baseline, "")
 		return err
+	}
+	if p.family == "restore-placement" {
+		s.Nodes, err = r.GetNodes(ctx)
+		if err != nil {
+			return err
+		}
+		for name, binding := range p.nodes {
+			found := false
+			for _, node := range s.Nodes {
+				if node.Metadata.Name == name && nodeBinding(node) == binding {
+					found = true
+				}
+			}
+			if !found {
+				return errors.New("approved node identity, labels or taints changed")
+			}
+		}
+		fresh, validationErr := Placement(ctx, s, p.baseline, patch, p.inspect)
+		err = validationErr
+		if err == nil && digest(fresh.platforms) != digest(p.platforms) {
+			return errors.New("image platform evidence changed")
+		}
+
+		if err != nil {
+			return err
+		}
+		return CheckPlacementCapacity(ctx, r, p)
+	}
+
+	return nil
+}
+
+func Dedicated(strategy string) bool {
+	return strategy == "restore-command" || strategy == "restore-placement" || strategy == "security-strengthen"
+}
+
+// CheckLivePod checks a production readback without minting a shadow receipt.
+// The caller must first prove controlling ownership and rollout completion.
+func CheckLivePod(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, patch string) error {
+	if p == nil || p.binding == "" || p.candidate != digest(patch) || pod == nil || pod.Metadata.UID == "" || pod.Metadata.Namespace != p.target.Namespace {
+		return errors.New("invalid live policy witness")
+	}
+	ready := false
+	for _, c := range pod.Status.Conditions {
+		if c.Type == "Ready" && c.Status == "True" {
+			ready = true
+		}
+	}
+	if !ready || pod.Status.Phase != "Running" {
+		return errors.New("updated Pod is not Ready")
+	}
+	for _, c := range pod.Status.ContainerStatuses {
+		if !c.Ready {
+			return errors.New("updated container is not Ready")
+		}
+	}
+	obj, err := r.GetResource(ctx, pod.Metadata.Namespace, "pod/"+pod.Metadata.Name)
+	if err != nil {
+		return err
+	}
+	meta := mapAny(obj["metadata"])
+	if meta["uid"] != pod.Metadata.UID {
+		return errors.New("live Pod was replaced")
+	}
+	observed, ok := kube.WorkloadPodSpec(obj)
+	if !ok {
+		return errors.New("live Pod spec is unavailable")
+	}
+	_, changes, err := policyPatch(patch, p.target)
+	if err != nil {
+		return err
+	}
+	if !matchesFields(changes, observed) {
+		return errors.New("admitted live Pod differs from the approved fields")
+	}
+	if p.family == "restore-placement" {
+		nodes, err := r.GetNodes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, node := range nodes {
+			if node.Metadata.Name == pod.Spec.NodeName && nodeEligible(node, p.placement, p.platforms) {
+				return nil
+			}
+		}
+		return errors.New("updated Pod is outside the approved eligible placement")
 	}
 	return nil
 }
