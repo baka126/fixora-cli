@@ -85,3 +85,9 @@ The following require [codex/production-hardening](https://github.com/baka126/fi
 Some flags only affect relevant commands. `--quick` can skip default shadow verification; an output without shadow is not shadow-verified. PR delivery in v0.8.0 requires `--yes` for its remote Git operation; it may still request shadow review. `--unsafe-ai-no-redact` can expose sensitive evidence to a provider.
 
 **Upcoming flags:** `--no-ai`, `--edit-patch`, `--mcp-shadow`, `--secret-keys`, `--cert-expiry`, and coordination's `--from` are branch-only. The branch adds the `-L` selector alias; `--filters` already works in v0.8.0. Prefer canonical `--filter` and `-l`. No v0.8.0 flag removal is claimed here.
+
+## Step 3 policy flags (branch checkpoint)
+
+On `codex/verification-policies`, `fix` and `coordinate` share candidate preparation. Use `--startup-baseline file` to authorize exact command/args restoration. Use `--repair-baseline file --repair-policy placement|security` for approved placement or security strengthening. Baselines must match the workload identity; omitted fields grant no authority. Every enabled policy still needs live causal proof and required shadow verification.
+
+`coordinate` supports independently verifiable Deployment, StatefulSet and DaemonSet repairs. `--preview` shows candidates without creating shadows or applying them. All shadows and guarded preflights pass before apply confirmation. `--yes` authorizes apply, but rollback has separate consent. Failed or unknown live verification stops further applies; field-scoped rollback can refuse concurrent conflicts. See [controller repair policies](controller-repairs.md).

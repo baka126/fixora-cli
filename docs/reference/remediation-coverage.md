@@ -18,7 +18,7 @@ Controller proposal and delivery semantics have since been extended in the [cont
 
 ## Outcome profiles
 
-An AI proposal is possible for every failing profile when enough evidence is available. Automatic candidate selection depends on the **actual changed fields**, not the analyzer name or original status. Non-template proposals, mixed change families, arbitrary startup commands, scheduling/security-policy changes, and unsupported fields remain review-only or are rejected.
+An AI proposal is possible for every failing profile when enough evidence is available. Automatic candidate selection depends on the **actual changed fields**, not the analyzer name or original status. Non-template proposals, mixed change families, arbitrary startup commands, unsupported scheduling/security-policy changes and unsupported fields remain review-only or are rejected. Explicit approved policies are described below.
 
 | Profile | Without AI / prerequisites | AI validation | Shadow | Delivery |
 | --- | --- | --- | --- | --- |
@@ -29,7 +29,8 @@ An AI proposal is possible for every failing profile when enough evidence is ava
 | probe | Unambiguous numeric readiness port mismatch → port candidate | Readiness/liveness/startup probe fields | Yes, if source is cloneable | Conditional; AI may propose path/timing repairs using evidence |
 | filesystem | Narrow proved transient-cache write → emptyDir/fsGroup candidate for Deployment/StatefulSet/DaemonSet/ReplicaSet templates | Cache-only filesystem policy; preserve security and storage | Yes, if source is cloneable | Conditional; AI can choose workload-specific mount/name; live evidence is Deployment-only |
 | connection | Approved connection ConfigMap + ready TCP Service + proved client consumption → env candidate (Deployment only) | Env patch; source/key/endpoint checks | Yes, if source is cloneable | Conditional; no dependency creation or credential invention |
-| startup | CrashLoop is a symptom; command repair requires explicit matching --startup-baseline (Deployment only); other proved causes can use another family | restore-command baseline; arbitrary AI commands stay review-only | Yes for approved baseline | Conditional baseline restore; guessed startup never automatic |
+| placement | Explicit matching baseline + current placement predicate failure, safe compatible nodes and capacity | Approved fields only; narrative grants no authority | Required with admitted placement checks | Conditional controllers; unsupported scheduling constraints remain review |
+| startup | CrashLoop is a symptom; command repair requires explicit matching --startup-baseline (matching workload envelope); other proved causes can use another family | restore-command baseline; arbitrary AI commands stay review-only | Yes for approved baseline | Conditional baseline restore; guessed startup never automatic |
 | review | Finding/context + recommended investigation; some planner templates remain placeholders | AI source suggestion possible; no supported automatic family established by this finding alone | No dedicated verifier for this finding | Review source proposal/manual prerequisites; no automatic delivery claim |
 | diagnosis | Observation, missing evidence, generic/API status or report envelope | AI can explain or suggest investigation; generic status is not a repair | No verifier from status alone | Collect evidence; no mutation from status alone |
 | healthy | Healthy/owned pods healthy → no repair; OK is a report envelope | Healthy targets bypass AI repair selection | Not needed | No repair |
@@ -88,7 +89,8 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | Source in internal/analyzer | Finding status | Outcome profile |
 | --- | --- | --- |
 | analyzer.go | `ConnectionRefused` | connection |
-| analyzer.go | `CrashLoopBackOff` | startup |
+| analyzer.go | `CrashLoopBackOff` | placement | Explicit matching baseline + current placement predicate failure, safe compatible nodes and capacity | Approved fields only; narrative grants no authority | Required with admitted placement checks | Conditional controllers; unsupported scheduling constraints remain review |
+| startup |
 | analyzer.go | `CreateContainerConfigError` | config |
 | analyzer.go | `CreateContainerError`, `PodFailed`, `RunContainerError` | review |
 | analyzer.go | `ErrImagePull`, `ImagePullBackOff` | image |
@@ -197,7 +199,7 @@ Validation on 2026-10-04: the full Go unit suite passed with a fresh run; the ne
 
 1. **Completed inventory/regression protection:** this reference, the reviewed machine inventory and provider-independent scenarios. No repair-policy expansion.
 2. **Controller parity:** exercise common repairs, immutable fields, batch completion, owning-template resolution and rollback across supported targets.
-3. **New verification policies:** independently add trusted startup, scheduling, security and coordinated repairs with causal proof.
+3. **Verification policies checkpoint:** proof-bound startup, approved placement, security strengthening and independently verified coordinated controller repairs; see [policy requirements and limits](controller-repairs.md).
 4. **Helm source delivery:** map changes to chart values/templates, render and compare, then validate.
 5. **Cross-resource/stateful coverage:** dependency wiring, scaling/disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
 

@@ -28,7 +28,6 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/graph"
 	"github.com/fixora/kubectl-fixora/internal/image"
-	"github.com/fixora/kubectl-fixora/internal/infer"
 	"github.com/fixora/kubectl-fixora/internal/integration"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/mcp"
@@ -344,81 +343,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
-		finding, err := a.AnalyzeResource(analysisCtx, rest[0])
+		finding, plan, prepared, err := prepareFixPlan(analysisCtx, reader, k, opts, rest[0], stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		finding = preferSmartFinding(analysisCtx, a, finding)
-		if opts.useAI {
-			finding = enrichFindingForAI(analysisCtx, reader, k, opts, rest[0], finding)
-			augmentWithAI(analysisCtx, &finding, opts, stderr)
-		} else {
-			// The infer package fills patch placeholders from `kubectl top` and
-			// registry evidence. That evidence used to be gathered only inside
-			// enrichFindingForAI, so under --no-ai the image and OOMKilled-metrics
-			// inferrers always declined. Collect it here regardless of --ai.
-			finding = collectDeliveryEvidence(analysisCtx, k, opts, finding)
-		}
-		plan := fix.BuildPlan(finding)
-		plan = fix.Concretize(plan, concreteOptions(opts))
-		inferred := false
-		if !plan.ApplyEligible {
-			plan, inferred = infer.Concrete(analysisCtx, reader, finding, plan)
-		}
-		if opts.startupBaseline != "" {
-			plan, err = withStartupBaseline(analysisCtx, reader, opts.startupBaseline, finding, plan)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: startup baseline: %v\n", err)
-				return 1
-			}
-			opts.shadowVerify = true
-			opts.shadowRetries = 0 // AI must not revise an explicit operator command.
-		}
-		if opts.repairBaseline != "" {
-			plan, err = withRepairBaseline(analysisCtx, reader, opts, finding, plan)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: repair baseline: %v\n", err)
-				return 1
-			}
-			if plan.ApplyEligible {
-				opts.shadowVerify = true
-				opts.shadowRetries = 0
-			}
-		}
-		if opts.useAI {
-			plan = selectAIRepair(analysisCtx, reader, plan, finding, stderr, opts.verbose)
-			if slices.Contains(plan.Guardrails, "ai-patch-safety-validated") {
-				opts.shadowVerify = true
-			}
-		}
-		if plan.ApplyEligible && !strings.HasPrefix(plan.Resource, "Deployment/") {
-			if uid, preflightErr := ops.PreflightController(analysisCtx, reader, finding, plan); preflightErr != nil {
-				plan = fix.WithControllerReview(plan, "Live target requires source review: "+preflightErr.Error())
-			} else {
-				plan.TargetUID = uid
-			}
-		}
-		if slices.Contains(plan.Guardrails, "controller-preflight-required") && plan.ApplyEligible {
-			opts.shadowVerify = true
-		}
-		if inferred {
-			opts.shadowVerify = true
-		}
-		if opts.repoPath != "" {
-			mode, repoErr := repo.Plan(analysisCtx, opts.repoPath, finding, plan)
-			if repoErr == nil {
-				plan.Steps = append(plan.Steps, "Repo mode detected "+mode.Type+" source at "+mode.Path+". "+mode.ValidationNote)
-			} else {
-				plan.BlockedReasons = append(plan.BlockedReasons, repoErr.Error())
-			}
-		}
-		if opts.autoFix {
-			plan.AutoFixRequested = true
-			if opts.repoPath != "" && cmd == "fix" {
-				opts.sourcePatch = true
-			}
-		}
+		opts = prepared
 		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
 	case "coordinate":
 		if opts.from != "" {
@@ -428,7 +358,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 			analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
 			defer analysisCancel()
-			return runCoordinateFrom(analysisCtx, stdout, stderr, opts, a, k, opts.from)
+			return runCoordinateFrom(analysisCtx, ctx, stdout, stderr, opts, reader, a, k, opts.from)
 		}
 		if len(rest) < 2 {
 			fmt.Fprintln(stderr, "error: coordinate requires two or more resources (kind/name ...) to apply together")
@@ -436,15 +366,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
 		defer analysisCancel()
-		steps, err := buildCoordinateSteps(analysisCtx, a, opts, rest)
+		steps, err := buildPreparedCoordinateSteps(analysisCtx, reader, k, opts, rest, stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		in := inputFor(opts)
-		confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(steps), in, stderr)
-		deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
-		return runCoordinateSteps(analysisCtx, stdout, stderr, steps, deps, confirmApply, confirmRollback)
+		return runPreparedCoordinateSteps(ctx, stdout, stderr, opts, reader, k, steps)
 	case "graph":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: graph requires a resource")
@@ -2961,7 +2888,7 @@ Fast incident workflow:
     --delivery                 How to ship a proposed fix: patch, cluster, or pr (default: patch).
     --yes                      Confirm shadow verification and non-interactive delivery.
                                (--apply, --source-patch, --gitops are deprecated aliases.)
-  coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure.
+  coordinate <kind/name>...    Verify all repairs, then apply in order; offer field rollback on failure.
                                Interactive on a TTY; pass --yes for scripted/non-interactive runs.
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard

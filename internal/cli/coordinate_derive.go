@@ -184,7 +184,7 @@ func deriveRelatedRefs(ctx context.Context, r kube.Reader, rootRef, namespace st
 // runCoordinateFrom derives the related set from a root ref, keeps only the
 // apply-eligible steps, and runs the existing coordinate saga on them. Returns
 // the process exit code.
-func runCoordinateFrom(ctx context.Context, stdout, stderr io.Writer, opts options, a analyzer.Analyzer, k kube.Kubectl, rootRef string) int {
+func runCoordinateFrom(ctx, executionCtx context.Context, stdout, stderr io.Writer, opts options, reader kube.Reader, a analyzer.Analyzer, k kube.Kubectl, rootRef string) int {
 	rootFinding, err := a.AnalyzeResource(ctx, rootRef)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: analyze %s: %v\n", rootRef, err)
@@ -195,7 +195,7 @@ func runCoordinateFrom(ctx context.Context, stdout, stderr io.Writer, opts optio
 		fmt.Fprintf(stderr, "error: derive related resources: %v\n", err)
 		return 1
 	}
-	steps, err := buildCoordinateSteps(ctx, a, opts, refs)
+	steps, err := buildPreparedCoordinateSteps(ctx, reader, k, opts, refs, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -212,8 +212,5 @@ func runCoordinateFrom(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return 0
 	}
 
-	in := inputFor(opts)
-	confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(eligible), in, stderr)
-	deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
-	return runCoordinateSteps(ctx, stdout, stderr, eligible, deps, confirmApply, confirmRollback)
+	return runPreparedCoordinateSteps(executionCtx, stdout, stderr, opts, reader, k, eligible)
 }
