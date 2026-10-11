@@ -42,6 +42,10 @@ func Placement(ctx context.Context, s Snapshot, a *Authority, patch string, insp
 		}
 	}
 	source, _ := kube.WorkloadPodSpec(s.Object)
+	approved, _ := kube.WorkloadPodSpec(a.object)
+	if err := matchBaselineContainers(source, approved); err != nil {
+		return nil, err
+	}
 	if err := supportedPlacement(source); err != nil {
 		return nil, err
 	}
@@ -143,6 +147,12 @@ func Placement(ctx context.Context, s Snapshot, a *Authority, patch string, insp
 	p.nodes = eligible
 	p.platforms = platforms
 	p.inspect = inspect
+	p.implicitTolerations = map[string]bool{}
+	for _, t := range s.Pod.Spec.Tolerations {
+		if (t["key"] == "node.kubernetes.io/not-ready" || t["key"] == "node.kubernetes.io/unreachable") && t["operator"] == "Exists" && t["effect"] == "NoExecute" {
+			p.implicitTolerations[digest(t)] = true
+		}
+	}
 	return p, nil
 }
 func policyPatch(patch string, target Target) (map[string]any, map[string]any, error) {
@@ -477,4 +487,30 @@ func requested(spec map[string]any) (map[string]resource.Quantity, error) {
 		}
 	}
 	return out, nil
+}
+
+func placementObservation(p *Proof, observed map[string]any) map[string]any {
+	copy := copyObject(observed)
+	if p == nil || len(p.implicitTolerations) == 0 {
+		return copy
+	}
+	values, ok := copy["tolerations"].([]any)
+	if !ok {
+		return copy
+	}
+	kept := []any{}
+	approved, _ := p.placement["tolerations"].([]any)
+	for _, v := range values {
+		implicit := p.implicitTolerations[digest(v)]
+		for _, allowed := range approved {
+			if digest(v) == digest(allowed) {
+				implicit = false
+			}
+		}
+		if !implicit {
+			kept = append(kept, v)
+		}
+	}
+	copy["tolerations"] = kept
+	return copy
 }

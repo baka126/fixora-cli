@@ -25,6 +25,9 @@ func Candidate(s Snapshot, a *Authority, family string) (string, error) {
 	changes := map[string]any{}
 	switch family {
 	case "placement":
+		if err := matchBaselineContainers(current, approved); err != nil {
+			return "", err
+		}
 		for _, key := range []string{"nodeSelector", "affinity", "tolerations"} {
 			if v, exists := approved[key]; exists && !reflect.DeepEqual(copyValue(v), copyValue(current[key])) {
 				if key == "nodeSelector" {
@@ -103,4 +106,25 @@ func changedLeaves(current, approved map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func matchBaselineContainers(current, approved map[string]any) error {
+	live, err := containerMap(current)
+	if err != nil {
+		return err
+	}
+	baseline, err := containerMap(approved)
+	if err != nil {
+		return err
+	}
+	if len(live) != len(baseline) {
+		return errors.New("placement baseline container identities differ")
+	}
+	for name, c := range live {
+		b := baseline[name]
+		if b == nil || b["image"] != c["image"] {
+			return errors.New("placement baseline container identity or image differs")
+		}
+	}
+	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"reflect"
 	"strings"
 
@@ -39,6 +40,7 @@ type Authority struct {
 	digest string
 }
 type Proof struct {
+	implicitTolerations                   map[string]bool
 	revision                              string
 	namespace                             string
 	identities                            map[string]string
@@ -246,6 +248,9 @@ func witness(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, patch 
 		return nil, errors.New("invalid witness candidate envelope")
 	}
 	observed := copyValue(live.Spec)
+	if p.family == "restore-placement" {
+		observed = placementObservation(p, mapAny(observed))
+	}
 	if !matchesFields(changes, observed) {
 		return nil, errors.New("shadow Pod does not contain the approved candidate fields")
 	}
@@ -275,7 +280,9 @@ func identityMatches(obj map[string]any, t Target) error {
 
 // matchesFields checks named strategic-merge lists without treating a subset of
 // an ordered command/args array as sufficient evidence.
-func matchesFields(expected, actual any) bool {
+func matchesFields(expected, actual any) bool { return matchesFieldsAt(expected, actual, "") }
+
+func matchesFieldsAt(expected, actual any, path string) bool {
 	switch want := copyValue(expected).(type) {
 	case map[string]any:
 		got, ok := copyValue(actual).(map[string]any)
@@ -290,7 +297,7 @@ func matchesFields(expected, actual any) bool {
 				}
 				continue
 			}
-			if !exists || !matchesFields(v, value) {
+			if !exists || !matchesFieldsAt(v, value, path+"/"+k) {
 				return false
 			}
 		}
@@ -317,7 +324,7 @@ func matchesFields(expected, actual any) bool {
 			for _, item := range got {
 				gm, ok := item.(map[string]any)
 				if ok && gm["name"] == m["name"] {
-					if found || !matchesFields(m, gm) {
+					if found || !matchesFieldsAt(m, gm, path) {
 						return false
 					}
 					found = true
@@ -329,6 +336,11 @@ func matchesFields(expected, actual any) bool {
 		}
 		return true
 	default:
+		if strings.Contains(path, "/resources/requests/") || strings.Contains(path, "/resources/limits/") {
+			want, errW := resource.ParseQuantity(fmt.Sprint(expected))
+			got, errG := resource.ParseQuantity(fmt.Sprint(actual))
+			return errW == nil && errG == nil && want.Cmp(got) == 0
+		}
 		return reflect.DeepEqual(copyValue(expected), copyValue(actual))
 	}
 }
@@ -434,6 +446,9 @@ func CheckLivePod(ctx context.Context, r kube.Reader, p *Proof, pod *kube.Pod, p
 	_, changes, err := policyPatch(patch, p.target)
 	if err != nil {
 		return err
+	}
+	if p.family == "restore-placement" {
+		observed = placementObservation(p, observed)
 	}
 	if !matchesFields(changes, observed) {
 		return errors.New("admitted live Pod differs from the approved fields")

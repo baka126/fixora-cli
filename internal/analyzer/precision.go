@@ -379,3 +379,6 @@ func clusterFinding(kind, name, status, severity, category, summary string, evid
 		}},
 	}
 }
+
+// GitOpsHintsForObject reads source ownership from a current live object.
+func GitOpsHintsForObject(obj map[string]any) GitOpsHints { return gitOpsForObject(obj) }

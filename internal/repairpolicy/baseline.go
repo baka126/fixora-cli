@@ -117,3 +117,15 @@ func copyValue(v any) any { // JSON normalization also prevents retaining mutabl
 	raw := map[string]any{"value": v}
 	return copyObject(raw)["value"]
 }
+
+// Target exposes only the baseline's workload identity, never its raw contents.
+func (a *Authority) Target() Target {
+	if a == nil || a.digest == "" || a.digest != digest(a.object) {
+		return Target{}
+	}
+	meta := mapAny(a.object["metadata"])
+	kind, _ := a.object["kind"].(string)
+	name, _ := meta["name"].(string)
+	ns, _ := meta["namespace"].(string)
+	return Target{Kind: kind, Name: name, Namespace: ns}
+}

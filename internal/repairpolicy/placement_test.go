@@ -169,3 +169,40 @@ func TestPlacementRefusesWrongPlatformAndUnresolvedCapacity(t *testing.T) {
 		t.Fatal("remaining capacity block accepted")
 	}
 }
+
+func TestPlacementReceiptPreservesExistingAdmissionTolerations(t *testing.T) {
+	s, a, patch := placementFixture(t)
+	spec, _ := kube.WorkloadPodSpec(s.Object)
+	spec["nodeSelector"] = map[string]any{"pool": "approved"}
+	s.Pod.Spec.NodeSelector = map[string]string{"pool": "approved"}
+	s.Pod.Status.Conditions[0].Message = "nodes had untolerated taint {tenant: blue}"
+	s.Nodes[0].Spec.Taints = []map[string]any{{"key": "tenant", "value": "blue", "effect": "NoSchedule"}}
+	implicit := map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)}
+	s.Pod.Spec.Tolerations = []map[string]any{implicit}
+	tolerance := map[string]any{"key": "tenant", "value": "blue", "effect": "NoSchedule", "operator": "Equal"}
+	obj := copyObject(s.Object)
+	base, _ := kube.WorkloadPodSpec(obj)
+	base["tolerations"] = []any{tolerance}
+	raw, _ := yaml.Marshal(obj)
+	var err error
+	a, err = ReadBaseline(baselineFile(t, string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchObj, _ := kube.WorkloadPatch("Deployment", "worker", "demo", map[string]any{"tolerations": []any{tolerance}})
+	raw, _ = yaml.Marshal(patchObj)
+	patch = string(raw)
+	p, err := Placement(context.Background(), s, a, patch, inspectLinux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := *s.Pod
+	pod.Metadata = kube.ObjectMeta{Name: "shadow", UID: "shadow-1", Namespace: "demo", Labels: map[string]string{"fixora.io/session": "session", "fixora.io/sandbox": "true"}}
+	pod.Spec.Tolerations = []map[string]any{tolerance, implicit}
+	pod.Spec.NodeName = "node-a"
+	pod.Status = kube.PodStatus{Phase: "Running", Conditions: []kube.Condition{{Type: "Ready", Status: "True"}}, ContainerStatuses: []kube.ContainerStatus{{Name: "app", Ready: true}}}
+	r := placementReader{witnessReader: witnessReader{pod: pod}, nodes: s.Nodes}
+	if _, err = VerifyPlacement(context.Background(), r, p, &pod, patch); err != nil {
+		t.Fatal(err)
+	}
+}

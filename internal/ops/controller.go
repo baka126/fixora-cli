@@ -39,6 +39,9 @@ func PreflightControllerSnapshot(ctx context.Context, r TargetReader, f analyzer
 	if err != nil {
 		return TargetSnapshot{}, err
 	}
+	if err := ValidateClusterOwnership(obj); err != nil {
+		return TargetSnapshot{}, err
+	}
 	meta, _ := obj["metadata"].(map[string]any)
 	uid, _ := meta["uid"].(string)
 	if meta["name"] != f.ResourceName || meta["namespace"] != f.Namespace || obj["kind"] != f.ResourceKind || obj["apiVersion"] != kube.WorkloadVersion(f.ResourceKind) || uid == "" {
@@ -354,4 +357,13 @@ func podSpecHasImage(pod kube.Pod, section, name, requested string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateClusterOwnership rechecks source management at a live mutation boundary.
+func ValidateClusterOwnership(obj map[string]any) error {
+	ownership := analyzer.GitOpsHintsForObject(obj)
+	if strings.EqualFold(ownership.ManagedBy, "helm") || ownership.HelmRelease != "" || ownership.HelmChart != "" || ownership.TargetAdvice != "" || ownership.FluxHint != "" || ownership.ArgoHint != "" {
+		return fmt.Errorf("live workload is source-managed; deliver through its source")
+	}
+	return nil
 }
