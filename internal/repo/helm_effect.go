@@ -67,6 +67,24 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 	if req.Context.Namespace != req.Finding.Namespace || req.Plan.Namespace != req.Finding.Namespace || req.Plan.Resource != req.Finding.ResourceKind+"/"+req.Finding.ResourceName {
 		return out, errors.New("source target differs from diagnosis")
 	}
+	if req.Plan.Recovered || req.Finding.Recovered {
+		return out, errors.New("recovered workload requires diagnosis review; source was not written")
+	}
+	for _, g := range req.Plan.Guardrails {
+		if g == "ownership-unverified" || g == "controller-review-only" {
+			return out, errors.New("workload ownership or controller policy blocks source delivery")
+		}
+	}
+	if req.Plan.ApplyEligible {
+		if !req.Plan.CanApply || len(req.Plan.BlockedReasons) > 0 {
+			return out, helmSourceBlockError(req.Plan)
+		}
+	} else {
+		managed := req.Finding.GitOps.ManagedBy != "" || req.Finding.GitOps.TargetAdvice != "" || req.Finding.GitOps.HelmRelease != "" || req.Finding.GitOps.ArgoHint != "" || req.Finding.GitOps.FluxHint != ""
+		if !managed || !fix.SourceReviewAllowed(req.Plan) {
+			return out, helmSourceBlockError(req.Plan)
+		}
+	}
 	in, err := CaptureHelmInputs(req.Context)
 	if err != nil {
 		return out, err
@@ -171,7 +189,7 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 	}
 	switch validation.Status {
 	case "passed":
-		if !sameHelmTargetIdentity(validation.Admitted, key) || !reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(expected), ""), semanticHelm(normalizedHelmPodSpec(validation.Admitted), "")) {
+		if !sameHelmTargetIdentity(validation.Admitted, key) || !helmAdmittedPreserves(expected, validation.Admitted) || !reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(expected), ""), semanticHelm(normalizedHelmPodSpec(validation.Admitted), "")) {
 			return out, errors.New("server admission changed the reviewed workload")
 		}
 	case "pending":
@@ -261,7 +279,7 @@ func (p HelmSourceProof) contentBinding() string {
 	if p.inputs == nil {
 		return ""
 	}
-	return helmHash([]any{p.inputs.fingerprint, p.inputs.rendererHash, p.request.Context, p.request.Plan.PatchYAML(), p.request.Plan.Strategy, p.request.Plan.ApplyEligible, p.request.Plan.CanApply, p.candidate.edited, p.candidate.edits, p.key, p.liveBinding, p.effectBinding, p.server, p.runtime, p.preview, p.keys})
+	return helmHash([]any{p.inputs.fingerprint, p.inputs.rendererHash, p.request.Context, p.request.Plan.PatchYAML(), p.request.Plan.Strategy, p.request.Plan.ApplyEligible, p.request.Plan.CanApply, p.request.Plan.BlockedReasons, p.request.Plan.Recovered, p.request.Plan.Confidence, p.request.Plan.Guardrails, p.request.Finding.Recovered, p.request.Finding.GitOps, p.candidate.edited, p.candidate.edits, p.key, p.liveBinding, p.effectBinding, p.server, p.runtime, p.preview, p.keys})
 }
 func (p HelmSourceProof) CheckFresh(ctx context.Context, d HelmSourceDeps) error {
 	if p.binding == "" || p.binding != p.contentBinding() || d == nil {
@@ -372,4 +390,47 @@ func checkHelmContainerTargets(base map[string]any, patch string) error {
 func sameHelmTargetIdentity(obj map[string]any, key ResourceKey) bool {
 	meta, _ := obj["metadata"].(map[string]any)
 	return obj["apiVersion"] == key.APIVersion && obj["kind"] == key.Kind && meta["name"] == key.Name && meta["namespace"] == key.Namespace
+}
+
+// Server defaults may add fields, but must preserve every supplied chart field.
+func helmAdmittedPreserves(expected, admitted map[string]any) bool {
+	a, b := copyHelmObject(expected), copyHelmObject(admitted)
+	for _, obj := range []map[string]any{a, b} {
+		normalized := normalizedHelmPodSpec(obj)
+		pod := helmPodSpec(obj)
+		for k := range pod {
+			delete(pod, k)
+		}
+		for k, v := range normalized {
+			pod[k] = v
+		}
+	}
+	return helmContainsFields(semanticHelm(a, ""), semanticHelm(b, ""))
+}
+func helmContainsFields(expected, admitted any) bool {
+	if a, ok := expected.(map[string]any); ok {
+		b, ok := admitted.(map[string]any)
+		if !ok {
+			return false
+		}
+		for k, v := range a {
+			got, exists := b[k]
+			if !exists || !helmContainsFields(v, got) {
+				return false
+			}
+		}
+		return true
+	}
+	return helmHash(expected) == helmHash(admitted)
+}
+
+func helmSourceBlockError(p fix.Plan) error {
+	reason := "candidate is not eligible for ownership-only source review"
+	if len(p.BlockedReasons) > 0 {
+		reason = redact.Text(p.BlockedReasons[0])
+		if len(reason) > 240 {
+			reason = reason[:240] + "..."
+		}
+	}
+	return fmt.Errorf("source delivery blocked: %s", reason)
 }

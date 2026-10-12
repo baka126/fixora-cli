@@ -66,8 +66,15 @@ func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kube
 			opts.shadowVerify = true
 		}
 	}
-	if plan.ApplyEligible && !strings.HasPrefix(plan.Resource, "Deployment/") {
-		if uid, preflightErr := ops.PreflightController(ctx, reader, finding, plan); preflightErr != nil {
+	if (plan.ApplyEligible || fix.SourceReviewAllowed(plan)) && !strings.HasPrefix(plan.Resource, "Deployment/") {
+		preflightPlan := plan
+		if fix.SourceReviewAllowed(plan) {
+			preflightPlan.BlockedReasons = nil
+			preflightPlan.ApplyEligible = true
+			preflightPlan.CanApply = true
+			preflightPlan.Safe = true
+		}
+		if uid, preflightErr := ops.PreflightController(ctx, reader, finding, preflightPlan); preflightErr != nil {
 			plan = fix.WithControllerReview(plan, "Live target requires source review: "+preflightErr.Error())
 		} else {
 			plan.TargetUID = uid

@@ -49,75 +49,77 @@ import (
 )
 
 type options struct {
-	repairBaseline  string
-	repairPolicy    string
-	namespace       string
-	allNS           bool
-	context         string
-	output          string
-	includeLogs     bool
-	useAI           bool
-	noAI            bool
-	autoFix         bool
-	apply           bool
-	yes             bool
-	outFile         string
-	editPatch       bool
-	verbose         bool
-	redact          bool
-	unsafeAI        bool
-	filters         string
-	labelSelector   string
-	wide            bool
-	noColor         bool
-	proof           bool
-	paranoid        bool
-	preview         bool
-	forceRisky      bool
-	typedClient     bool
-	checkSecretKeys bool
-	checkCertExpiry bool
-	tui             bool
-	repoPath        string
-	from            string
-	strategy        string
-	branch          string
-	commit          bool
-	mcp             bool
-	mcpShadow       bool
-	profile         string
-	aiBudget        int
-	container       string
-	image           string
-	memRequest      string
-	memLimit        string
-	cpuRequest      string
-	envName         string
-	configMap       string
-	configKey       string
-	timeout         time.Duration
-	logTail         int
-	maxLogBytes     int
-	applyDryRun     bool
-	sourcePatch     bool
-	startupBaseline string
-	shadowVerify    bool
-	shadowTimeout   time.Duration
-	rolloutTimeout  time.Duration
-	shadowRetries   int
-	keepShadow      bool
-	shadowEgress    string
-	delivery        string
-	prBase          string
-	prTitle         string
-	watchInterval   time.Duration
-	lintFiles       listFlag
-	maxFindings     int
-	quick           bool
-	safe            bool
-	gitops          bool
-	visited         map[string]bool
-	promptInput     *bufio.Reader
+	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
+	helmValues, helmAPIVersions, helmMappings                               listFlag
+	repairBaseline                                                          string
+	repairPolicy                                                            string
+	namespace                                                               string
+	allNS                                                                   bool
+	context                                                                 string
+	output                                                                  string
+	includeLogs                                                             bool
+	useAI                                                                   bool
+	noAI                                                                    bool
+	autoFix                                                                 bool
+	apply                                                                   bool
+	yes                                                                     bool
+	outFile                                                                 string
+	editPatch                                                               bool
+	verbose                                                                 bool
+	redact                                                                  bool
+	unsafeAI                                                                bool
+	filters                                                                 string
+	labelSelector                                                           string
+	wide                                                                    bool
+	noColor                                                                 bool
+	proof                                                                   bool
+	paranoid                                                                bool
+	preview                                                                 bool
+	forceRisky                                                              bool
+	typedClient                                                             bool
+	checkSecretKeys                                                         bool
+	checkCertExpiry                                                         bool
+	tui                                                                     bool
+	repoPath                                                                string
+	from                                                                    string
+	strategy                                                                string
+	branch                                                                  string
+	commit                                                                  bool
+	mcp                                                                     bool
+	mcpShadow                                                               bool
+	profile                                                                 string
+	aiBudget                                                                int
+	container                                                               string
+	image                                                                   string
+	memRequest                                                              string
+	memLimit                                                                string
+	cpuRequest                                                              string
+	envName                                                                 string
+	configMap                                                               string
+	configKey                                                               string
+	timeout                                                                 time.Duration
+	logTail                                                                 int
+	maxLogBytes                                                             int
+	applyDryRun                                                             bool
+	sourcePatch                                                             bool
+	startupBaseline                                                         string
+	shadowVerify                                                            bool
+	shadowTimeout                                                           time.Duration
+	rolloutTimeout                                                          time.Duration
+	shadowRetries                                                           int
+	keepShadow                                                              bool
+	shadowEgress                                                            string
+	delivery                                                                string
+	prBase                                                                  string
+	prTitle                                                                 string
+	watchInterval                                                           time.Duration
+	lintFiles                                                               listFlag
+	maxFindings                                                             int
+	quick                                                                   bool
+	safe                                                                    bool
+	gitops                                                                  bool
+	visited                                                                 map[string]bool
+	promptInput                                                             *bufio.Reader
 }
 
 type listFlag []string
@@ -349,6 +351,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		opts = prepared
+		if hasHelmSourceContext(opts) {
+			return runHelmSourceDelivery(ctx, stdout, stderr, opts, reader, k, finding, plan)
+		}
 		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
 	case "coordinate":
 		if opts.from != "" {
@@ -630,6 +635,14 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
+	fs.StringVar(&opts.helmChart, "helm-chart", "", "local chart relative to --repo")
+	fs.StringVar(&opts.helmRelease, "helm-release", "", "exact Helm release")
+	fs.StringVar(&opts.helmEditValues, "helm-edit-values", "", "last writable values file relative to --repo")
+	fs.StringVar(&opts.helmRenderMode, "helm-render-mode", "", "explicit install or upgrade render mode")
+	fs.StringVar(&opts.helmKubeVersion, "helm-kube-version", "", "render Kubernetes version")
+	fs.Var(&opts.helmValues, "helm-values", "ordered values file relative to --repo (repeatable)")
+	fs.Var(&opts.helmAPIVersions, "helm-api-version", "render API capability (repeatable)")
+	fs.Var(&opts.helmMappings, "helm-map", "rendered JSON pointer=values JSON pointer (repeatable)")
 	fs.StringVar(&opts.from, "from", "", "coordinate: auto-derive the related resource set from this root <kind/name>")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -2992,6 +3005,14 @@ Global flags:
       --no-ai                  Disable AI remediation for this command
       --auto-fix               Generate explicit local fix plan
       --apply                  Apply generated local patch
+      --helm-chart             Local chart relative to --repo
+      --helm-release           Exact release name for source validation
+      --helm-values            Ordered values file relative to --repo (repeatable)
+      --helm-edit-values       Last writable values file
+      --helm-render-mode       Explicit install or upgrade render mode
+      --helm-kube-version      Kubernetes render version (otherwise discovery)
+      --helm-api-version       Render API capability (repeatable)
+      --helm-map               Rendered JSON pointer=values JSON pointer
       --yes                    Confirm shadow verification and non-interactive delivery
       --edit-patch             Open generated patch in $VISUAL/$EDITOR before shadow/apply/source delivery
       --redact                 Redact sensitive values

@@ -164,7 +164,7 @@ func TestAISourceManagedRepairStaysReviewOnly(t *testing.T) {
 	f.GitOps.ManagedBy = "helm"
 	f.AI = &analyzer.AIResult{PatchYAML: aiProbeCandidate, Confidence: 99}
 	got := selectAIRepair(context.Background(), r, p, f, &bytes.Buffer{}, false)
-	if got.ApplyEligible || !hasString(got.Guardrails, "ai-patch-review-only") {
+	if got.Strategy != "probe" || got.ApplyEligible || !hasString(got.Guardrails, "ai-patch-review-only") {
 		t.Fatalf("source-managed proposal was promoted to direct repair: %+v", got)
 	}
 }
@@ -267,5 +267,24 @@ func TestAINonTemplateProposalRemainsReviewOnlyInsteadOfUsingDeterministicRepair
 		if strings.Contains(patch, "replicas") && (!strings.Contains(got.PatchYAML(), "replicas") || !hasString(got.Guardrails, "ai-patch-review-only")) {
 			t.Fatalf("reviewable AI source proposal should remain visible for review: %+v", got)
 		}
+	}
+}
+
+func TestAISourceReviewKeepsConfidenceAndOwnershipBlockers(t *testing.T) {
+	for _, bad := range []string{"confidence", "ownership"} {
+		t.Run(bad, func(t *testing.T) {
+			_, r, f, p := startupFixture(t, validStartupBaseline)
+			f.GitOps.ManagedBy = "helm"
+			f.AI = &analyzer.AIResult{PatchYAML: aiProbeCandidate, Confidence: 99}
+			if bad == "confidence" {
+				f.AI.Confidence = 70
+			} else {
+				p.Guardrails = append(p.Guardrails, "ownership-unverified")
+			}
+			got := selectAIRepair(context.Background(), r, p, f, &bytes.Buffer{}, false)
+			if got.ApplyEligible || fix.SourceReviewAllowed(got) {
+				t.Fatal("source policy blocker lost", got)
+			}
+		})
 	}
 }

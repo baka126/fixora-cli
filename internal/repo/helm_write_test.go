@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -94,5 +95,35 @@ func TestHelmWritePendingReviewPreservesMode(t *testing.T) {
 	}
 	if err = plan.Proof.CheckWritten(context.Background(), d); err == nil {
 		t.Fatal("post-write drift accepted")
+	}
+}
+
+type postWriteHelmDeps struct {
+	*helmEffectFixture
+	dest string
+}
+
+func (d postWriteHelmDeps) ReadTarget(ctx context.Context, key ResourceKey) (map[string]any, error) {
+	obj, err := d.helmEffectFixture.ReadTarget(ctx, key)
+	b, _ := os.ReadFile(d.dest)
+	if bytes.Contains(b, []byte("setting: new")) {
+		obj["metadata"].(map[string]any)["uid"] = "replaced-after-write"
+	}
+	return obj, err
+}
+func TestHelmWriteReportsPartialCompletion(t *testing.T) {
+	req, base := helmEffectRequest(t)
+	dest := filepath.Join(req.Context.RepoPath, req.Context.EditValuesPath)
+	d := postWriteHelmDeps{base, dest}
+	plan, err := PrepareHelmSource(context.Background(), req, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := WriteValidatedHelmSource(context.Background(), plan, d, true)
+	if err == nil {
+		t.Fatal("postwrite drift ignored")
+	}
+	if result.SourceStatus != "source-written" || result.Path == "" || result.Reconciliation != "pending" {
+		t.Fatal("write hidden", result)
 	}
 }

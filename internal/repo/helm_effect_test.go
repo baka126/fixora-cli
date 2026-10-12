@@ -19,6 +19,8 @@ type helmEffectFixture struct {
 	collateral, unstable, serverFail bool
 	calls                            int
 	serverPending                    bool
+	admissionRewrite                 bool
+	baselineReplicas                 bool
 }
 
 func (d *helmEffectFixture) Renderer() HelmRenderer { return d }
@@ -31,6 +33,9 @@ func (d *helmEffectFixture) Scope(_ context.Context, k ResourceKey) (bool, error
 func (d *helmEffectFixture) Render(_ context.Context, _ HelmRenderContext, _ *HelmInputs, edited []byte) ([]byte, error) {
 	d.calls++
 	out := helmImageTarget
+	if d.baselineReplicas {
+		out = strings.Replace(out, "spec:\n", "spec:\n  replicas: 1\n", 1)
+	}
 	if edited != nil {
 		var values map[string]any
 		_ = yaml.Unmarshal(edited, &values)
@@ -58,6 +63,9 @@ func (d *helmEffectFixture) ServerValidate(_ context.Context, p string) (HelmVal
 	}
 	var obj map[string]any
 	_ = yaml.Unmarshal([]byte(p), &obj)
+	if d.admissionRewrite {
+		obj["spec"].(map[string]any)["replicas"] = 99
+	}
 	return HelmValidation{Status: "passed", Admitted: obj}, nil
 }
 func (d *helmEffectFixture) ShadowVerify(context.Context, fix.Plan, string) (*repairpolicy.Receipt, error) {
@@ -144,5 +152,40 @@ func TestHelmEffectCannotCreateAnotherContainer(t *testing.T) {
 	_, err := PrepareHelmSource(context.Background(), req, d)
 	if err == nil {
 		t.Fatal("unknown container candidate accepted")
+	}
+}
+
+func TestHelmEffectRefusesAdmissionRewritesOutsidePodSpec(t *testing.T) {
+	req, d := helmEffectRequest(t)
+	d.admissionRewrite = true
+	// Make the baseline contain an explicit replica count, not merely a server default.
+	d.live["spec"].(map[string]any)["replicas"] = 1
+	d.baselineReplicas = true
+	plan, err := PrepareHelmSource(context.Background(), req, d)
+	if err == nil || plan.Proof != nil {
+		t.Fatal("admission rewritten replica count certified")
+	}
+}
+
+func TestHelmEffectPreservesNonSourcePolicyBlockers(t *testing.T) {
+	for _, bad := range []string{"recovered", "capacity", "ownership", "not-source"} {
+		t.Run(bad, func(t *testing.T) {
+			req, d := helmEffectRequest(t)
+			switch bad {
+			case "recovered":
+				req.Plan.Recovered = true
+			case "capacity":
+				req.Plan.BlockedReasons = []string{"DaemonSet fleet capacity requires review"}
+			case "ownership":
+				req.Plan.Guardrails = []string{"ownership-unverified"}
+			case "not-source":
+				req.Plan.ApplyEligible = false
+				req.Plan.CanApply = false
+			}
+			plan, err := PrepareHelmSource(context.Background(), req, d)
+			if err == nil || plan.Proof != nil {
+				t.Fatal("blocked candidate certified")
+			}
+		})
 	}
 }

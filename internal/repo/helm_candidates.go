@@ -58,7 +58,7 @@ func ProposeHelmValues(in *HelmInputs, inv HelmInventory, key ResourceKey, patch
 		for _, m := range mappings {
 			old, ok := helmPointer(base, m.FieldPointer)
 			next, exists := helmPointer(expected, m.FieldPointer)
-			if !exists || (!ok && next == nil) || reflect.DeepEqual(old, next) {
+			if (!ok && !exists) || (ok == exists && reflect.DeepEqual(old, next)) {
 				return nil, errors.New("explicit mapping does not name a changed target field")
 			}
 			if _, err = helmPointerParts(m.ValuesPointer); err != nil || sensitiveHelmPointer(m.ValuesPointer) || sensitiveHelmValue(next) {
@@ -267,6 +267,9 @@ func effectiveHelmValues(in *HelmInputs) (map[string]any, error) {
 }
 func mergeHelmValues(old, next map[string]any) map[string]any {
 	out := copyHelmObject(old)
+	if out == nil {
+		out = map[string]any{}
+	}
 	for k, v := range next {
 		if v == nil {
 			delete(out, k)
@@ -460,6 +463,9 @@ func sensitiveHelmPointer(p string) bool {
 func sensitiveHelmValue(v any) bool {
 	switch x := v.(type) {
 	case map[string]any:
+		if name, ok := x["name"].(string); ok && sensitiveHelmPointer(name) && x["value"] != nil {
+			return true
+		}
 		for k, v := range x {
 			if sensitiveHelmPointer(k) || sensitiveHelmValue(v) {
 				return true

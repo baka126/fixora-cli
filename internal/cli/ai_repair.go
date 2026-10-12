@@ -87,9 +87,7 @@ func selectAIRepair(ctx context.Context, reader kube.Reader, fallback fix.Plan, 
 		}
 		return fix.WithReviewOnlyAIPatch(candidate, patch, reason)
 	}
-	if sourceManaged(f) {
-		return review("GitOps-managed workload requires source-level review and delivery.")
-	}
+
 	if aiPodSpec(obj) == nil {
 		return review("AI source proposal requires review before delivery.")
 	}
@@ -124,7 +122,11 @@ func selectAIRepair(ctx context.Context, reader kube.Reader, fallback fix.Plan, 
 	if !candidate.ApplyEligible {
 		candidate.BlockedReasons = appendUniqueString(candidate.BlockedReasons, "AI confidence is below the automatic verification threshold; review this proposal.")
 	}
-	return fix.WithTargetPolicy(candidate)
+	candidate = fix.WithTargetPolicy(candidate)
+	if sourceManaged(f) {
+		return fix.WithReviewOnlyAIPatch(candidate, patch, fix.SourceOwnershipReviewReason)
+	}
+	return candidate
 }
 
 func aiReviewWithoutPatch(plan fix.Plan, reason string) fix.Plan {

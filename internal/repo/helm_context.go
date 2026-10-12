@@ -239,7 +239,11 @@ func hashHelmFile(path string) (string, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	if _, err = io.Copy(h, io.LimitReader(f, 256<<20)); err != nil {
+	if n, copyErr := io.Copy(h, io.LimitReader(f, (256<<20)+1)); copyErr != nil || n > 256<<20 {
+		if copyErr == nil {
+			return "", errors.New("Helm executable exceeds fingerprint limit")
+		}
+		err = copyErr
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil

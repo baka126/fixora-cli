@@ -105,3 +105,10 @@ func TestHelmCandidatesDynamicResourceProbeAndConfigMap(t *testing.T) {
 		})
 	}
 }
+
+func TestHelmCandidatesRefuseSensitiveNamedEnvValues(t *testing.T) {
+	value := []any{map[string]any{"name": "DATABASE_PASSWORD", "value": "synthetic-plaintext"}, map[string]any{"name": "HOST", "valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": "settings", "key": "HOST"}}}}
+	if !sensitiveHelmValue(value) {
+		t.Fatal("parent candidate may expose unchanged sensitive env literal")
+	}
+}

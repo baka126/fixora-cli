@@ -98,3 +98,19 @@ func TestHelmRendererUsesOrderedContextAndNoNetworkModes(t *testing.T) {
 		t.Fatal("cancel ignored")
 	}
 }
+
+func TestHelmRendererRefusesOversizedExecutable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.Truncate((256 << 20) + 1)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = hashHelmFile(path); err == nil {
+		t.Fatal("partial executable hash accepted")
+	}
+}

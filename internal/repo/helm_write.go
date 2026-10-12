@@ -63,15 +63,15 @@ func WriteValidatedHelmSource(ctx context.Context, plan HelmSourcePlan, d HelmSo
 	if err = os.Rename(tempPath, dest); err != nil {
 		return out, err
 	}
-	if err = p.checkWriteFresh(ctx, d, []string{dest + ".fixora.lock"}, true); err != nil {
-		return out, err
-	}
 	out.Path = dest
 	out.Preview = p.preview
 	out.SourceStatus = "source-written"
 	out.ServerValidation = p.server
 	out.RuntimeVerification = p.runtime
 	out.Actions = []string{"Write certified Helm values; deployment reconciliation is pending"}
+	if err = p.checkWriteFresh(ctx, d, []string{dest + ".fixora.lock"}, true); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 
