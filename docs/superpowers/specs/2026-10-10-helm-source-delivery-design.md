@@ -1,6 +1,6 @@
 # Step 4: validated Helm source delivery
 
-Status: proposed design for user review. Branch: `codex/helm-source-delivery`, based on step 3 checkpoint `cb9bd3e`.
+Status: approved by the user’s 2026-10-12 “continue”; implementation plan pending review. Branch: `codex/helm-source-delivery`, based on step 3 checkpoint `cb9bd3e`.
 
 ## Intent and success
 
