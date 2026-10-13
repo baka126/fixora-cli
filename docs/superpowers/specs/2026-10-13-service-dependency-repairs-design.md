@@ -1,6 +1,6 @@
 # Step 5a: verified Service dependency wiring
 
-Status: proposed for review; no implementation approved or performed.
+Status: approved by the user’s subsequent “yes”; written implementation plan awaits review. No implementation performed.
 Starting checkpoint: Step 4 `34c30c5`, branch `codex/helm-source-delivery`.
 
 ## Intent and decomposition
