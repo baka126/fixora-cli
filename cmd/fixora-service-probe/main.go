@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
@@ -48,8 +47,6 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	ctx, deadline := context.WithTimeout(ctx, 3*time.Minute)
-	defer deadline()
 	result, err := serviceprobe.Run(ctx, req)
 	data, marshalErr := json.Marshal(result)
 	if marshalErr != nil || len(data) > serviceprobe.MaxWireBytes {

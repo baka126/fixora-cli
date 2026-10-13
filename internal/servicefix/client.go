@@ -200,3 +200,11 @@ func (c *typedRuntime) DeleteOwned(ctx context.Context, ref ObjectRef) error {
 func (c *typedRuntime) PatchService(ctx context.Context, ns, name string, patch []byte) (*corev1.Service, error) {
 	return c.k.Clientset.CoreV1().Services(ns).Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{FieldManager: "fixora-service-repair"})
 }
+
+func (c *typedRuntime) GetServiceDocument(ctx context.Context, ns, name string) ([]byte, error) {
+	rest := c.k.Clientset.CoreV1().RESTClient()
+	if rest == nil {
+		return nil, errors.New("raw Service API unavailable")
+	}
+	return rest.Get().Namespace(ns).Resource("services").Name(name).Do(ctx).Raw()
+}

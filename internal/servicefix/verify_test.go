@@ -10,6 +10,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
+	"time"
 )
 
 type runtimeFixture struct {
@@ -184,5 +185,23 @@ func TestServiceVerifyEveryEndpointAndServiceIP(t *testing.T) {
 				t.Fatal("unsafe verification", bad, v)
 			}
 		})
+	}
+}
+
+func TestServiceSandboxUsesCallerDeadline(t *testing.T) {
+	a, reader := serviceFixture(t)
+	r := &runtimeFixture{fixtureReader: reader}
+	plan, err := Prepare(context.Background(), r, a, serviceFinding(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	_, err = Verify(ctx, r, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *r.pod.Spec.ActiveDeadlineSeconds < 590 {
+		t.Fatal("caller deadline silently capped", *r.pod.Spec.ActiveDeadlineSeconds)
 	}
 }

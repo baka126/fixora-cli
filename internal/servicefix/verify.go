@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"time"
@@ -37,6 +38,9 @@ func (r *Receipt) Check(p *Proof) error {
 	return nil
 }
 func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err error) {
+	return verifySession(ctx, r, plan, nil, nil)
+}
+func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Service, fresh func(context.Context) error) (out Verification, err error) {
 	out.Status = "verification-failed"
 	p := plan.Proof
 	if r == nil || p == nil {
@@ -45,7 +49,10 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 	if err = p.checkPlan(plan); err != nil {
 		return out, err
 	}
-	if err = p.CheckFresh(ctx, r); err != nil {
+	if fresh == nil {
+		fresh = func(c context.Context) error { return p.CheckFresh(c, r) }
+	}
+	if err = fresh(ctx); err != nil {
 		return out, err
 	}
 	if _, ok := ctx.Deadline(); !ok {
@@ -53,9 +60,12 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 		ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 	}
-	admitted, e := r.Admit(ctx, p.candidate.DeepCopy())
-	if e != nil || admitted == nil || admitted.UID != p.candidate.UID || admitted.Name != p.candidate.Name || admitted.Namespace != p.candidate.Namespace || !reflect.DeepEqual(admitted.Spec, p.candidate.Spec) || !reflect.DeepEqual(admitted.Labels, p.candidate.Labels) || !reflect.DeepEqual(admitted.Annotations, p.candidate.Annotations) {
-		return out, errors.New("Service admission validation failed or rewrote the candidate")
+	var e error
+	if live == nil {
+		admitted, e := r.Admit(ctx, p.candidate.DeepCopy())
+		if e != nil || admitted == nil || admitted.UID != p.candidate.UID || admitted.Name != p.candidate.Name || admitted.Namespace != p.candidate.Namespace || !reflect.DeepEqual(admitted.Spec, p.candidate.Spec) || !reflect.DeepEqual(admitted.Labels, p.candidate.Labels) || !reflect.DeepEqual(admitted.Annotations, p.candidate.Annotations) {
+			return out, errors.New("Service admission validation failed or rewrote the candidate")
+		}
 	}
 	nonceRaw := make([]byte, 16)
 	if _, e = rand.Read(nonceRaw); e != nil {
@@ -86,19 +96,22 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 			out.Cleanup = append(out.Cleanup, result)
 		}
 	}()
-	expected := temporaryService(p, nonce)
-	svc, e := r.CreateService(ctx, expected)
-	if svc != nil {
-		record("Service", svc.Namespace, svc.Name, string(svc.UID))
-	}
-	if e != nil {
-		return out, errors.New("temporary Service creation failed; creation outcome may be partial")
-	}
-	if e = checkTemporary(expected, svc); e != nil {
-		return out, e
-	}
-	if e = readTemporary(ctx, r, svc); e != nil {
-		return out, e
+	svc := live
+	if svc == nil {
+		expected := temporaryService(p, nonce)
+		svc, e = r.CreateService(ctx, expected)
+		if svc != nil {
+			record("Service", svc.Namespace, svc.Name, string(svc.UID))
+		}
+		if e != nil {
+			return out, errors.New("temporary Service creation failed; creation outcome may be partial")
+		}
+		if e = checkTemporary(expected, svc); e != nil {
+			return out, e
+		}
+		if e = readTemporary(ctx, r, svc); e != nil {
+			return out, e
+		}
 	}
 	targets, e := waitEndpoints(ctx, r, svc, p.before)
 	if e != nil {
@@ -111,6 +124,13 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 	pod, network, e := probeObjects(p, req)
 	if e != nil {
 		return out, e
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		seconds := int64(time.Until(deadline).Seconds())
+		if seconds < 1 {
+			return out, errors.New("verification deadline exhausted")
+		}
+		pod.Spec.ActiveDeadlineSeconds = &seconds
 	}
 	createdNet, e := r.CreatePolicy(ctx, network)
 	if createdNet != nil {
@@ -141,7 +161,7 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 	if e != nil {
 		return out, e
 	}
-	if e = p.CheckFresh(ctx, r); e != nil {
+	if e = fresh(ctx); e != nil {
 		return out, e
 	}
 	slices, e := r.ListSlices(ctx, svc.Namespace, svc.Name)
@@ -159,11 +179,12 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 	out.Receipt = receipt
 	out.Status = "verification-passed"
 	out.Scope = p.authority.intent.Spec.Verification.Method + "-connectivity-contract"
-	out.Summary = "Every captured backend address and temporary Service IP matched the approved contract"
+	out.Summary = "Every captured backend address and selected Service IP matched the approved contract"
 	out.Warnings = []string{"This verifies the selected transport/HTTP contract, not dependent application recovery or CNI packet enforcement"}
 	return out, nil
 }
 func waitEndpoints(ctx context.Context, r Runtime, svc *corev1.Service, s Snapshot) ([]serviceprobe.Target, error) {
+	var last error
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -173,9 +194,16 @@ func waitEndpoints(ctx context.Context, r Runtime, svc *corev1.Service, s Snapsh
 			return nil, errors.New("EndpointSlice verification inventory unreadable")
 		}
 		if len(slices) > 0 {
-			return CheckEndpoints(svc, slices, s)
+			targets, checkErr := CheckEndpoints(svc, slices, s)
+			if checkErr == nil {
+				return targets, nil
+			}
+			last = checkErr
 		}
 		if err = pause(ctx); err != nil {
+			if last != nil {
+				return nil, fmt.Errorf("EndpointSlice convergence failed (%v): %w", last, err)
+			}
 			return nil, err
 		}
 	}
