@@ -21,12 +21,14 @@ type Reader interface {
 	ResolveOwner(context.Context, corev1.Pod) (kube.WorkloadOwner, error)
 }
 type Snapshot struct {
-	Namespace *corev1.Namespace             `json:"-" yaml:"-"`
-	Service   *corev1.Service               `json:"-" yaml:"-"`
-	Backend   map[string]any                `json:"-" yaml:"-"`
-	Pods      []corev1.Pod                  `json:"-" yaml:"-"`
-	Slices    []discoveryv1.EndpointSlice   `json:"-" yaml:"-"`
-	Owners    map[string]kube.WorkloadOwner `json:"-" yaml:"-"`
+	approvedPort     corev1.ServicePort
+	approvedSelector map[string]string
+	Namespace        *corev1.Namespace             `json:"-" yaml:"-"`
+	Service          *corev1.Service               `json:"-" yaml:"-"`
+	Backend          map[string]any                `json:"-" yaml:"-"`
+	Pods             []corev1.Pod                  `json:"-" yaml:"-"`
+	Slices           []discoveryv1.EndpointSlice   `json:"-" yaml:"-"`
+	Owners           map[string]kube.WorkloadOwner `json:"-" yaml:"-"`
 }
 
 func Collect(ctx context.Context, r Reader, a *Authority) (Snapshot, error) {
@@ -41,6 +43,11 @@ func Collect(ctx context.Context, r Reader, a *Authority) (Snapshot, error) {
 		return s, err
 	}
 	p := a.intent
+	s.approvedPort = corev1.ServicePort{Name: p.Spec.Port.Name, Port: p.Spec.Port.Port, TargetPort: p.Spec.Port.TargetPort, Protocol: corev1.ProtocolTCP}
+	s.approvedSelector = map[string]string{}
+	for k, v := range p.Spec.Selector {
+		s.approvedSelector[k] = v
+	}
 	ns := p.Metadata.Namespace
 	namespace, err := r.GetNamespace(ctx, ns)
 	if err != nil || namespace == nil || namespace.Name != ns || namespace.UID == "" {
