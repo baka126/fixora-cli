@@ -7,19 +7,20 @@ import (
 )
 
 type Proof struct {
-	authority  *Authority
-	before     Snapshot
-	candidate  *corev1.Service
-	sourceOnly bool
-	portIndex  int
-	binding    string
+	reportBinding string
+	authority     *Authority
+	before        Snapshot
+	candidate     *corev1.Service
+	sourceOnly    bool
+	portIndex     int
+	binding       string
 }
 
 func (p Proof) contentBinding() string {
 	if p.authority == nil {
 		return ""
 	}
-	return digest([]any{p.authority.digest, p.authority.intent, snapshotBinding(p.before), p.candidate, p.sourceOnly, p.portIndex})
+	return digest([]any{p.authority.digest, p.authority.intent, snapshotBinding(p.before), p.candidate, p.sourceOnly, p.portIndex, p.reportBinding})
 }
 func (p Proof) CheckFresh(ctx context.Context, r Reader) error {
 	if p.binding == "" || p.binding != p.contentBinding() {
@@ -44,4 +45,11 @@ func snapshotBinding(s Snapshot) string {
 	}
 	meta, _ := s.Backend["metadata"].(map[string]any)
 	return digest([]any{s.Service.UID, s.Service.ResourceVersion, s.Service.Spec, s.Service.Labels, s.Service.Annotations, s.Service.OwnerReferences, s.Namespace.UID, s.Namespace.Labels, s.Namespace.Annotations, s.Namespace.DeletionTimestamp, meta["uid"], meta["labels"], meta["annotations"], s.Backend["spec"], pods, s.Slices})
+}
+
+func (p *Proof) checkPlan(plan Plan) error {
+	if p == nil || p.reportBinding == "" || digest(plan) != p.reportBinding {
+		return errors.New("Service preview changed; prepare again")
+	}
+	return nil
 }

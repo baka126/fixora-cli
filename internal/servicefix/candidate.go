@@ -86,7 +86,7 @@ func Prepare(ctx context.Context, r Reader, a *Authority, f analyzer.Finding, pr
 	if managed {
 		out.Status = "source-review-required"
 	}
-	proof := &Proof{authority: a, before: s, candidate: c, sourceOnly: managed, portIndex: index}
+	proof := &Proof{authority: a, before: s, candidate: c, sourceOnly: managed, portIndex: index, reportBinding: digest(out)}
 	proof.binding = proof.contentBinding()
 	out.Proof = proof
 	return out, nil
