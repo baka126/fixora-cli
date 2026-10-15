@@ -10,6 +10,8 @@ import (
 
 // Restore requires separate caller consent. It does not imply the old routing was healthy.
 func Restore(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	out := Outcome{Status: "rollback-refused", Changed: true}
 	if r == nil {
 		return out, errors.New("Service runtime required")
@@ -65,6 +67,19 @@ func Restore(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 	if got == nil || got.UID != s.UID {
 		return out, errors.New("rollback response identity unavailable")
 	}
+	before := a.proof.before.Service
+	expected := s.DeepCopy()
+	if a.selectorChanged {
+		expected.Spec.Selector = before.Spec.Selector
+	}
+	if a.targetChanged {
+		expected.Spec.Ports[index].TargetPort = before.Spec.Ports[a.proof.portIndex].TargetPort
+	}
+	if !sameServiceIntent(expected, got) {
+		out.Status = "rollback-uncertain"
+		return out, errors.New("rollback response differs from the intended field-only inverse; inspect live routing and metadata")
+	}
+
 	out.Status = "rollback-restored"
 	out.Summary = "Only Fixora-edited routing fields were restored; the original configuration may still be broken"
 	return out, nil

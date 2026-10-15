@@ -31,6 +31,7 @@ type Runtime interface {
 	CreatePod(context.Context, *corev1.Pod) (*corev1.Pod, error)
 	ReadPod(context.Context, string, string) (*corev1.Pod, error)
 	ReadPolicy(context.Context, string, string) (*networkingv1.NetworkPolicy, error)
+	FindAttempt(context.Context, string, string, string) ([]ObjectRef, error)
 	PodLogs(context.Context, string, string, int64) ([]byte, error)
 	DeleteOwned(context.Context, ObjectRef) error
 	PatchService(context.Context, string, string, []byte) (*corev1.Service, error)
@@ -259,4 +260,48 @@ func (c *typedRuntime) GetServiceDocument(ctx context.Context, ns, name string) 
 
 func (c *typedRuntime) ReadPolicy(ctx context.Context, ns, name string) (*networkingv1.NetworkPolicy, error) {
 	return c.k.Clientset.NetworkingV1().NetworkPolicies(ns).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (c *typedRuntime) FindAttempt(ctx context.Context, kind, ns, nonce string) ([]ObjectRef, error) {
+	if ns == "" || len(nonce) != 32 {
+		return nil, errors.New("exact verifier attempt required")
+	}
+	opts := metav1.ListOptions{LabelSelector: labels.Set{verifierLabel: nonce}.AsSelector().String(), Limit: 2}
+	refs := []ObjectRef{}
+	continuation := ""
+	switch kind {
+	case "Service":
+		list, err := c.k.Clientset.CoreV1().Services(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		continuation = list.Continue
+		for _, o := range list.Items {
+			refs = append(refs, ObjectRef{kind, o.Namespace, o.Name, string(o.UID)})
+		}
+	case "NetworkPolicy":
+		list, err := c.k.Clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		continuation = list.Continue
+		for _, o := range list.Items {
+			refs = append(refs, ObjectRef{kind, o.Namespace, o.Name, string(o.UID)})
+		}
+	case "Pod":
+		list, err := c.k.Clientset.CoreV1().Pods(ns).List(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		continuation = list.Continue
+		for _, o := range list.Items {
+			refs = append(refs, ObjectRef{kind, o.Namespace, o.Name, string(o.UID)})
+		}
+	default:
+		return nil, errors.New("unsupported verifier recovery kind")
+	}
+	if continuation != "" || len(refs) > 1 {
+		return nil, errors.New("verifier recovery inventory is ambiguous")
+	}
+	return refs, nil
 }

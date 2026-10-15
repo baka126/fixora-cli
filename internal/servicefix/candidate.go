@@ -12,6 +12,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	syaml "sigs.k8s.io/yaml"
 )
@@ -29,6 +30,8 @@ type Plan struct {
 }
 
 func Prepare(ctx context.Context, r Reader, a *Authority, f analyzer.Finding, proposal string) (Plan, error) {
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	out := Plan{Status: "prerequisite-required", Resource: f.ResourceKind + "/" + f.ResourceName, Namespace: f.Namespace, Scope: "unverified"}
 	if a == nil {
 		return out, errors.New("approved Service policy required")
@@ -78,7 +81,7 @@ func Prepare(ctx context.Context, r Reader, a *Authority, f analyzer.Finding, pr
 	edited := map[string]any{}
 	if len(out.ChangedFields) > 0 {
 		edited["selector"] = c.Spec.Selector
-		edited["targetPort"] = c.Spec.Ports[index].TargetPort
+		edited["targetPort"] = scalarTargetPort(c.Spec.Ports[index].TargetPort)
 	}
 	preview, _ := yaml.Marshal(edited)
 	out.Diff = string(preview)
@@ -188,9 +191,16 @@ func (plan Plan) PatchYAML() (string, error) {
 	}
 	old, next := p.before.Service.Spec.Ports[p.portIndex], p.candidate.Spec.Ports[p.portIndex]
 	if old.TargetPort != next.TargetPort {
-		spec["ports"] = []any{map[string]any{"name": next.Name, "port": next.Port, "protocol": next.Protocol, "targetPort": next.TargetPort}}
+		spec["ports"] = []any{map[string]any{"name": next.Name, "port": next.Port, "protocol": next.Protocol, "targetPort": scalarTargetPort(next.TargetPort)}}
 	}
 	obj := map[string]any{"apiVersion": "v1", "kind": "Service", "metadata": map[string]any{"name": p.candidate.Name, "namespace": p.candidate.Namespace}, "spec": spec}
 	raw, err := yaml.Marshal(obj)
 	return string(raw), err
+}
+
+func scalarTargetPort(port intstr.IntOrString) any {
+	if port.Type == intstr.String {
+		return port.StrVal
+	}
+	return port.IntVal
 }

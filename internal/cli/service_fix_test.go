@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -280,4 +281,40 @@ func TestServiceCLIProviderReceivesApprovedProposalIntent(t *testing.T) {
 	if _, err = withServiceProposalIntent(f, o.servicePolicy); err == nil {
 		t.Fatal("wrong target intent sent to provider")
 	}
+}
+
+func TestServiceCLIPRRefusesExistingSameFileChanges(t *testing.T) {
+	o, r, f := serviceCLISetup(t)
+	o.preview = false
+	o.delivery = "pr"
+	o.repoPath = t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = o.repoPath
+		if b, e := c.CombinedOutput(); e != nil {
+			t.Fatalf("git %v: %v %s", args, e, b)
+		}
+	}
+	git("init")
+	git("config", "user.name", "Fixora Test")
+	git("config", "user.email", "test@example.invalid")
+	os.WriteFile(filepath.Join(o.repoPath, "service.yaml"), []byte("apiVersion: v1\nkind: Service\nmetadata: {name: entrance, namespace: team}\nspec: {selector: {component: wrong}, ports: [{name: public, port: 80, targetPort: 9090}]}\n"), 0600)
+	os.WriteFile(filepath.Join(o.repoPath, "other.yaml"), []byte("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: unrelated}\n"), 0600)
+	kfile := filepath.Join(o.repoPath, "kustomization.yaml")
+	os.WriteFile(kfile, []byte("resources:\n- service.yaml\n"), 0600)
+	git("add", ".")
+	git("commit", "-m", "base")
+	original := []byte("resources:\n- service.yaml\n- other.yaml\n")
+	os.WriteFile(kfile, original, 0600)
+	var out, errout bytes.Buffer
+	code := runServiceFixRuntime(context.Background(), &out, &errout, o, r, f)
+	now, _ := os.ReadFile(kfile)
+	if code == 0 || r.creates != 0 || !bytes.Equal(now, original) {
+		t.Fatalf("existing same-file edits were consumed: code=%d creates=%d output=%s error=%s", code, r.creates, out.String(), errout.String())
+	}
+}
+
+func (r *serviceCLIStub) FindAttempt(context.Context, string, string, string) ([]servicefix.ObjectRef, error) {
+	return nil, errors.New("no uncertain fixture creates")
 }

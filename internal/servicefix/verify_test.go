@@ -31,7 +31,7 @@ func (r *runtimeFixture) Admit(_ context.Context, c *corev1.Service) (*corev1.Se
 }
 func (r *runtimeFixture) CreateService(_ context.Context, c *corev1.Service) (*corev1.Service, error) {
 	r.svc = c.DeepCopy()
-	r.svc.Name = "temporary"
+	r.svc.Name = c.GenerateName + "generated"
 	r.svc.UID = "temp-1"
 	r.svc.ResourceVersion = "1"
 	r.svc.Spec.ClusterIP = "10.0.0.2"
@@ -43,13 +43,13 @@ func (r *runtimeFixture) CreateService(_ context.Context, c *corev1.Service) (*c
 }
 func (r *runtimeFixture) CreatePolicy(_ context.Context, n *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {
 	r.network = n.DeepCopy()
-	r.network.Name = "isolation"
+	r.network.Name = n.GenerateName + "generated"
 	r.network.UID = "net-1"
 	return r.network.DeepCopy(), nil
 }
 func (r *runtimeFixture) CreatePod(_ context.Context, p *corev1.Pod) (*corev1.Pod, error) {
 	r.pod = p.DeepCopy()
-	r.pod.Name = "verifier"
+	r.pod.Name = p.GenerateName + "generated"
 	r.pod.UID = "probe-1"
 	if r.failure == "probe-rewrite" {
 		r.pod.Spec.Containers[0].WorkingDir = "/other"
@@ -212,4 +212,26 @@ func (r *runtimeFixture) ReadPolicy(context.Context, string, string) (*networkin
 		n.Spec.Egress = nil
 	}
 	return n, nil
+}
+
+func (r *runtimeFixture) FindAttempt(_ context.Context, kind, ns, nonce string) ([]ObjectRef, error) {
+	var meta metav1.ObjectMeta
+	switch kind {
+	case "Service":
+		if r.svc != nil {
+			meta = r.svc.ObjectMeta
+		}
+	case "NetworkPolicy":
+		if r.network != nil {
+			meta = r.network.ObjectMeta
+		}
+	case "Pod":
+		if r.pod != nil {
+			meta = r.pod.ObjectMeta
+		}
+	}
+	if meta.Labels[verifierLabel] != nonce {
+		return nil, nil
+	}
+	return []ObjectRef{{kind, ns, meta.Name, string(meta.UID)}}, nil
 }

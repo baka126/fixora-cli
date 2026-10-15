@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -62,7 +64,9 @@ func runServiceFixRuntime(ctx context.Context, out, errout io.Writer, o options,
 	if f.AI != nil {
 		proposal = f.AI.PatchYAML
 	}
-	p, err := servicefix.Prepare(ctx, r, a, f, proposal)
+	prepareCtx, prepareCancel := serviceOperationContext(ctx, o)
+	p, err := servicefix.Prepare(prepareCtx, r, a, f, proposal)
+	prepareCancel()
 	if err != nil {
 		fmt.Fprintf(errout, "Service repair requires review: %v\nNo changes made.\n", err)
 		return 1
@@ -141,6 +145,13 @@ func runServiceFixRuntime(ctx context.Context, out, errout io.Writer, o options,
 		if repoMode.Kustomization != "" {
 			paths = append(paths, repoMode.Kustomization)
 		}
+		preflightCtx, preflightCancel := serviceOperationContext(ctx, o)
+		err = requireCleanServiceRepo(preflightCtx, o.repoPath)
+		preflightCancel()
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
 		sourceFiles, err = captureServiceSourceFiles(o.repoPath, paths)
 		if err != nil {
 			fmt.Fprintln(errout, err)
@@ -170,7 +181,9 @@ func runServiceFixRuntime(ctx context.Context, out, errout io.Writer, o options,
 	}
 	fmt.Fprintf(out, "Verification: %s; temporary resources cleaned up. Consumer recovery is not established.\n", v.Scope)
 	if mode == "cluster" {
-		applied, applyErr := servicefix.Apply(ctx, r, p, v.Receipt)
+		applyCtx, applyCancel := serviceOperationContext(ctx, o)
+		applied, applyErr := servicefix.Apply(applyCtx, r, p, v.Receipt)
+		applyCancel()
 		if applyErr != nil {
 			fmt.Fprintf(errout, "Service delivery: %v\n", applyErr)
 			if applied != nil {
@@ -274,6 +287,9 @@ func printServiceCleanup(w io.Writer, v servicefix.Verification) {
 	for _, c := range v.Cleanup {
 		if c.Status != "deleted" {
 			fmt.Fprintf(w, "Cleanup incomplete: %s/%s (%s), UID %s.\n", c.Kind, c.Name, c.Namespace, c.UID)
+			if c.Detail != "" {
+				fmt.Fprintln(w, c.Detail)
+			}
 		}
 	}
 }
@@ -347,4 +363,24 @@ func withServiceProposalIntent(f analyzer.Finding, path string) (analyzer.Findin
 	}
 	f.Evidence = append(f.Evidence, analyzer.Evidence{Label: "Approved Service routing intent (proposal context only)", Value: data})
 	return f, nil
+}
+
+func serviceOperationContext(ctx context.Context, o options) (context.Context, context.CancelFunc) {
+	duration := o.timeout
+	if duration <= 0 {
+		duration = 3 * time.Minute
+	}
+	return context.WithTimeout(ctx, duration)
+}
+func requireCleanServiceRepo(ctx context.Context, root string) error {
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1", "--untracked-files=all")
+	cmd.Dir = root
+	raw, err := cmd.Output()
+	if err != nil {
+		return errors.New("Service PR requires a readable Git repository")
+	}
+	if len(bytes.TrimSpace(raw)) != 0 {
+		return errors.New("Service PR requires a clean working tree and index; preserve your existing edits before generating the reviewed change")
+	}
+	return nil
 }

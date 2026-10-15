@@ -42,6 +42,8 @@ func Verify(ctx context.Context, r Runtime, plan Plan) (out Verification, err er
 	return verifySession(ctx, r, plan, nil, nil)
 }
 func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Service, fresh func(context.Context) error) (out Verification, err error) {
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	out.Status = "verification-failed"
 	p := plan.Proof
 	if r == nil || p == nil {
@@ -56,15 +58,11 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	if err = fresh(ctx); err != nil {
 		return out, err
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
-		defer cancel()
-	}
+
 	var e error
 	if live == nil {
 		admitted, e := r.Admit(ctx, p.candidate.DeepCopy())
-		if e != nil || admitted == nil || admitted.UID != p.candidate.UID || admitted.Name != p.candidate.Name || admitted.Namespace != p.candidate.Namespace || !reflect.DeepEqual(admitted.Spec, p.candidate.Spec) || !reflect.DeepEqual(admitted.Labels, p.candidate.Labels) || !reflect.DeepEqual(admitted.Annotations, p.candidate.Annotations) {
+		if e != nil || !sameServiceIntent(p.candidate, admitted) {
 			return out, errors.New("Service admission validation failed or rewrote the candidate")
 		}
 	}
@@ -74,14 +72,30 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	}
 	nonce := hex.EncodeToString(nonceRaw)
 	owned := []ObjectRef{}
-	record := func(kind, ns, name, uid string) {
+	pending := []pendingCreate{}
+	record := func(kind, ns, name, uid string) bool {
 		if uid != "" && name != "" && ns == p.candidate.Namespace {
 			owned = append(owned, ObjectRef{kind, ns, name, uid})
+			return true
 		}
+		return false
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
+		for _, unknown := range pending {
+			recovered, incomplete := recoverCreate(cleanupCtx, r, unknown, nonce)
+			if recovered != nil {
+				owned = append(owned, *recovered)
+			} else {
+				out.Cleanup = append(out.Cleanup, incomplete)
+				out.Receipt = nil
+				out.Status = "cleanup-incomplete"
+				if err == nil {
+					err = errors.New("verifier creation outcome unresolved")
+				}
+			}
+		}
 		for i := len(owned) - 1; i >= 0; i-- {
 			ref := owned[i]
 			result := CleanupResult{ObjectRef: ref, Status: "deleted"}
@@ -101,8 +115,12 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	if svc == nil {
 		expected := temporaryService(p, nonce)
 		svc, e = r.CreateService(ctx, expected)
+		recorded := false
 		if svc != nil {
-			record("Service", svc.Namespace, svc.Name, string(svc.UID))
+			recorded = record("Service", svc.Namespace, svc.Name, string(svc.UID))
+		}
+		if !recorded {
+			pending = append(pending, pendingCreate{kind: "Service", service: expected.DeepCopy()})
 		}
 		if e != nil {
 			return out, errors.New("temporary Service creation failed; creation outcome may be partial")
@@ -134,8 +152,12 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 		pod.Spec.ActiveDeadlineSeconds = &seconds
 	}
 	createdNet, e := r.CreatePolicy(ctx, network)
+	recordedNet := false
 	if createdNet != nil {
-		record("NetworkPolicy", createdNet.Namespace, createdNet.Name, string(createdNet.UID))
+		recordedNet = record("NetworkPolicy", createdNet.Namespace, createdNet.Name, string(createdNet.UID))
+	}
+	if !recordedNet {
+		pending = append(pending, pendingCreate{kind: "NetworkPolicy", policy: network.DeepCopy()})
 	}
 	if e != nil || createdNet == nil || createdNet.UID == "" || createdNet.Namespace != network.Namespace || !reflect.DeepEqual(createdNet.Spec, network.Spec) {
 		return out, errors.New("verifier isolation policy failed admission")
@@ -144,8 +166,12 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 		return out, e
 	}
 	createdPod, e := r.CreatePod(ctx, pod)
+	recordedPod := false
 	if createdPod != nil {
-		record("Pod", createdPod.Namespace, createdPod.Name, string(createdPod.UID))
+		recordedPod = record("Pod", createdPod.Namespace, createdPod.Name, string(createdPod.UID))
+	}
+	if !recordedPod {
+		pending = append(pending, pendingCreate{kind: "Pod", pod: pod.DeepCopy()})
 	}
 	if e != nil {
 		return out, errors.New("verifier creation failed; creation outcome may be partial")
@@ -160,6 +186,9 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	raw, e := r.PodLogs(ctx, finished.Namespace, finished.Name, serviceprobe.MaxWireBytes)
 	if e != nil {
 		return out, errors.New("complete verifier report unavailable")
+	}
+	if e = checkProbeWitness(ctx, r, pod, finished); e != nil {
+		return out, e
 	}
 	result, e := readProbeResult(raw, req)
 	if e != nil {
@@ -300,6 +329,20 @@ func readIsolation(ctx context.Context, r Runtime, expected *networkingv1.Networ
 	got, err := r.ReadPolicy(ctx, expected.Namespace, expected.Name)
 	if err != nil || got == nil || got.UID != expected.UID || got.Name != expected.Name || got.Namespace != expected.Namespace || got.DeletionTimestamp != nil || !reflect.DeepEqual(got.Spec, expected.Spec) {
 		return errors.New("verifier isolation policy changed or is unreadable")
+	}
+	return nil
+}
+
+func checkProbeWitness(ctx context.Context, r Runtime, expected, finished *corev1.Pod) error {
+	got, err := r.ReadPod(ctx, finished.Namespace, finished.Name)
+	if err != nil || got == nil || got.UID != finished.UID || got.Name != finished.Name || got.Namespace != finished.Namespace || got.Status.Phase != corev1.PodSucceeded {
+		return errors.New("verifier identity changed after report retrieval")
+	}
+	if err = checkProbe(expected, got); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(got.Status.ContainerStatuses, finished.Status.ContainerStatuses) {
+		return errors.New("verifier termination evidence changed after report retrieval")
 	}
 	return nil
 }

@@ -49,6 +49,8 @@ func (a *Applied) check() error {
 	return nil
 }
 func Apply(ctx context.Context, r Runtime, plan Plan, receipt *Receipt) (*Applied, error) {
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	p := plan.Proof
 	if r == nil || p == nil {
 		return nil, errors.New("Service runtime and proof required")
@@ -104,8 +106,8 @@ func Apply(ctx context.Context, r Runtime, plan Plan, receipt *Receipt) (*Applie
 	if err != nil {
 		return a, errors.New("Service patch outcome is uncertain; inspect live routing before further action")
 	}
-	if got == nil || got.UID != p.candidate.UID || got.Namespace != p.candidate.Namespace || got.Name != p.candidate.Name || !reflect.DeepEqual(got.Spec, p.candidate.Spec) {
-		return a, errors.New("Service changed but returned routing differs; inspect live state")
+	if !sameServiceIntent(p.candidate, got) {
+		return a, errors.New("Service changed but returned routing or metadata differ; inspect live state")
 	}
 	return a, nil
 }
@@ -151,6 +153,8 @@ func (a *Applied) checkLive(ctx context.Context, r Reader) error {
 	return nil
 }
 func VerifyLive(ctx context.Context, r Runtime, plan Plan, a *Applied) (Outcome, error) {
+	ctx, cancel := operationContext(ctx)
+	defer cancel()
 	out := Outcome{Status: "production-verification-failed", Changed: true}
 	if r == nil || a == nil || a.proof != plan.Proof {
 		return out, errors.New("matching applied Service receipt required")
