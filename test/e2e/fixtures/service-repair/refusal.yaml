@@ -1,0 +1,29 @@
+# Apply alongside a backend to test mixed ownership. The Ready Pod deliberately
+# matches the approved selector but has no approved controller owner.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unrelated-client
+  labels: {component: arbitrary-api}
+spec:
+  containers:
+  - name: unrelated
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: [sh, -c, "exec sleep 3600"]
+    ports: [{name: app-web, containerPort: 8080}]
+---
+# This selected Pod never becomes Ready; readiness alone must not be bypassed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: not-ready-client
+  labels: {component: arbitrary-api}
+spec:
+  containers:
+  - name: unrelated
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: [sh, -c, "exec sleep 3600"]
+    ports: [{name: app-web, containerPort: 8080}]
+    readinessProbe:
+      tcpSocket: {port: 8080}
+      periodSeconds: 1

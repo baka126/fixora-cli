@@ -74,7 +74,11 @@ func Apply(ctx context.Context, r Runtime, plan Plan, receipt *Receipt) (*Applie
 		return nil, err
 	}
 	var stored corev1.Service
-	if json.Unmarshal(raw, &stored) != nil || !reflect.DeepEqual(&stored, p.before.Service) {
+	if json.Unmarshal(raw, &stored) != nil {
+		return nil, errors.New("invalid raw Service document")
+	}
+	stored.TypeMeta = p.before.Service.TypeMeta
+	if !reflect.DeepEqual(&stored, p.before.Service) {
 		return nil, errors.New("Service document changed before apply")
 	}
 	selector, target, err := captureFields(raw, p.portIndex)

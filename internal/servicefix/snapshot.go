@@ -50,7 +50,7 @@ func Collect(ctx context.Context, r Reader, a *Authority) (Snapshot, error) {
 	}
 	ns := p.Metadata.Namespace
 	namespace, err := r.GetNamespace(ctx, ns)
-	if err != nil || namespace == nil || namespace.Name != ns || namespace.UID == "" {
+	if err != nil || namespace == nil || namespace.Name != ns || namespace.UID == "" || namespace.DeletionTimestamp != nil || namespace.Status.Phase == corev1.NamespaceTerminating {
 		return s, errors.New("namespace identity unavailable")
 	}
 	s.Namespace = namespace.DeepCopy()
@@ -68,7 +68,7 @@ func Collect(ctx context.Context, r Reader, a *Authority) (Snapshot, error) {
 	}
 	meta, _ := backend["metadata"].(map[string]any)
 	uid, _ := meta["uid"].(string)
-	if uid == "" || backend["apiVersion"] != "apps/v1" || backend["kind"] != p.Spec.Backend.Kind || meta["name"] != p.Spec.Backend.Name || meta["namespace"] != ns {
+	if uid == "" || backend["apiVersion"] != "apps/v1" || backend["kind"] != p.Spec.Backend.Kind || meta["name"] != p.Spec.Backend.Name || meta["namespace"] != ns || meta["deletionTimestamp"] != nil {
 		return s, errors.New("backend identity differs from policy")
 	}
 	raw, _ := json.Marshal(backend)
@@ -136,6 +136,9 @@ func Collect(ctx context.Context, r Reader, a *Authority) (Snapshot, error) {
 		return s, errors.New("EndpointSlice inventory unreadable")
 	}
 	for _, slice := range slices {
+		if err := checkSliceOwner(svc, slice); err != nil {
+			return s, err
+		}
 		s.Slices = append(s.Slices, *slice.DeepCopy())
 	}
 	if err = a.check(); err != nil {
@@ -154,6 +157,21 @@ func validateService(s *corev1.Service, a *Authority) error {
 		if strings.Contains(k, "istio.io") || strings.Contains(k, "linkerd.io") {
 			return errors.New("service mesh routing requires review")
 		}
+	}
+	ips := s.Spec.ClusterIPs
+	if len(ips) == 0 {
+		ips = []string{s.Spec.ClusterIP}
+	}
+	if len(ips) > 2 || ips[0] != s.Spec.ClusterIP {
+		return errors.New("invalid Service addresses")
+	}
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		a, err := netip.ParseAddr(ip)
+		if err != nil || a.IsLoopback() || a.IsUnspecified() || a.IsMulticast() || a.Zone() != "" || seen[a.String()] {
+			return errors.New("invalid Service address")
+		}
+		seen[a.String()] = true
 	}
 	count := 0
 	for _, port := range s.Spec.Ports {

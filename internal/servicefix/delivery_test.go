@@ -173,3 +173,19 @@ func TestServiceRollbackPreservesPortReorderAndRawPresence(t *testing.T) {
 		}
 	}
 }
+
+type apiEnvelopeFixture struct{ *deliveryFixture }
+
+func (r apiEnvelopeFixture) GetServiceDocument(context.Context, string, string) ([]byte, error) {
+	s := r.service.DeepCopy()
+	s.APIVersion = "v1"
+	s.Kind = "Service"
+	return json.Marshal(s)
+}
+func TestServiceApplyCanonicalAPIEnvelope(t *testing.T) {
+	r, p, receipt := deliverySetup(t)
+	_, err := Apply(context.Background(), apiEnvelopeFixture{r}, p, receipt)
+	if err != nil {
+		t.Fatal("typed API omits TypeMeta but raw API includes it", err)
+	}
+}

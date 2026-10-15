@@ -14,6 +14,7 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/serviceprobe"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 )
 
 type CleanupResult struct {
@@ -139,6 +140,9 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	if e != nil || createdNet == nil || createdNet.UID == "" || createdNet.Namespace != network.Namespace || !reflect.DeepEqual(createdNet.Spec, network.Spec) {
 		return out, errors.New("verifier isolation policy failed admission")
 	}
+	if e = readIsolation(ctx, r, createdNet); e != nil {
+		return out, e
+	}
 	createdPod, e := r.CreatePod(ctx, pod)
 	if createdPod != nil {
 		record("Pod", createdPod.Namespace, createdPod.Name, string(createdPod.UID))
@@ -159,6 +163,9 @@ func verifySession(ctx context.Context, r Runtime, plan Plan, live *corev1.Servi
 	}
 	result, e := readProbeResult(raw, req)
 	if e != nil {
+		return out, e
+	}
+	if e = readIsolation(ctx, r, createdNet); e != nil {
 		return out, e
 	}
 	if e = fresh(ctx); e != nil {
@@ -285,6 +292,14 @@ func readTemporary(ctx context.Context, r Runtime, expected *corev1.Service) err
 	got, err := r.GetService(ctx, expected.Namespace, expected.Name)
 	if err != nil || got == nil || got.UID != expected.UID || got.Name != expected.Name || got.Namespace != expected.Namespace || got.DeletionTimestamp != nil || !reflect.DeepEqual(got.Spec, expected.Spec) || !reflect.DeepEqual(got.Labels, expected.Labels) || !reflect.DeepEqual(got.Annotations, expected.Annotations) || !reflect.DeepEqual(got.OwnerReferences, expected.OwnerReferences) {
 		return errors.New("temporary Service routing or identity changed")
+	}
+	return nil
+}
+
+func readIsolation(ctx context.Context, r Runtime, expected *networkingv1.NetworkPolicy) error {
+	got, err := r.ReadPolicy(ctx, expected.Namespace, expected.Name)
+	if err != nil || got == nil || got.UID != expected.UID || got.Name != expected.Name || got.Namespace != expected.Namespace || got.DeletionTimestamp != nil || !reflect.DeepEqual(got.Spec, expected.Spec) {
+		return errors.New("verifier isolation policy changed or is unreadable")
 	}
 	return nil
 }

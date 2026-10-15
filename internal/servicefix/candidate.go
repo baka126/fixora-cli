@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 
@@ -100,7 +101,14 @@ func serviceManaged(s *corev1.Service) bool {
 			return true
 		}
 	}
-	for k := range s.Labels {
+	markers := map[string]string{}
+	for k, v := range s.Labels {
+		markers[k] = v
+	}
+	for k, v := range s.Annotations {
+		markers[k] = v
+	}
+	for k := range markers {
 		if strings.Contains(k, "argocd.argoproj.io") || strings.Contains(k, "toolkit.fluxcd.io") {
 			return true
 		}
@@ -115,6 +123,10 @@ func checkServiceProposal(before, expected *corev1.Service, patch string) error 
 	dec := yaml.NewDecoder(strings.NewReader(patch))
 	if dec.Decode(&n) != nil || checkPolicyNode(&n) != nil {
 		return errors.New("invalid Service proposal")
+	}
+	var extra yaml.Node
+	if dec.Decode(&extra) != io.EOF {
+		return errors.New("one Service proposal document required")
 	}
 	var obj map[string]any
 	if yaml.Unmarshal([]byte(patch), &obj) != nil {
@@ -144,8 +156,41 @@ func checkServiceProposal(before, expected *corev1.Service, patch string) error 
 		return errors.New("invalid Service merge")
 	}
 	var got corev1.Service
-	if json.Unmarshal(merged, &got) != nil || !reflect.DeepEqual(&got, expected) {
+	if json.Unmarshal(merged, &got) != nil {
+		return errors.New("invalid Service proposal result")
+	}
+	got.TypeMeta = expected.TypeMeta // envelope identity was independently validated above
+	if !reflect.DeepEqual(&got, expected) {
 		return errors.New("AI Service proposal differs from approved exact field change")
 	}
 	return nil
+}
+
+// PatchYAML is review data only and never grants runtime apply authority.
+func (plan Plan) PatchYAML() (string, error) {
+	p := plan.Proof
+	if p == nil {
+		return "", errors.New("concrete Service proof required")
+	}
+	if err := p.checkPlan(plan); err != nil {
+		return "", err
+	}
+	if p.binding != p.contentBinding() {
+		return "", errors.New("Service proof changed")
+	}
+	spec := map[string]any{}
+	if !reflect.DeepEqual(p.before.Service.Spec.Selector, p.candidate.Spec.Selector) {
+		selector := map[string]any{"$patch": "replace"}
+		for k, v := range p.candidate.Spec.Selector {
+			selector[k] = v
+		}
+		spec["selector"] = selector
+	}
+	old, next := p.before.Service.Spec.Ports[p.portIndex], p.candidate.Spec.Ports[p.portIndex]
+	if old.TargetPort != next.TargetPort {
+		spec["ports"] = []any{map[string]any{"name": next.Name, "port": next.Port, "protocol": next.Protocol, "targetPort": next.TargetPort}}
+	}
+	obj := map[string]any{"apiVersion": "v1", "kind": "Service", "metadata": map[string]any{"name": p.candidate.Name, "namespace": p.candidate.Namespace}, "spec": spec}
+	raw, err := yaml.Marshal(obj)
+	return string(raw), err
 }

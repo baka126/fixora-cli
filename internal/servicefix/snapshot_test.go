@@ -108,3 +108,40 @@ func TestServiceSnapshotNamedPortConsistency(t *testing.T) {
 		t.Fatal("inconsistent named targetPort accepted")
 	}
 }
+
+type snapshotFailureReader struct {
+	*fixtureReader
+	bad string
+}
+
+func (r snapshotFailureReader) GetNamespace(ctx context.Context, ns string) (*corev1.Namespace, error) {
+	n, err := r.fixtureReader.GetNamespace(ctx, ns)
+	if r.bad == "namespace" {
+		now := metav1.Now()
+		n.DeletionTimestamp = &now
+	}
+	return n, err
+}
+func (r snapshotFailureReader) ListSlices(context.Context, string, string) ([]discoveryv1.EndpointSlice, error) {
+	if r.bad == "manual" {
+		return []discoveryv1.EndpointSlice{{ObjectMeta: metav1.ObjectMeta{Name: "manual", Namespace: "sample", UID: "manual"}}}, nil
+	}
+	return nil, nil
+}
+func TestServiceSnapshotRefusesDeletingAndManualRouting(t *testing.T) {
+	for _, bad := range []string{"namespace", "backend", "manual", "service-ip"} {
+		t.Run(bad, func(t *testing.T) {
+			a, r := serviceFixture(t)
+			switch bad {
+			case "backend":
+				r.backend["metadata"].(map[string]any)["deletionTimestamp"] = "2026-10-13T00:00:00Z"
+			case "service-ip":
+				r.service.Spec.ClusterIP = "127.0.0.1"
+				r.service.Spec.ClusterIPs = []string{"127.0.0.1"}
+			}
+			if _, err := Collect(context.Background(), snapshotFailureReader{r, bad}, a); err == nil {
+				t.Fatal("unsupported routing admitted", bad)
+			}
+		})
+	}
+}

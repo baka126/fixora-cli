@@ -28,6 +28,12 @@ func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kube
 	var err error
 	if opts.useAI {
 		finding = enrichFindingForAI(ctx, reader, k, opts, resource, finding)
+		if opts.servicePolicy != "" {
+			finding, err = withServiceProposalIntent(finding, opts.servicePolicy)
+			if err != nil {
+				return finding, fix.Plan{}, opts, err
+			}
+		}
 		augmentWithAI(ctx, &finding, opts, stderr)
 	} else {
 		// The infer package fills patch placeholders from `kubectl top` and
@@ -35,6 +41,9 @@ func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kube
 		// enrichFindingForAI, so under --no-ai the image and OOMKilled-metrics
 		// inferrers always declined. Collect it here regardless of --ai.
 		finding = collectDeliveryEvidence(ctx, k, opts, finding)
+	}
+	if opts.servicePolicy != "" && finding.ResourceKind == "Service" {
+		return finding, fix.BuildPlan(finding), opts, nil
 	}
 	plan := fix.BuildPlan(finding)
 	plan = fix.Concretize(plan, concreteOptions(opts))

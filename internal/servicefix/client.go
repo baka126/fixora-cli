@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"strings"
+	"time"
 )
 
 type ObjectRef struct {
@@ -29,6 +30,7 @@ type Runtime interface {
 	CreatePolicy(context.Context, *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error)
 	CreatePod(context.Context, *corev1.Pod) (*corev1.Pod, error)
 	ReadPod(context.Context, string, string) (*corev1.Pod, error)
+	ReadPolicy(context.Context, string, string) (*networkingv1.NetworkPolicy, error)
 	PodLogs(context.Context, string, string, int64) ([]byte, error)
 	DeleteOwned(context.Context, ObjectRef) error
 	PatchService(context.Context, string, string, []byte) (*corev1.Service, error)
@@ -150,7 +152,13 @@ func (c *typedRuntime) DeleteOwned(ctx context.Context, ref ObjectRef) error {
 		return errors.New("owned resource UID required")
 	}
 	uid := types.UID(ref.UID)
-	options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+	grace := int64(0)
+	options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}, GracePeriodSeconds: &grace}
 	var got types.UID
 	var err error
 	switch ref.Kind {
@@ -195,7 +203,47 @@ func (c *typedRuntime) DeleteOwned(ctx context.Context, ref ObjectRef) error {
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	for {
+		identity, readErr := c.cleanupIdentity(ctx, ref)
+		if apierrors.IsNotFound(readErr) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		if identity != uid {
+			return errors.New("cleanup resource replaced before deletion completed")
+		}
+		if err = pause(ctx); err != nil {
+			return err
+		}
+	}
+}
+func (c *typedRuntime) cleanupIdentity(ctx context.Context, ref ObjectRef) (types.UID, error) {
+	switch ref.Kind {
+	case "Service":
+		o, err := c.GetService(ctx, ref.Namespace, ref.Name)
+		if o != nil {
+			return o.UID, err
+		}
+		return "", err
+	case "Pod":
+		o, err := c.ReadPod(ctx, ref.Namespace, ref.Name)
+		if o != nil {
+			return o.UID, err
+		}
+		return "", err
+	case "NetworkPolicy":
+		o, err := c.k.Clientset.NetworkingV1().NetworkPolicies(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+		if o != nil {
+			return o.UID, err
+		}
+		return "", err
+	}
+	return "", errors.New("unsupported cleanup kind")
 }
 func (c *typedRuntime) PatchService(ctx context.Context, ns, name string, patch []byte) (*corev1.Service, error) {
 	return c.k.Clientset.CoreV1().Services(ns).Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{FieldManager: "fixora-service-repair"})
@@ -207,4 +255,8 @@ func (c *typedRuntime) GetServiceDocument(ctx context.Context, ns, name string) 
 		return nil, errors.New("raw Service API unavailable")
 	}
 	return rest.Get().Namespace(ns).Resource("services").Name(name).Do(ctx).Raw()
+}
+
+func (c *typedRuntime) ReadPolicy(ctx context.Context, ns, name string) (*networkingv1.NetworkPolicy, error) {
+	return c.k.Clientset.NetworkingV1().NetworkPolicies(ns).Get(ctx, name, metav1.GetOptions{})
 }

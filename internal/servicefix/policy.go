@@ -126,7 +126,7 @@ func LoadPolicy(path string) (*Authority, error) {
 		}
 	case "http":
 		u, e := url.ParseRequestURI(v.Path)
-		if e != nil || !strings.HasPrefix(v.Path, "/") || strings.HasPrefix(v.Path, "//") || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || v.ExpectedStatus < 200 || v.ExpectedStatus > 399 {
+		if e != nil || !strings.HasPrefix(v.Path, "/") || strings.HasPrefix(v.Path, "//") || strings.Contains(v.Path, "#") || u.IsAbs() || u.Host != "" || u.RawQuery != "" || u.Fragment != "" || v.ExpectedStatus < 200 || v.ExpectedStatus > 399 {
 			return nil, errors.New("safe explicit HTTP health contract required")
 		}
 	default:
@@ -209,4 +209,20 @@ func checkPolicyNode(n *yaml.Node) error {
 		}
 	}
 	return nil
+}
+
+// ProposalContext exposes approved routing as data, never verifier commands or authority.
+func (a *Authority) ProposalContext(kind, name, namespace string) (string, error) {
+	if err := a.check(); err != nil {
+		return "", err
+	}
+	p := a.intent
+	if kind != "Service" || name != p.Spec.Service.Name || namespace != p.Metadata.Namespace {
+		return "", errors.New("Service proposal context must match the exact policy target")
+	}
+	raw, err := json.Marshal(map[string]any{"service": p.Spec.Service.Name, "namespace": p.Metadata.Namespace, "backend": p.Spec.Backend, "selector": p.Spec.Selector, "port": p.Spec.Port})
+	if err != nil || len(raw) > 4096 {
+		return "", errors.New("approved Service proposal context exceeds provider evidence limit")
+	}
+	return string(raw), nil
 }

@@ -172,7 +172,7 @@ func TestServiceVerifyTemporaryRoutingAndPublicPlanFreshness(t *testing.T) {
 }
 
 func TestServiceVerifyEveryEndpointAndServiceIP(t *testing.T) {
-	for _, bad := range []string{"missing", "duplicate", "probe-rewrite", "family-rewrite"} {
+	for _, bad := range []string{"missing", "duplicate", "probe-rewrite", "family-rewrite", "policy-change"} {
 		t.Run(bad, func(t *testing.T) {
 			a, reader := serviceFixture(t)
 			r := &runtimeFixture{fixtureReader: reader, failure: bad}
@@ -204,4 +204,12 @@ func TestServiceSandboxUsesCallerDeadline(t *testing.T) {
 	if *r.pod.Spec.ActiveDeadlineSeconds < 590 {
 		t.Fatal("caller deadline silently capped", *r.pod.Spec.ActiveDeadlineSeconds)
 	}
+}
+
+func (r *runtimeFixture) ReadPolicy(context.Context, string, string) (*networkingv1.NetworkPolicy, error) {
+	n := r.network.DeepCopy()
+	if r.failure == "policy-change" {
+		n.Spec.Egress = nil
+	}
+	return n, nil
 }

@@ -43,3 +43,9 @@ kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/exampl
 ```
 
 In v0.8.0, PR delivery requires `--yes` to acknowledge the remote Git operation; other review prompts may still appear. Managed workloads can reject direct cluster apply and route you to source review. Source mapping must be unambiguous; validation failures should stop delivery. Review the rendered result, diff, base branch, repository permissions, and remote before approving a PR. See [source validation]({{ '/guides/source-and-coordinate/' | relative_url }}).
+
+## Approved Service routing repairs
+
+`fix Service/<name> --service-policy <local-file>` uses a dedicated routing verifier rather than a workload clone. See [Service repairs](service-repairs.md) for local intent and the fixed probe image. Preview and JSON/YAML output create no verifier or production resources.
+
+A successful temporary-Service TCP/HTTP contract permits a guarded selector/targetPort patch for an unmanaged ClusterIP Service. The production gate repeats the contract against the real Service; it does not establish dependent application recovery. Failed gates offer an explicit field-only inverse. `--yes` never silently authorizes rollback. Helm Service values translation remains manual review. Raw/Kustomize source delivery produces a reviewed patch and retains the existing source/Git validation flow; a temporary routing contract does not certify a rendered source change or reconciliation.

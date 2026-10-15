@@ -547,7 +547,7 @@
     {
       "source": "service.go",
       "status": "NoEndpoints",
-      "profile": "review"
+      "profile": "service-routing"
     },
     {
       "source": "service.go",
@@ -557,7 +557,7 @@
     {
       "source": "service_ports.go",
       "status": "ServicePortMismatch",
-      "profile": "review"
+      "profile": "service-routing"
     },
     {
       "source": "statefulset.go",

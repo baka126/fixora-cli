@@ -1,6 +1,6 @@
 # Step 5a: verified Service dependency wiring
 
-Status: approved by the user’s subsequent “yes”; written implementation plan awaits review. No implementation performed.
+Status: spec and implementation plan approved; implementation checkpoint is on codex/service-dependency-repairs. See the 2026-10-14 Service repair report for verification and live-test limits.
 Starting checkpoint: Step 4 `34c30c5`, branch `codex/helm-source-delivery`.
 
 ## Intent and decomposition

@@ -76,3 +76,18 @@ func TestServiceCandidateNoOpAndSourceOwnership(t *testing.T) {
 		t.Fatal(p, err)
 	}
 }
+
+func TestServiceProposalRejectsTrailingDocumentAndSourceAnnotation(t *testing.T) {
+	a, r := serviceFixture(t)
+	f := serviceFinding()
+	f.AI = &analyzer.AIResult{Confidence: 95}
+	patch := "apiVersion: v1\nkind: Service\nmetadata: {name: gateway, namespace: sample}\nspec: {selector: {workload: arbitrary}, ports: [{name: http, port: 80, protocol: TCP, targetPort: http}]}\n"
+	if _, err := Prepare(context.Background(), r, a, f, patch+"---\nkind: Secret\n"); err == nil {
+		t.Fatal("trailing proposal document ignored")
+	}
+	r.service.Annotations = map[string]string{"argocd.argoproj.io/tracking-id": "managed"}
+	plan, err := Prepare(context.Background(), r, a, serviceFinding(), "")
+	if err != nil || plan.Status != "source-review-required" {
+		t.Fatal("managed annotation bypass", plan, err)
+	}
+}

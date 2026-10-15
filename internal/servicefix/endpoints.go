@@ -68,20 +68,8 @@ func CheckEndpoints(svc *corev1.Service, slices []discoveryv1.EndpointSlice, s S
 	}
 	seen := map[string]bool{}
 	for _, slice := range slices {
-		if slice.Namespace != svc.Namespace || slice.UID == "" || slice.Labels["kubernetes.io/service-name"] != svc.Name || slice.Labels["endpointslice.kubernetes.io/managed-by"] != "endpointslice-controller.k8s.io" {
-			return nil, errors.New("EndpointSlice is not an exact managed Service slice")
-		}
-		owns := false
-		for _, ref := range slice.OwnerReferences {
-			if ref.Controller != nil && *ref.Controller {
-				if owns || ref.APIVersion != "v1" || ref.Kind != "Service" || ref.Name != svc.Name || ref.UID != svc.UID {
-					return nil, errors.New("EndpointSlice owner differs")
-				}
-				owns = true
-			}
-		}
-		if !owns {
-			return nil, errors.New("EndpointSlice controller ownership missing")
+		if err := checkSliceOwner(svc, slice); err != nil {
+			return nil, err
 		}
 		ports := 0
 		actualPort := int32(0)
@@ -134,4 +122,23 @@ func CheckEndpoints(svc *corev1.Service, slices []discoveryv1.EndpointSlice, s S
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Address < out[j].Address })
 	return out, nil
+}
+
+func checkSliceOwner(svc *corev1.Service, slice discoveryv1.EndpointSlice) error {
+	if slice.Namespace != svc.Namespace || slice.UID == "" || slice.Labels["kubernetes.io/service-name"] != svc.Name || slice.Labels["endpointslice.kubernetes.io/managed-by"] != "endpointslice-controller.k8s.io" {
+		return errors.New("EndpointSlice is not an exact managed Service slice")
+	}
+	owns := false
+	for _, ref := range slice.OwnerReferences {
+		if ref.Controller != nil && *ref.Controller {
+			if owns || ref.APIVersion != "v1" || ref.Kind != "Service" || ref.Name != svc.Name || ref.UID != svc.UID {
+				return errors.New("EndpointSlice owner differs")
+			}
+			owns = true
+		}
+	}
+	if !owns {
+		return errors.New("EndpointSlice controller ownership missing")
+	}
+	return nil
 }

@@ -60,3 +60,8 @@ func TestServicePolicyStrictIntent(t *testing.T) {
 		t.Fatal("oversized")
 	}
 }
+func TestServicePolicyRejectsHTTPFragment(t *testing.T) {
+	if _, err := LoadPolicy(policyFile(t, strings.Replace(validPolicy, "path: /ready", "path: /ready#fragment", 1))); err == nil {
+		t.Fatal("fragment accepted")
+	}
+}
