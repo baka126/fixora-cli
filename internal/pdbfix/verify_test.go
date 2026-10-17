@@ -7,6 +7,7 @@ import (
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	kfake "k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -70,6 +71,13 @@ func (r *runtimeFixture) PatchPDB(ctx context.Context, ns, name string, b []byte
 		out.Status.DisruptionsAllowed = effect.AllowedDisruptions
 		out.Status.CurrentHealthy = 3
 		out.Status.ExpectedPods = 3
+		conditionStatus := metav1.ConditionFalse
+		reason := "InsufficientPods"
+		if effect.AllowedDisruptions > 0 {
+			conditionStatus = metav1.ConditionTrue
+			reason = "SufficientPods"
+		}
+		out.Status.Conditions = []metav1.Condition{{Type: "DisruptionAllowed", Status: conditionStatus, Reason: reason, ObservedGeneration: out.Generation, LastTransitionTime: metav1.Now()}}
 	}
 	r.pdb = out.DeepCopy()
 	r.budgets = []policyv1.PodDisruptionBudget{*out.DeepCopy()}

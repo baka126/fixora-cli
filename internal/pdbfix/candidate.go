@@ -211,10 +211,13 @@ func checkWorkloadIdentity(w map[string]any, m metav1.ObjectMeta, a *Authority) 
 	return nil
 }
 func eligible(s Snapshot, a *Authority, c *policyv1.PodDisruptionBudget) error {
+	return eligibility(s, a, c, true)
+}
+func eligibility(s Snapshot, a *Authority, c *policyv1.PodDisruptionBudget, requireStatus bool) error {
 	if len(s.Issues) > 0 {
 		return errors.New("complete PDB, Pod, owner and HPA evidence required")
 	}
-	if s.PDB.DeletionTimestamp != nil || s.PDB.Generation < 1 || s.PDB.Status.ObservedGeneration != s.PDB.Generation {
+	if s.PDB.DeletionTimestamp != nil || s.PDB.Generation < 1 || requireStatus && s.PDB.Status.ObservedGeneration != s.PDB.Generation {
 		return errors.New("current-generation PDB reconciliation required")
 	}
 	for _, cond := range s.PDB.Status.Conditions {
