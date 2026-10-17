@@ -118,7 +118,7 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | networkpolicy.go | `EmptyPodSelector`, `NoSelectedPods` | review |
 | networkpolicy.go | `PodListUnavailable` | diagnosis |
 | olm.go | `CatalogSourceConnectionUnhealthy`, `ClusterCatalogUnhealthy`, `ClusterExtensionUnhealthy`, `CSVNotSucceeded`, `InstallPlanIncomplete`, `MultipleOperatorGroups`, `SubscriptionNotCurrent` | review |
-| pdb.go | `DisruptionsBlocked` | review |
+| pdb.go | `DisruptionsBlocked`, `PDBNoSelectedPods`, `PDBStatusStale`, `PDBReconciliationFailed`, `PDBOverlap`, `PDBUnsupportedOwnership`, `PDBEvidenceUnavailable`; informational `DisruptionProtectionActive` | diagnosis/review; unhealthy budgets retain the legacy status, intentional zero allowance is protection rather than proof of misconfiguration |
 | pod_security.go | `DefaultServiceAccount`, `HostNamespaceEnabled`, `PrivilegedContainer/`, `RunAsNonRootMissing/` | review |
 | pod_terminating.go | `PodStuckTerminating` | review |
 | pvc.go | `Lost`, `MissingStorageClass`, `Pending`, `ProvisioningFailed`, `SmallStorageRequest`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer`, `VolumeResizePending` | review |

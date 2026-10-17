@@ -613,6 +613,41 @@
       "source": "webhook.go",
       "status": "WebhookServiceUnreadable/",
       "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBNoSelectedPods",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBStatusStale",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBReconciliationFailed",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBOverlap",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBUnsupportedOwnership",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBEvidenceUnavailable",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "DisruptionProtectionActive",
+      "profile": "healthy"
     }
   ],
   "dynamicFindings": [

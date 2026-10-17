@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/pdbfix"
 )
 
 func (a Analyzer) analyzePDBs(ctx *ScanContext) ([]Finding, error) {
@@ -9,41 +10,31 @@ func (a Analyzer) analyzePDBs(ctx *ScanContext) ([]Finding, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := []Finding{}
-	for _, pdb := range pdbs {
-		namespace, name := objectNamespaceName(pdb)
-		status := nestedMap(pdb, "status")
-		current, desired := intValue(status["currentHealthy"]), intValue(status["desiredHealthy"])
-		disruptions := intValue(status["disruptionsAllowed"])
-		expected := intValue(status["expectedPods"])
-		if expected == 0 || current < desired || disruptions == 0 && desired > 0 {
-			severity := "medium"
-			if current < desired {
-				severity = "high"
+	var out []Finding
+	for _, p := range pdbs {
+		ns, name := objectNamespaceName(p)
+		s, err := pdbfix.Collect(ctx, pdbEvidenceReader{ctx.Reader}, ns, name, nil)
+		if err != nil {
+			out = append(out, Finding{ID: keyFor(ns, "PodDisruptionBudget/"+name+"/PDBEvidenceUnavailable"), Namespace: ns, ResourceKind: "PodDisruptionBudget", ResourceName: name, Status: "PDBEvidenceUnavailable", Severity: "medium", Category: "policy", Summary: "The PDB could not be read for diagnosis.", Evidence: []Evidence{{Label: "PDB read", Value: err.Error()}}})
+			continue
+		}
+		for _, d := range pdbfix.Diagnose(s) {
+			f := Finding{ID: keyFor(ns, "PodDisruptionBudget/"+name+"/"+d.Code), Namespace: ns, ResourceKind: "PodDisruptionBudget", ResourceName: name, ResourceUID: string(s.PDB.UID), Status: d.Code, Severity: d.Severity, Category: "policy", Summary: d.Cause, GitOps: gitOpsForObject(p), Evidence: []Evidence{{Label: "PDB classification", Value: d.Code}}, Recommendations: []Recommendation{{Title: "Review disruption protection", Description: d.Next, PatchType: "pdb", SafeByDefault: false}}}
+			if s.PDB.Status.ObservedGeneration == s.PDB.Generation {
+				st := s.PDB.Status
+				f.Evidence = append(f.Evidence, Evidence{Label: "currentHealthy", Value: fmt.Sprint(st.CurrentHealthy)}, Evidence{Label: "desiredHealthy", Value: fmt.Sprint(st.DesiredHealthy)}, Evidence{Label: "disruptionsAllowed", Value: fmt.Sprint(st.DisruptionsAllowed)}, Evidence{Label: "expectedPods", Value: fmt.Sprint(st.ExpectedPods)})
 			}
-			out = append(out, Finding{
-				ID:           keyFor(namespace, "PodDisruptionBudget/"+name+"/Unavailable"),
-				Namespace:    namespace,
-				ResourceKind: "PodDisruptionBudget",
-				ResourceName: name,
-				Status:       "DisruptionsBlocked",
-				Severity:     severity,
-				Category:     "policy",
-				Summary:      "PodDisruptionBudget may block voluntary disruption or does not match healthy pods.",
-				Evidence: []Evidence{
-					{Label: "currentHealthy", Value: fmt.Sprint(current)},
-					{Label: "desiredHealthy", Value: fmt.Sprint(desired)},
-					{Label: "disruptionsAllowed", Value: fmt.Sprint(disruptions)},
-					{Label: "expectedPods", Value: fmt.Sprint(expected)},
-				},
-				GitOps: gitOpsForObject(pdb),
-				Recommendations: []Recommendation{{
-					Title:         "Check PDB selector and workload health",
-					Description:   "Confirm the PDB selector matches the intended pods, then fix unavailable replicas before relaxing disruption policy.",
-					PatchType:     "pdb",
-					SafeByDefault: false,
-				}},
-			})
+			for _, i := range s.Issues {
+				f.Evidence = append(f.Evidence, Evidence{Label: i.Code + " " + i.Resource, Value: i.Detail})
+			}
+			if events, e := ctx.GetEvents(); e == nil {
+				for _, ev := range events {
+					if ev.InvolvedObject.Kind == "PodDisruptionBudget" && ev.InvolvedObject.Name == name && ev.Metadata.Namespace == ns {
+						f.Evidence = append(f.Evidence, Evidence{Label: "Event " + ev.Reason, Value: ev.Message})
+					}
+				}
+			}
+			out = append(out, f)
 		}
 	}
 	return out, nil
