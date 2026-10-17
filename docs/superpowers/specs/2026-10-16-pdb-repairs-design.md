@@ -1,6 +1,6 @@
 # Step 5b: evidence-based PodDisruptionBudget repairs
 
-Status: conversational scope approved; written spec awaiting review. No implementation is authorized by this checkpoint yet.
+Status: written spec approved by the user's subsequent “continiue”; implementation plan awaiting review. Product implementation has not started.
 Starting checkpoint: `f7523a7`, branch `codex/service-dependency-repairs` (completed Step 5a).
 
 ## Intent and success criteria
