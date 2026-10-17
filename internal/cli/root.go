@@ -50,6 +50,7 @@ import (
 
 type options struct {
 	servicePolicy                                                           string
+	pdbPolicy                                                               string
 	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
 	helmValues, helmAPIVersions, helmMappings                               listFlag
 	repairBaseline                                                          string
@@ -352,6 +353,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		opts = prepared
+		if opts.pdbPolicy != "" || finding.ResourceKind == "PodDisruptionBudget" {
+			return runPDBFix(analysisCtx, stdout, stderr, opts, finding)
+		}
 		if opts.servicePolicy != "" {
 			return runServiceFix(ctx, stdout, stderr, opts, finding)
 		}
@@ -630,6 +634,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
+	fs.StringVar(&opts.pdbPolicy, "pdb-policy", "", "approved local PDB selector, budget and availability limits")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")

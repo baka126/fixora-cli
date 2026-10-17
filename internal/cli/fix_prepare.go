@@ -26,6 +26,23 @@ func prepareFixPlan(ctx context.Context, reader kube.Reader, k kube.Kubectl, opt
 }
 func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kubectl, opts options, resource string, finding analyzer.Finding, stderr io.Writer) (analyzer.Finding, fix.Plan, options, error) {
 	var err error
+	if finding.ResourceKind == "PodDisruptionBudget" || opts.pdbPolicy != "" {
+		if err = validatePDBOptions(opts, finding); err != nil {
+			return finding, fix.Plan{}, opts, err
+		}
+		if opts.useAI {
+			finding = enrichFindingForAI(ctx, reader, k, opts, resource, finding)
+			if opts.pdbPolicy != "" {
+				finding, err = withPDBProposalIntent(finding, opts.pdbPolicy)
+				if err != nil {
+					return finding, fix.Plan{}, opts, err
+				}
+				finding = withPDBWorkloadContext(ctx, reader, finding, opts.pdbPolicy)
+			}
+			augmentWithAI(ctx, &finding, opts, stderr)
+		}
+		return finding, fix.BuildPlan(finding), opts, nil
+	}
 	if opts.useAI {
 		finding = enrichFindingForAI(ctx, reader, k, opts, resource, finding)
 		if opts.servicePolicy != "" {
