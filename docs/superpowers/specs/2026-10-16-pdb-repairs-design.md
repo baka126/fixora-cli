@@ -1,6 +1,6 @@
 # Step 5b: evidence-based PodDisruptionBudget repairs
 
-Status: written spec approved by the user's subsequent “continiue”; implementation plan awaiting review. Product implementation has not started.
+Status: spec and plan approved; implementation on codex/pdb-repairs, final review pending. See the 2026-10-16 PDB repair report for checks and live-test limits.
 Starting checkpoint: `f7523a7`, branch `codex/service-dependency-repairs` (completed Step 5a).
 
 ## Intent and success criteria

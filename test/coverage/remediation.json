@@ -648,6 +648,11 @@
       "source": "pdb.go",
       "status": "DisruptionProtectionActive",
       "profile": "healthy"
+    },
+    {
+      "source": "pdb.go",
+      "status": "Healthy",
+      "profile": "healthy"
     }
   ],
   "dynamicFindings": [

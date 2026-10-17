@@ -70,7 +70,7 @@ All entries below also have the registered status-summary fallback when enabled 
 | OLMInstallPlan | OLM precision | Review/diagnosis; see named findings below |
 | OLMOperatorGroup | OLM precision | Review/diagnosis; see named findings below |
 | OLMSubscription | OLM precision | Review/diagnosis; see named findings below |
-| PDB | Disruption availability | Review/diagnosis; see named findings below |
+| PDB | Disruption availability | Precise diagnosis; approved selector/budget corrections via --pdb-policy for stable Deployment/StatefulSet replicas; dedicated preflight, guarded apply, current-generation observation and explicit inverse |
 | PVC | PVC events/class/volume precision | Review/diagnosis; see named findings below |
 | Pod | Container states/events/logs/probes | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ReplicaSet | ReplicaSet creation + owned pods | Common profiles from failing owned/container evidence; controller-only findings require review |
@@ -165,7 +165,8 @@ The 24 precision checks are: `service-endpoints`, `service-ports`, `ingress-back
 | Job | Pod template; batch-specific isolation restrictions apply | Completion condition | Restore source; no rollout undo |
 | CronJob | Job pod template; batch-specific isolation restrictions apply | Schedule/suspension/recent-run checks; next scheduled run is not awaited | Restore source; no rollout undo |
 | Standalone Pod | Pod spec | Unsupported rollout can be skipped/unknown; immutable fields can block apply | Restore known-good manifest |
-| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| Service, Ingress, HPA, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| PDB (dedicated policy path) | Non-disruptive admission/evidence preflight | Current-generation budget and healthy membership observation | Explicit field-only inverse with conflict guards |
 | Helm/GitOps source | Direct cluster delivery blocked | Render/review source; automatic Helm translation blocked | Revert source; Helm rollback advice may exist |
 
 These describe code paths, not equal live coverage across controllers. The existing eight-workload live baseline used Deployments. Expanding controller parity is point 2 and remains outstanding.
@@ -207,3 +208,11 @@ Validation on 2026-10-04: the full Go unit suite passed with a fresh run; the ne
 5. **Cross-resource/stateful coverage:** dependency wiring, scaling/disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
 
 Keep the working Deployment fixtures as the baseline when implementing later points. A new “supported” finding requires positive repair tests, ambiguous/unsafe refusal tests, an explicit verification method and delivery/rollback evidence.
+
+## Step 5b: dedicated PDB repair gate
+
+PDB diagnosis distinguishes empty selections, unavailable replicas, stale/failed reconciliation, overlapping policies and intentional zero-disruption protection. A PDB finding alone never grants apply eligibility. The generic planner remains review-only; the dedicated `--pdb-policy` path requires exact independently approved selector/budget, an absolute positive healthy floor, and a disruption ceiling.
+
+Automatic delivery is limited to unmanaged existing policy/v1 budgets for stable fully healthy Deployment/StatefulSet replicas without active HPA or overlapping PDBs. Selector correction requires a currently empty selection. No evictions, drains, scaling, temporary PDBs or unhealthyPodEvictionPolicy changes occur. Preflight checks admission/current evidence; a subsequent verified policy status does not prove actual eviction behavior or future availability. JSON/YAML and preview remain read-only. Helm PDB values translation is manual; reviewed raw/Kustomize source output is not production reconciliation.
+
+The disposable local-kind acceptance test is compiled, but its live execution requires Docker. See `docs/superpowers/reports/2026-10-16-pdb-repairs.md` for the final checks and limits. HPA, storage and node/admission/operator repair domains are still separate roadmap work.

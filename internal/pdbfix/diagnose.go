@@ -77,7 +77,7 @@ func Diagnose(s Snapshot) []Diagnosis {
 			add("PDBReconciliationFailed", "high", "The disruption controller could not reconcile the PDB.", "Inspect the PDB condition and controller/scale-target errors.")
 		}
 	}
-	if unhealthy > 0 || (fresh && !failed && p.Status.CurrentHealthy < p.Status.DesiredHealthy) {
+	if count > 0 && (unhealthy > 0 || (fresh && !failed && p.Status.CurrentHealthy < p.Status.DesiredHealthy)) {
 		add("DisruptionsBlocked", "high", "Selected replicas are unavailable or do not meet the budget's healthy replica requirement.", "Repair unavailable replicas before considering a change to disruption protection.")
 	}
 	if count > 0 && unhealthy == 0 && fresh && !failed && p.Status.CurrentHealthy >= p.Status.DesiredHealthy && p.Status.DisruptionsAllowed == 0 && len(s.Issues) == 0 && !overlap && !unsupported && len(owners) == 1 {

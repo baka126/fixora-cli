@@ -189,6 +189,9 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		return Finding{}, fmt.Errorf("resource must look like kind/name")
 	}
 	ns := a.opts.Namespace
+	if kind == "pdb" || kind == "poddisruptionbudget" || kind == "poddisruptionbudgets" {
+		return a.pdbResourceFinding(ctx, name, ns)
+	}
 	if kind == "pod" || kind == "pods" {
 		pod, err := a.k.GetPod(ctx, ns, name)
 		if err != nil {

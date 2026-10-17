@@ -142,3 +142,14 @@ func TestPDBReadErrorsRemainUnavailable(t *testing.T) {
 		t.Fatal("missing UID accepted")
 	}
 }
+
+func TestPDBNoSelectionDoesNotClaimUnavailableReplicas(t *testing.T) {
+	s := baseSnapshot()
+	s.PDB.Spec.Selector = nil
+	s.PDB.Status.CurrentHealthy = 0
+	s.PDB.Status.DesiredHealthy = 1
+	s.PDB.Status.ExpectedPods = 0
+	if ds := Diagnose(s); !hasCode(ds, "PDBNoSelectedPods") || hasCode(ds, "DisruptionsBlocked") {
+		t.Fatal("empty selection misdiagnosed as failing replicas", ds)
+	}
+}

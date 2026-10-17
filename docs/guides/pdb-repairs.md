@@ -42,3 +42,7 @@ Preflight checks admission and current evidence without creating resources. Afte
 Direct repair requires all replicas Ready, complete default rollouts, no active HPA on the target, no in-flight disruptions and no overlapping budget. Selector correction requires a currently empty selection and a replacement covering exactly the intended workload. Partial selections, unsupported controllers and changes to unhealthyPodEvictionPolicy remain review-only.
 
 For raw/Kustomize sources, `--delivery=pr --repo <path> --yes` uses the existing reviewed patch workflow, requiring a clean worktree/index and checking files again before writing. Review raw patch blocks before integrating them. Source writes/PRs do not prove production reconciliation. Helm values translation stays manual and cannot use workload-only render certificates.
+
+## Acceptance checks
+
+Run `hack/e2e-pdb.sh` with Docker, kind, kubectl and Go installed to create a uniquely named disposable local cluster. The harness uses its own kubeconfig, checks Deployment/StatefulSet policy convergence and inverse restoration, and verifies Pod UIDs are preserved. `FIXORA_E2E_PDB_IMAGE` overrides the test workload image. This live controller check was not executed in the implementation environment because Docker was unavailable.

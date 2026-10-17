@@ -1,0 +1,6 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: overlap}
+spec:
+  selector: {matchLabels: {component: ledger}}
+  minAvailable: 2
