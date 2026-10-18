@@ -29,7 +29,7 @@ func (a *Applied) seal() [32]byte {
 	return hash(struct {
 		Original, Actual any
 		Plan             [32]byte
-	}{pdbIntent(a.original), pdbIntent(a.actual), a.plan.proof.planBinding})
+	}{pdbIntent(a.original), pdbIntent(a.actual), hash(a.plan)})
 }
 func (a *Applied) check() error {
 	if a == nil || a.original == nil || a.actual == nil || a.plan.proof == nil || a.seal() != a.binding {
@@ -66,7 +66,11 @@ func Apply(parent context.Context, r Runtime, p Plan, receipt *Receipt) (*Applie
 	if actual == nil || actual.ResourceVersion == "" || actual.Generation <= s.PDB.Generation || hash(admissionIntent(actual)) != hash(admissionIntent(p.proof.candidate)) {
 		return nil, out, errors.New("PDB write response differs from approved candidate or lacks updated identity")
 	}
-	a := &Applied{plan: p, original: s.PDB.DeepCopy(), actual: actual.DeepCopy()}
+	privatePlan := p
+	privatePlan.ChangedFields = append([]string(nil), p.ChangedFields...)
+	privatePlan.Prerequisites = append([]string(nil), p.Prerequisites...)
+	privatePlan.Warnings = append([]string(nil), p.Warnings...)
+	a := &Applied{plan: privatePlan, original: s.PDB.DeepCopy(), actual: actual.DeepCopy()}
 	a.binding = a.seal()
 	return a, Outcome{Status: "applied", Scope: "policy-written", Summary: "Approved PDB correction applied; controller convergence has not yet been verified."}, nil
 }

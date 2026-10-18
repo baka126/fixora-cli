@@ -40,20 +40,50 @@ func TestPDBSourceDirtySameFileRefused(t *testing.T) {
 	}
 	assertNoPDBWrites(t, c)
 }
-func TestPDBSourceChangesBetweenPreviewAndWrite(t *testing.T) {
-	root := t.TempDir()
-	file := filepath.Join(root, "pdb.yaml")
-	os.WriteFile(file, []byte("before\n"), 0600)
-	files, e := captureServiceSourceFiles(root, []string{file})
-	if e != nil {
-		t.Fatal(e)
-	}
-	os.WriteFile(file, []byte("after\n"), 0600)
-	if e = checkPDBSourceFiles(files); e == nil {
-		t.Fatal("changed source not refused")
-	}
-	b, _ := os.ReadFile(file)
-	if string(b) != "after\n" {
-		t.Fatal("source changed during check")
+
+func TestReviewPDBSourceWritersCannotChangeSelectorIntent(t *testing.T) {
+	for _, mode := range []string{"raw", "kustomize"} {
+		t.Run(mode, func(t *testing.T) {
+			o, r, c, f := cliPDBFixture(t)
+			o.preview = false
+			o.delivery = "pr"
+			o.yes = true
+			o.repoPath = t.TempDir()
+			raw := "apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata: {name: protect, namespace: team}\nspec:\n  selector: {matchLabels: {old: absent}}\n  minAvailable: 3\n"
+			pdb := filepath.Join(o.repoPath, "pdb.yaml")
+			os.WriteFile(pdb, []byte(raw), 0600)
+			if mode == "kustomize" {
+				os.WriteFile(filepath.Join(o.repoPath, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [pdb.yaml]\n"), 0600)
+			}
+			for _, args := range [][]string{{"init"}, {"add", "."}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline"}} {
+				cmd := exec.Command("git", args...)
+				cmd.Dir = o.repoPath
+				if b, e := cmd.CombinedOutput(); e != nil {
+					t.Fatal(e, string(b))
+				}
+			}
+			stub := t.TempDir()
+			os.WriteFile(filepath.Join(stub, "kubectl"), []byte("#!/bin/sh\nexit 0\n"), 0700)
+			t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+			var out, err bytes.Buffer
+			code := runPDBFixRuntime(context.Background(), &out, &err, o, r, f)
+			cmd := exec.Command("git", "status", "--porcelain=v1", "--untracked-files=all")
+			cmd.Dir = o.repoPath
+			b, e := cmd.Output()
+			if e != nil {
+				t.Fatal(e)
+			}
+			if len(bytes.TrimSpace(b)) != 0 {
+				t.Errorf("PDB source writer changed files or index: %s", b)
+			}
+			if code != 0 || !strings.Contains(out.String(), "manual") {
+				t.Errorf("expected explicit manual fallback without source/PR writes: %d %s %s", code, out.String(), err.String())
+			}
+			got, _ := os.ReadFile(pdb)
+			if string(got) != raw {
+				t.Error("original source PDB changed")
+			}
+			assertNoPDBWrites(t, c)
+		})
 	}
 }

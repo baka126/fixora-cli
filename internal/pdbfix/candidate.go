@@ -144,7 +144,7 @@ func sourceOwned(p *policyv1.PodDisruptionBudget) bool {
 	}
 	for k, v := range p.Labels {
 		key := strings.ToLower(k)
-		if (key == "app.kubernetes.io/managed-by" && v != "") || strings.Contains(key, "argocd") || strings.Contains(key, "fluxcd") {
+		if (key == "app.kubernetes.io/managed-by" && v != "") || (key == "app.kubernetes.io/instance" && v != "") || (key == "helm.sh/chart" && v != "") || strings.Contains(key, "argocd") || strings.Contains(key, "fluxcd") {
 			return true
 		}
 	}

@@ -41,7 +41,7 @@ Preflight checks admission and current evidence without creating resources. Afte
 
 Direct repair requires all replicas Ready, complete default rollouts, no active HPA on the target, no in-flight disruptions and no overlapping budget. Selector correction requires a currently empty selection and a replacement covering exactly the intended workload. Partial selections, unsupported controllers and changes to unhealthyPodEvictionPolicy remain review-only.
 
-For raw/Kustomize sources, `--delivery=pr --repo <path> --yes` uses the existing reviewed patch workflow, requiring a clean worktree/index and checking files again before writing. Review raw patch blocks before integrating them. Source writes/PRs do not prove production reconciliation. Helm values translation stays manual and cannot use workload-only render certificates.
+PDB source delivery is manual for raw manifests, Kustomize and Helm. `--delivery=pr --repo <path>` explains the required source edits and creates no file, commit or PR. Generic raw writers can remove selector fields when a partial document is applied, and strategic merge can retain obsolete selector keys; they are not used for PDBs. Edit the existing PDB exactly, retain one approved budget field, and render/review the complete resource before reconciliation. Workload-only render certificates cannot authorize PDB source edits.
 
 ## Acceptance checks
 

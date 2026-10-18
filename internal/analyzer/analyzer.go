@@ -189,7 +189,8 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		return Finding{}, fmt.Errorf("resource must look like kind/name")
 	}
 	ns := a.opts.Namespace
-	if kind == "pdb" || kind == "poddisruptionbudget" || kind == "poddisruptionbudgets" {
+	pdbKind := strings.TrimSuffix(strings.TrimSuffix(kind, ".v1.policy"), ".policy")
+	if pdbKind == "pdb" || pdbKind == "poddisruptionbudget" || pdbKind == "poddisruptionbudgets" {
 		return a.pdbResourceFinding(ctx, name, ns)
 	}
 	if kind == "pod" || kind == "pods" {

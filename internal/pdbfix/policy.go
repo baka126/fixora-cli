@@ -53,7 +53,14 @@ type Authority struct {
 
 func hash(v any) [32]byte { b, _ := json.Marshal(v); return sha256.Sum256(b) }
 func readPolicy(path string) ([]byte, error) {
-	f, e := os.Open(path)
+	before, e := os.Lstat(path)
+	if e != nil {
+		return nil, e
+	}
+	if !before.Mode().IsRegular() {
+		return nil, errors.New("policy must be a regular local file")
+	}
+	f, e := openPolicyFile(path)
 	if e != nil {
 		return nil, e
 	}
@@ -62,7 +69,7 @@ func readPolicy(path string) ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	if !st.Mode().IsRegular() || st.Size() > 1<<20 {
+	if !st.Mode().IsRegular() || !os.SameFile(before, st) || st.Size() > 1<<20 {
 		return nil, errors.New("policy must be a regular local file no larger than 1 MiB")
 	}
 	b, e := io.ReadAll(io.LimitReader(f, (1<<20)+1))

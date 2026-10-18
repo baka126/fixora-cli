@@ -8,7 +8,8 @@ import (
 	"sync"
 )
 
-type Receipt struct {
+type Receipt struct{ state *receiptState }
+type receiptState struct {
 	mu      sync.Mutex
 	proof   *proof
 	binding [32]byte
@@ -16,18 +17,19 @@ type Receipt struct {
 }
 
 func (r *Receipt) consume(p Plan) error {
-	if r == nil {
+	if r == nil || r.state == nil {
 		return errors.New("PDB preflight receipt required")
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	state := r.state
+	state.mu.Lock()
+	defer state.mu.Unlock()
 	if e := p.check(); e != nil {
 		return e
 	}
-	if r.used || r.proof == nil || r.proof != p.proof || r.binding != p.proof.planBinding {
+	if state.used || state.proof == nil || state.proof != p.proof || state.binding != p.proof.planBinding {
 		return errors.New("PDB receipt invalid or already consumed")
 	}
-	r.used = true
+	state.used = true
 	return nil
 }
 
@@ -83,5 +85,5 @@ func Verify(parent context.Context, r Runtime, p Plan) (*Receipt, error) {
 	if _, e = p.fresh(ctx, r, p.proof.original); e != nil {
 		return nil, e
 	}
-	return &Receipt{proof: p.proof, binding: p.proof.planBinding}, nil
+	return &Receipt{state: &receiptState{proof: p.proof, binding: p.proof.planBinding}}, nil
 }

@@ -40,7 +40,7 @@ func TestPDBInventoryIgnoresDisplayFilters(t *testing.T) {
 func TestPDBExactTargetUsesCanonicalDiagnosis(t *testing.T) {
 	p := map[string]any{"apiVersion": "policy/v1", "kind": "PodDisruptionBudget", "metadata": map[string]any{"name": "guard", "namespace": "team", "uid": "pdb1", "resourceVersion": "1", "generation": 1}, "spec": map[string]any{"selector": map[string]any{"matchLabels": map[string]any{"role": "api"}}}, "status": map[string]any{"observedGeneration": 1, "currentHealthy": 0, "desiredHealthy": 1, "expectedPods": 0, "disruptionsAllowed": 0}}
 	r := pdbInventoryReader{fakeReader: fakeReader{items: map[string][]map[string]any{"pdb": {p}}}, pdb: p}
-	for _, alias := range []string{"pdb", "poddisruptionbudget", "poddisruptionbudgets", "PodDisruptionBudget"} {
+	for _, alias := range []string{"pdb", "poddisruptionbudget", "poddisruptionbudgets", "PodDisruptionBudget", "pdb.policy", "poddisruptionbudget.policy", "poddisruptionbudgets.policy", "poddisruptionbudgets.v1.policy"} {
 		t.Run(alias, func(t *testing.T) {
 			f, e := New(r, Options{Namespace: "team", LabelSelector: "display=hidden"}).AnalyzeResource(context.Background(), alias+"/guard")
 			if e != nil || f.ResourceKind != "PodDisruptionBudget" || f.Status != "PDBNoSelectedPods" {
