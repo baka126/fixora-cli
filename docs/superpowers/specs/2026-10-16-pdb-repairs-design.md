@@ -1,6 +1,6 @@
 # Step 5b: evidence-based PodDisruptionBudget repairs
 
-Status: spec and plan approved; implementation on codex/pdb-repairs, final review pending. See the 2026-10-16 PDB repair report for checks and live-test limits.
+Status: spec and plan approved; implementation on codex/pdb-repairs; six final review findings reproduced and fixed; full tests/race/vet/build checks passed. See the 2026-10-16 PDB repair report for checks and live-test limits.
 Starting checkpoint: `f7523a7`, branch `codex/service-dependency-repairs` (completed Step 5a).
 
 ## Intent and success criteria
