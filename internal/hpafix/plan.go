@@ -187,15 +187,6 @@ func nestedMap(root map[string]any, path ...string) map[string]any {
 	}
 	return m
 }
-func ensureMap(m map[string]any, key string) map[string]any {
-	v, ok := m[key].(map[string]any)
-	if ok {
-		return v
-	}
-	v = map[string]any{}
-	m[key] = v
-	return v
-}
 func mapField(owner map[string]any, key string) (map[string]any, error) {
 	if value, exists := owner[key]; exists {
 		result, ok := value.(map[string]any)
