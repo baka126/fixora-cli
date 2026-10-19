@@ -10,6 +10,10 @@ Fixora now diagnoses HPA generation, target, metric-condition and request-utiliz
 
 The CLI exposes `--hpa-policy`. Preview and JSON/YAML output remain read-only. AI receives bounded HPA and workload evidence but cannot authorize or change request values. Source-managed workloads remain review-only. The local kind harness is explicit opt-in and owns a unique cluster and kubeconfig.
 
+## Final review hardening
+
+An independent whole-branch review found gaps in the real Deployment owner chain, HPA alias dispatch, source ownership checks, HPA and target drift binding, request-presence observation, rollback container lookup and response validation, PodMetrics freshness/completeness, and admission metadata validation. These were fixed with regression tests. The runtime now resolves Pod→ReplicaSet→Deployment ownership, binds the HPA spec/UID/generation and target UID at preparation, rechecks source markers, requires fresh metrics for every regular container, verifies approved requests remain present during observation, and confirms rollback removed only those request fields.
+
 ## Verification
 
 Passed:

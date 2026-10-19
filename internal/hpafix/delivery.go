@@ -111,7 +111,7 @@ func observeOnce(ctx context.Context, r Runtime, a *Applied) Outcome {
 		return Outcome{Partial: true, Message: "target workload could not be observed"}
 	}
 	meta := nestedMap(w, "metadata")
-	workloadOK := strMap(meta["uid"]) == a.targetUID && stableRollout(w) == nil
+	workloadOK := strMap(meta["uid"]) == a.targetUID && stableRollout(w) == nil && appliedRequestsPresent(w, a)
 	pods, podsErr := r.ListPods(ctx, a.namespace)
 	owned, ownersComplete := ownedTargetPods(ctx, r, pods, a, w)
 	workloadOK = workloadOK && podsErr == nil && ownersComplete && targetPodsReady(owned, w)
@@ -218,7 +218,26 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 		if !ok {
 			return Outcome{}, errors.New("malformed target container")
 		}
-		indices[strMap(c["name"])] = i
+		name := strMap(c["name"])
+		if name == "" {
+			return Outcome{}, errors.New("target container name is missing")
+		}
+		if _, duplicate := indices[name]; duplicate {
+			return Outcome{}, errors.New("duplicate target container name")
+		}
+		indices[name] = i
+	}
+	candidateContainers, ok := nestedMap(a.candidate, "spec", "template", "spec")["containers"].([]any)
+	if !ok {
+		return Outcome{}, errors.New("saved candidate containers unavailable")
+	}
+	candidateByName := map[string]map[string]any{}
+	for _, raw := range candidateContainers {
+		container, ok := raw.(map[string]any)
+		if !ok || strMap(container["name"]) == "" {
+			return Outcome{}, errors.New("malformed saved candidate container")
+		}
+		candidateByName[strMap(container["name"])] = container
 	}
 	ops := []patchOperation{{Op: "test", Path: "/metadata/uid", Value: meta["uid"]}, {Op: "test", Path: "/metadata/resourceVersion", Value: meta["resourceVersion"]}}
 	for _, changed := range a.changedPaths {
@@ -232,7 +251,10 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 		}
 		container := containers[idx].(map[string]any)
 		requests := nestedMap(container, "resources", "requests")
-		expected := nestedMap(a.candidate, "spec", "template", "spec")["containers"].([]any)[indices[name]].(map[string]any)
+		expected, ok := candidateByName[name]
+		if !ok {
+			return Outcome{}, errors.New("saved candidate container is missing")
+		}
 		want := nestedMap(expected, "resources", "requests")[res]
 		if value, exists := requests[res]; !exists || value != want {
 			return Outcome{}, errors.New("approved request changed; refusing rollback")
@@ -251,7 +273,88 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 	if updated == nil || strMap(nestedMap(updated, "metadata")["uid"]) != a.targetUID {
 		return Outcome{Partial: true, Message: "rollback returned a different target"}, errors.New("HPA rollback target identity mismatch")
 	}
+	expectedSpec, err := rollbackExpectedSpec(current, a.changedPaths)
+	if err != nil {
+		return Outcome{Partial: true, Message: "rollback response could not be validated"}, err
+	}
+	if !reflect.DeepEqual(expectedSpec, nestedMap(updated, "spec")) {
+		return Outcome{Partial: true, Message: "rollback response did not confirm only the approved request fields were removed"}, errors.New("HPA rollback response differs from the field-only inverse")
+	}
 	return Outcome{RolledBack: true, Message: "Fixora-added request fields were removed; unrelated workload fields were preserved"}, nil
+}
+
+func appliedRequestsPresent(workload map[string]any, a *Applied) bool {
+	containers, ok := nestedMap(workload, "spec", "template", "spec")["containers"].([]any)
+	if !ok {
+		return false
+	}
+	byName := map[string]map[string]any{}
+	for _, raw := range containers {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		name := strMap(container["name"])
+		if name == "" || byName[name] != nil {
+			return false
+		}
+		byName[name] = container
+	}
+	for _, path := range a.changedPaths {
+		name, resource, ok := parseChangedPath(path)
+		if !ok {
+			return false
+		}
+		container := byName[name]
+		if container == nil {
+			return false
+		}
+		expected := nestedMap(a.candidate, "spec", "template", "spec")["containers"].([]any)
+		var want any
+		for _, raw := range expected {
+			c, ok := raw.(map[string]any)
+			if ok && strMap(c["name"]) == name {
+				want = nestedMap(c, "resources", "requests")[resource]
+				break
+			}
+		}
+		if want == nil || nestedMap(container, "resources", "requests")[resource] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func rollbackExpectedSpec(current map[string]any, paths []string) (map[string]any, error) {
+	copy, _, err := cloneMap(map[string]any{"spec": nestedMap(current, "spec")})
+	if err != nil {
+		return nil, err
+	}
+	containers, ok := nestedMap(copy, "spec", "template", "spec")["containers"].([]any)
+	if !ok {
+		return nil, errors.New("target containers unavailable while validating rollback")
+	}
+	byName := map[string]map[string]any{}
+	for _, raw := range containers {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			return nil, errors.New("malformed target container")
+		}
+		name := strMap(container["name"])
+		if name == "" || byName[name] != nil {
+			return nil, errors.New("target container names are ambiguous")
+		}
+		byName[name] = container
+	}
+	for _, path := range paths {
+		name, resource, ok := parseChangedPath(path)
+		if !ok || byName[name] == nil {
+			return nil, errors.New("rollback request path no longer resolves")
+		}
+		requests := nestedMap(byName[name], "resources", "requests")
+		delete(requests, resource)
+	}
+	return nestedMap(copy, "spec"), nil
 }
 
 func parseChangedPath(path string) (string, string, bool) {

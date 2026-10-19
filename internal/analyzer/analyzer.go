@@ -212,7 +212,11 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 	if isControllerKind(kind) {
 		return a.findingForController(ctx, obj, kind, name, ns)
 	}
-	finding := a.findingForObject(obj, kind, name, ns)
+	findingKind := kind
+	if strings.EqualFold(kind, "hpa") || strings.EqualFold(kind, "horizontalpodautoscaler") || strings.EqualFold(kind, "horizontalpodautoscalers") {
+		findingKind = "HorizontalPodAutoscaler"
+	}
+	finding := a.findingForObject(obj, findingKind, name, ns)
 	if a.opts.IncludeLogs {
 		finding.Logs = append(finding.Logs, LogSnippet{Source: "logs", Text: "logs are collected for Pods; analyze the owning pod for container logs"})
 	}
@@ -811,6 +815,10 @@ func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanCont
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {
 	labels, annotations := objectLabelsAnnotations(obj)
+	resourceKind := strValue(obj["kind"])
+	if resourceKind == "" {
+		resourceKind = toTitle(kind)
+	}
 	status := "Unknown"
 	if s, ok := obj["status"].(map[string]any); ok {
 		status = compactMap(s)
@@ -818,7 +826,7 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 	return Finding{
 		ID:           namespace + "/" + kind + "/" + name,
 		Namespace:    namespace,
-		ResourceKind: toTitle(kind),
+		ResourceKind: resourceKind,
 		ResourceName: name,
 		Status:       status,
 		Severity:     "info",

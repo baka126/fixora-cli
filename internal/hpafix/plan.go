@@ -27,26 +27,15 @@ func Prepare(ctx context.Context, r Reader, authority *Authority, finding analyz
 	if err != nil {
 		return Plan{}, fmt.Errorf("read policy HPA: %w", err)
 	}
-	if hpa == nil || hpa.Namespace != p.Metadata.Namespace || hpa.Name != p.Spec.HPA.Name || hpa.Spec.ScaleTargetRef.Kind != p.Spec.Target.Kind || hpa.Spec.ScaleTargetRef.Name != p.Spec.Target.Name || hpa.Spec.ScaleTargetRef.APIVersion != "apps/v1" {
+	if hpa == nil || hpa.Namespace != p.Metadata.Namespace || hpa.Name != p.Spec.HPA.Name || hpa.UID == "" || hpa.Generation < 1 || hpa.Spec.ScaleTargetRef.Kind != p.Spec.Target.Kind || hpa.Spec.ScaleTargetRef.Name != p.Spec.Target.Name || hpa.Spec.ScaleTargetRef.APIVersion != "apps/v1" {
 		return Plan{}, errors.New("live HPA identity does not match exact policy target")
 	}
-	metricResources := map[string]bool{}
-	for _, metric := range hpa.Spec.Metrics {
-		if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil || metric.Resource.Target.Type != autoscalingv2.UtilizationMetricType || metric.Resource.Target.AverageUtilization == nil {
-			return Plan{}, errors.New("HPA includes an unsupported metric source or target")
-		}
-		if metric.Resource.Name != "cpu" && metric.Resource.Name != "memory" {
-			return Plan{}, errors.New("HPA resource metric must be CPU or memory utilization")
-		}
-		metricResources[string(metric.Resource.Name)] = true
+	metricResources, err := repairableMetricResources(hpa)
+	if err != nil {
+		return Plan{}, err
 	}
-	if len(metricResources) == 0 {
-		return Plan{}, errors.New("HPA has no supported CPU or memory utilization metric")
-	}
-	for _, req := range p.Spec.Requests {
-		if req.CPU != "" && !metricResources["cpu"] || req.Memory != "" && !metricResources["memory"] {
-			return Plan{}, fmt.Errorf("policy request for %s lacks a matching utilization metric", req.Container)
-		}
+	if err := validatePolicyMetrics(p, metricResources); err != nil {
+		return Plan{}, err
 	}
 	workload, err := r.GetWorkload(ctx, p.Metadata.Namespace, p.Spec.Target.Kind, p.Spec.Target.Name)
 	if err != nil {
@@ -117,7 +106,7 @@ func Prepare(ctx context.Context, r Reader, authority *Authority, finding analyz
 	}
 	sort.Strings(changed)
 	digest := fmt.Sprintf("%x", authority.digest)
-	plan := Plan{Namespace: p.Metadata.Namespace, HPAName: p.Spec.HPA.Name, TargetKind: p.Spec.Target.Kind, TargetName: p.Spec.Target.Name, ChangedPaths: changed, original: original, candidate: candidate, policy: authority, policyDigest: digest}
+	plan := Plan{Namespace: p.Metadata.Namespace, HPAName: p.Spec.HPA.Name, TargetKind: p.Spec.Target.Kind, TargetName: p.Spec.Target.Name, ChangedPaths: changed, original: original, candidate: candidate, policy: authority, policyDigest: digest, hpaSpec: *hpa.Spec.DeepCopy(), hpaUID: string(hpa.UID), hpaGeneration: hpa.Generation, hpaSourceManaged: sourceManagedHPA(hpa)}
 	plan.planDigest, err = planDigest(plan)
 	if err != nil {
 		return Plan{}, err
@@ -172,12 +161,82 @@ func planDigest(p Plan) (string, error) {
 		Namespace, HPA, Kind, Target, Policy string
 		Paths                                []string
 		Original, Candidate                  map[string]any
-	}{p.Namespace, p.HPAName, p.TargetKind, p.TargetName, p.policyDigest, p.ChangedPaths, p.original, p.candidate})
+		HPASpec                              autoscalingv2.HorizontalPodAutoscalerSpec
+		HPAUID                               string
+		HPAGeneration                        int64
+		HPASourceManaged                     bool
+	}{p.Namespace, p.HPAName, p.TargetKind, p.TargetName, p.policyDigest, p.ChangedPaths, p.original, p.candidate, p.hpaSpec, p.hpaUID, p.hpaGeneration, p.hpaSourceManaged})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(b)
 	return fmt.Sprintf("%x", sum), nil
+}
+
+func repairableMetricResources(hpa *autoscalingv2.HorizontalPodAutoscaler) (map[string]bool, error) {
+	resources := map[string]bool{}
+	if hpa == nil {
+		return nil, errors.New("live HPA is required")
+	}
+	for _, metric := range hpa.Spec.Metrics {
+		if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil || metric.Resource.Target.Type != autoscalingv2.UtilizationMetricType || metric.Resource.Target.AverageUtilization == nil {
+			return nil, errors.New("HPA includes an unsupported metric source or target")
+		}
+		if metric.Resource.Name != "cpu" && metric.Resource.Name != "memory" {
+			return nil, errors.New("HPA resource metric must be CPU or memory")
+		}
+		resources[string(metric.Resource.Name)] = true
+	}
+	if len(resources) == 0 {
+		return nil, errors.New("HPA has no supported CPU or memory utilization metric")
+	}
+	return resources, nil
+}
+
+func validatePolicyMetrics(policy policyDocument, resources map[string]bool) error {
+	for _, req := range policy.Spec.Requests {
+		if req.CPU != "" && !resources["cpu"] || req.Memory != "" && !resources["memory"] {
+			return fmt.Errorf("policy request for %s lacks a matching utilization metric", req.Container)
+		}
+	}
+	return nil
+}
+
+func sourceManagedHPA(h *autoscalingv2.HorizontalPodAutoscaler) bool {
+	if h == nil {
+		return false
+	}
+	if len(h.OwnerReferences) > 0 {
+		return true
+	}
+	return sourceManagedObject(map[string]any{"metadata": map[string]any{"labels": anyStringMap(h.Labels), "annotations": anyStringMap(h.Annotations), "ownerReferences": h.OwnerReferences}})
+}
+
+func sourceManagedObject(obj map[string]any) bool {
+	if obj == nil {
+		return false
+	}
+	meta := nestedMap(obj, "metadata")
+	if len(nestedSlice(meta, "ownerReferences")) > 0 {
+		return true
+	}
+	for _, field := range []string{"labels", "annotations"} {
+		for key, raw := range nestedMap(meta, field) {
+			lower, value := strings.ToLower(key), strings.TrimSpace(fmt.Sprint(raw))
+			if lower == "app.kubernetes.io/managed-by" && value != "" || lower == "app.kubernetes.io/instance" && value != "" || lower == "helm.sh/chart" && value != "" || strings.Contains(lower, "helm") || strings.Contains(lower, "argocd.argoproj.io") || strings.Contains(lower, "toolkit.fluxcd.io") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func anyStringMap(in map[string]string) map[string]any {
+	out := map[string]any{}
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 func cloneMap(in map[string]any) (map[string]any, map[string]any, error) {
 	b, err := json.Marshal(in)

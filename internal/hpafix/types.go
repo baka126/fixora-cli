@@ -25,6 +25,15 @@ type Plan struct {
 	original, candidate                        map[string]any
 	policy                                     *Authority
 	policyDigest, planDigest                   string
+	hpaSpec                                    autoscalingv2.HorizontalPodAutoscalerSpec
+	hpaUID                                     string
+	hpaGeneration                              int64
+	hpaSourceManaged                           bool
+}
+
+// SourceManaged reports whether the live HPA or target carried source ownership markers when prepared.
+func (p Plan) SourceManaged() bool {
+	return p.hpaSourceManaged || sourceManagedObject(p.original)
 }
 
 type requestIntent struct {

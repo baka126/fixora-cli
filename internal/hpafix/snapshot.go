@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const operationTimeout = 3 * time.Minute
@@ -47,6 +49,12 @@ func collectSnapshot(ctx context.Context, r Reader, p *Plan) (Snapshot, error) {
 	if hpa == nil || hpa.Namespace != p.Namespace || hpa.Name != p.HPAName || hpa.UID == "" || hpa.ResourceVersion == "" || hpa.Generation <= 0 {
 		return Snapshot{}, errors.New("HPA identity or version is incomplete")
 	}
+	if string(hpa.UID) != p.hpaUID || hpa.Generation != p.hpaGeneration || !reflect.DeepEqual(hpa.Spec, p.hpaSpec) {
+		return Snapshot{}, errors.New("HPA identity or spec changed after candidate preparation")
+	}
+	if sourceManagedHPA(hpa) {
+		return Snapshot{}, errors.New("source-managed HPA cannot be changed directly")
+	}
 	if hpa.Status.ObservedGeneration == nil || *hpa.Status.ObservedGeneration != hpa.Generation {
 		return Snapshot{}, errors.New("HPA status is stale")
 	}
@@ -60,6 +68,19 @@ func collectSnapshot(ctx context.Context, r Reader, p *Plan) (Snapshot, error) {
 	meta := nestedMap(workload, "metadata")
 	if strMap(workload["kind"]) != p.TargetKind || strMap(meta["name"]) != p.TargetName || strMap(meta["namespace"]) != p.Namespace || strMap(meta["uid"]) == "" || strMap(meta["resourceVersion"]) == "" {
 		return Snapshot{}, errors.New("target identity or version is incomplete")
+	}
+	if strMap(meta["uid"]) != strMap(nestedMap(p.original, "metadata")["uid"]) {
+		return Snapshot{}, errors.New("HPA target was replaced after candidate preparation")
+	}
+	if sourceManagedObject(workload) {
+		return Snapshot{}, errors.New("source-managed HPA target cannot be changed directly")
+	}
+	metricResources, err := repairableMetricResources(hpa)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if err = validatePolicyMetrics(a.intent, metricResources); err != nil {
+		return Snapshot{}, err
 	}
 	if err := stableRollout(workload); err != nil {
 		return Snapshot{}, err
@@ -193,44 +214,68 @@ func conditionReason(h *autoscalingv2.HorizontalPodAutoscaler, t autoscalingv2.H
 	return false
 }
 func validateMetricsForPods(metrics []map[string]any, pods []corev1.Pod, h *autoscalingv2.HorizontalPodAutoscaler) error {
+	return validateMetricsForPodsAt(metrics, pods, h, time.Now())
+}
+
+func validateMetricsForPodsAt(metrics []map[string]any, pods []corev1.Pod, h *autoscalingv2.HorizontalPodAutoscaler, now time.Time) error {
 	byPod := map[string]map[string]any{}
 	for _, m := range metrics {
-		name := strMap(nestedMap(m, "metadata")["name"])
+		metadata := nestedMap(m, "metadata")
+		name := strMap(metadata["name"])
 		if name != "" {
+			if _, duplicate := byPod[name]; duplicate {
+				return fmt.Errorf("duplicate PodMetrics for owned Pod %s", name)
+			}
 			byPod[name] = m
 		}
+	}
+	required, err := repairableMetricResources(h)
+	if err != nil {
+		return err
 	}
 	for _, pod := range pods {
 		m, ok := byPod[pod.Name]
 		if !ok {
 			return fmt.Errorf("PodMetrics unavailable for owned Pod %s", pod.Name)
 		}
+		metadata := nestedMap(m, "metadata")
+		if ns := strMap(metadata["namespace"]); ns == "" || ns != pod.Namespace {
+			return fmt.Errorf("PodMetrics namespace differs for owned Pod %s", pod.Name)
+		}
+		timestamp, parseErr := time.Parse(time.RFC3339, strMap(m["timestamp"]))
+		window, windowErr := time.ParseDuration(strMap(m["window"]))
+		if parseErr != nil || windowErr != nil || window <= 0 || window > 5*time.Minute || pod.CreationTimestamp.IsZero() || timestamp.Before(pod.CreationTimestamp.Time) || timestamp.After(now.Add(30*time.Second)) || now.Sub(timestamp) > 2*time.Minute {
+			return fmt.Errorf("PodMetrics for owned Pod %s is stale or incomplete", pod.Name)
+		}
 		containers := map[string]map[string]any{}
 		for _, raw := range nestedSlice(m, "containers") {
 			c, ok := raw.(map[string]any)
-			if ok {
-				containers[strMap(c["name"])] = nestedMap(c, "usage")
+			if !ok || strMap(c["name"]) == "" {
+				return fmt.Errorf("PodMetrics has an invalid container entry for Pod %s", pod.Name)
 			}
+			if _, duplicate := containers[strMap(c["name"])]; duplicate {
+				return fmt.Errorf("PodMetrics has duplicate container usage for Pod %s", pod.Name)
+			}
+			containers[strMap(c["name"])] = nestedMap(c, "usage")
 		}
-		for _, metric := range h.Spec.Metrics {
-			if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil {
-				continue
+		if len(pod.Spec.Containers) == 0 {
+			return fmt.Errorf("owned Pod %s has no regular containers", pod.Name)
+		}
+		for _, container := range pod.Spec.Containers {
+			usage, exists := containers[container.Name]
+			if !exists {
+				return fmt.Errorf("PodMetrics lacks usage for container %s in Pod %s", container.Name, pod.Name)
 			}
-			usage := containersForMetric(containers, string(metric.Resource.Name))
-			if usage == "" {
-				return fmt.Errorf("PodMetrics lacks %s usage for Pod %s", metric.Resource.Name, pod.Name)
+			for name := range required {
+				quantityText := strMap(usage[name])
+				quantity, quantityErr := resource.ParseQuantity(quantityText)
+				if quantityText == "" || quantityErr != nil || quantity.Sign() < 0 {
+					return fmt.Errorf("PodMetrics lacks valid %s usage for container %s in Pod %s", name, container.Name, pod.Name)
+				}
 			}
 		}
 	}
 	return nil
-}
-func containersForMetric(m map[string]map[string]any, name string) string {
-	for _, usage := range m {
-		if strMap(usage[name]) != "" {
-			return strMap(usage[name])
-		}
-	}
-	return ""
 }
 func snapshotDigest(s Snapshot) (string, error) {
 	b, err := json.Marshal(s)

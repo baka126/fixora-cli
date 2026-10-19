@@ -12,6 +12,8 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type verifyRuntime struct {
@@ -115,6 +117,15 @@ func TestVerifyRejectsAdmissionRewrite(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsAdmissionMetadataMutation(t *testing.T) {
+	p, _, _, runtime := verifyFixture(t)
+	runtime.patchResult = cloneObject(runtime.patchResult)
+	nestedMap(runtime.patchResult, "metadata")["labels"] = map[string]any{"operator.example/changed": "true"}
+	if _, err := Verify(context.Background(), runtime, p); err == nil {
+		t.Fatal("admission metadata mutation outside the request patch was accepted")
+	}
+}
+
 func TestVerifyRejectsReplacedTargetUID(t *testing.T) {
 	p, _, _, runtime := verifyFixture(t)
 	runtime.patchResult["metadata"].(map[string]any)["uid"] = "replacement"
@@ -136,6 +147,49 @@ func TestVerifyRejectsHPAOrMetricsDrift(t *testing.T) {
 		runtime.metricsErr = errors.New("metrics unavailable")
 		if _, err := Verify(context.Background(), runtime, p); err == nil {
 			t.Fatal("metrics error accepted")
+		}
+	})
+}
+
+func TestVerifyRejectsTargetReplacementAfterPrepare(t *testing.T) {
+	p, _, _, runtime := verifyFixture(t)
+	nestedMap(runtime.workload, "metadata")["uid"] = "replacement"
+	runtime.owners["pod-uid"] = kube.WorkloadOwner{Kind: "Deployment", Name: "api", UID: "replacement", Identities: []kube.OwnerIdentity{{Kind: "Deployment", Name: "api", UID: "replacement"}}}
+	if _, err := Verify(context.Background(), runtime, p); err == nil {
+		t.Fatal("replacement target with the same name was accepted")
+	}
+}
+
+func TestVerifyRejectsUnsupportedMetricAddedAfterPrepare(t *testing.T) {
+	p, _, _, runtime := verifyFixture(t)
+	runtime.hpa.Spec.Metrics = append(runtime.hpa.Spec.Metrics, autoscalingv2.MetricSpec{Type: autoscalingv2.ExternalMetricSourceType, External: &autoscalingv2.ExternalMetricSource{Metric: autoscalingv2.MetricIdentifier{Name: "queue-depth"}, Target: autoscalingv2.MetricTarget{Type: autoscalingv2.AverageValueMetricType, AverageValue: resource.NewQuantity(1, resource.DecimalSI)}}})
+	if _, err := Verify(context.Background(), runtime, p); err == nil {
+		t.Fatal("HPA with a newly added unsupported metric was accepted")
+	}
+}
+
+func TestVerifyRejectsPolicyRequestWhoseMetricWasRemoved(t *testing.T) {
+	p, _, _, runtime := verifyFixture(t)
+	runtime.hpa.Spec.Metrics = runtime.hpa.Spec.Metrics[:1]
+	if _, err := Verify(context.Background(), runtime, p); err == nil {
+		t.Fatal("request for removed utilization metric was still authorized")
+	}
+}
+
+func TestSnapshotRejectsStaleOrIncompletePodMetrics(t *testing.T) {
+	t.Run("stale", func(t *testing.T) {
+		p, _, _, runtime := verifyFixture(t)
+		runtime.metrics[0]["timestamp"] = time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+		runtime.metrics[0]["window"] = "30s"
+		if _, err := collectSnapshot(context.Background(), runtime, &p); err == nil {
+			t.Fatal("stale PodMetrics were accepted")
+		}
+	})
+	t.Run("missing regular container usage", func(t *testing.T) {
+		p, _, _, runtime := verifyFixture(t)
+		runtime.pods[0].Spec.Containers = append(runtime.pods[0].Spec.Containers, corev1.Container{Name: "sidecar"})
+		if _, err := collectSnapshot(context.Background(), runtime, &p); err == nil {
+			t.Fatal("PodMetrics omitting a target sidecar were accepted")
 		}
 	})
 }
@@ -195,10 +249,12 @@ func newVerifyRuntime(t *testing.T, r planReader) *verifyRuntime {
 	pod.Name = "api-abc"
 	pod.Namespace = "prod"
 	pod.UID = "pod-uid"
+	pod.Spec.Containers = []corev1.Container{{Name: "web"}}
+	pod.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
 	pod.Status.Phase = corev1.PodRunning
 	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	owner := kube.WorkloadOwner{Kind: "Deployment", Name: "api", UID: "target-uid", Identities: []kube.OwnerIdentity{{Kind: "Deployment", Name: "api", UID: "target-uid"}}}
-	return &verifyRuntime{planReader: r, pods: []corev1.Pod{pod}, hpas: []autoscalingv2.HorizontalPodAutoscaler{*r.hpa}, metrics: []map[string]any{{"metadata": map[string]any{"name": "api-abc"}, "containers": []any{map[string]any{"name": "web", "usage": map[string]any{"cpu": "10m", "memory": "12Mi"}}}}}, owners: map[string]kube.WorkloadOwner{"pod-uid": owner}, patchResult: target}
+	return &verifyRuntime{planReader: r, pods: []corev1.Pod{pod}, hpas: []autoscalingv2.HorizontalPodAutoscaler{*r.hpa}, metrics: []map[string]any{{"metadata": map[string]any{"name": "api-abc", "namespace": "prod"}, "timestamp": time.Now().UTC().Format(time.RFC3339), "window": "30s", "containers": []any{map[string]any{"name": "web", "usage": map[string]any{"cpu": "10m", "memory": "12Mi"}}}}}, owners: map[string]kube.WorkloadOwner{"pod-uid": owner}, patchResult: target}
 }
 
 func verifyFixture(t *testing.T) (Plan, Authority, analyzer.Finding, *verifyRuntime) {

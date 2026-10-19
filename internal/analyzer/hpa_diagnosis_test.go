@@ -42,6 +42,18 @@ func TestHPAObservedGenerationStale(t *testing.T) {
 	t.Fatalf("stale HPA generation was not diagnosed: %#v", findings)
 }
 
+func TestAnalyzeResourceUsesCanonicalHPAKindForAlias(t *testing.T) {
+	hpa, _ := hpaDiagnosticFixture("Utilization", nil)
+	r := fakeReader{resource: hpa}
+	finding, err := New(r, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "hpa/api-scale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.ResourceKind != "HorizontalPodAutoscaler" {
+		t.Fatalf("HPA alias produced noncanonical resource kind %q", finding.ResourceKind)
+	}
+}
+
 func TestHPAMetricsConditionsRemainDistinct(t *testing.T) {
 	cases := []struct {
 		name, reason, want string

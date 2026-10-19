@@ -65,6 +65,25 @@ func TestObserveSeparatesRolloutFromHPAHealth(t *testing.T) {
 	}
 }
 
+func TestObserveDoesNotClaimConvergenceAfterApprovedRequestIsReverted(t *testing.T) {
+	p, r, receipt := authorizedRuntime(t)
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.workload = cloneObject(p.original)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	out, err := Observe(ctx, r, applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.WorkloadConverged || !out.Partial {
+		t.Fatalf("reverted approved request reported converged: %+v", out)
+	}
+}
+
 func TestObserveTreatsScalingLimitAsPartial(t *testing.T) {
 	p, r, receipt := authorizedRuntime(t)
 	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
@@ -95,6 +114,7 @@ func TestRollbackRestoresOnlyAddedRequests(t *testing.T) {
 	r.afterPatch = func() {
 		resources := nestedMap(r.workload, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)
 		delete(resources["requests"].(map[string]any), "memory")
+		r.patchResult = cloneObject(r.workload)
 	}
 	out, err := Rollback(context.Background(), r, applied)
 	if err != nil {
@@ -109,6 +129,47 @@ func TestRollbackRestoresOnlyAddedRequests(t *testing.T) {
 	}
 	if requests["cpu"] != "100m" {
 		t.Fatalf("existing request changed: %#v", requests)
+	}
+}
+
+func TestRollbackFindsTargetByNameAfterUnrelatedContainerInsertion(t *testing.T) {
+	p, r, receipt := authorizedRuntime(t)
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers := nestedMap(r.workload, "spec", "template", "spec")["containers"].([]any)
+	nestedMap(r.workload, "spec", "template", "spec")["containers"] = append([]any{map[string]any{"name": "sidecar", "image": "example/sidecar"}}, containers...)
+	r.afterPatch = func() {
+		requests := nestedMap(r.workload, "spec", "template", "spec")["containers"].([]any)[1].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)
+		delete(requests, "memory")
+		r.patchResult = cloneObject(r.workload)
+	}
+	out, err := Rollback(context.Background(), r, applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers = nestedMap(r.workload, "spec", "template", "spec")["containers"].([]any)
+	if !out.RolledBack || containers[0].(map[string]any)["name"] != "sidecar" {
+		t.Fatalf("rollback damaged unrelated container ordering: %+v %#v", out, containers)
+	}
+	requests := nestedMap(containers[1].(map[string]any), "resources", "requests")
+	if _, ok := requests["memory"]; ok {
+		t.Fatalf("Fixora-added memory request remains: %#v", requests)
+	}
+}
+
+func TestRollbackRejectsResponseThatRetainsApprovedRequest(t *testing.T) {
+	p, r, receipt := authorizedRuntime(t)
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.patchResult = cloneObject(p.candidate)
+	if out, err := Rollback(context.Background(), r, applied); err == nil || out.RolledBack {
+		t.Fatalf("rollback response retaining approved request was accepted: %+v err=%v", out, err)
 	}
 }
 

@@ -100,7 +100,7 @@ func runHPAFixRuntime(parent context.Context, out, errout io.Writer, o options, 
 	if o.apply && mode == "patch" {
 		mode = "cluster"
 	}
-	if sourceManaged(f) || hasHelmSourceContext(o) || mode == "pr" {
+	if sourceManaged(f) || p.SourceManaged() || hasHelmSourceContext(o) || mode == "pr" {
 		report.Verification = "review only"
 		report.Next = "Update the owning manifest, Helm values, or Kustomize overlay with these approved requests, then reconcile and verify the rollout."
 		if mode == "cluster" {

@@ -136,13 +136,29 @@ func validateAdmitted(p Plan, before, admitted map[string]any) error {
 	}
 	meta := nestedMap(admitted, "metadata")
 	old := nestedMap(before, "metadata")
-	if strMap(meta["uid"]) != strMap(old["uid"]) || strMap(meta["name"]) != p.TargetName || strMap(meta["namespace"]) != p.Namespace {
+	if strMap(meta["uid"]) != strMap(old["uid"]) || strMap(meta["name"]) != p.TargetName || strMap(meta["namespace"]) != p.Namespace || admitted["apiVersion"] != before["apiVersion"] || admitted["kind"] != before["kind"] {
 		return errors.New("dry-run returned a replaced or mismatched target")
+	}
+	if !sameUserMetadata(old, meta) {
+		return errors.New("admission changed target metadata outside the approved HPA request patch")
 	}
 	if !reflect.DeepEqual(nestedMap(admitted, "spec"), nestedMap(p.candidate, "spec")) {
 		return errors.New("admission changed fields outside the approved HPA request candidate")
 	}
 	return nil
+}
+
+func sameUserMetadata(before, after map[string]any) bool {
+	clone := func(in map[string]any) map[string]any {
+		out := map[string]any{}
+		for key, value := range in {
+			if key != "resourceVersion" && key != "generation" && key != "managedFields" {
+				out[key] = value
+			}
+		}
+		return out
+	}
+	return reflect.DeepEqual(clone(before), clone(after))
 }
 
 var _ = json.Valid

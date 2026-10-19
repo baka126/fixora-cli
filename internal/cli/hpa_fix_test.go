@@ -58,6 +58,7 @@ spec:
 	}
 	h := &autoscalingv2.HorizontalPodAutoscaler{}
 	h.Name, h.Namespace = "api-scale", "prod"
+	h.UID, h.Generation = "hpa-uid", 1
 	h.Spec.ScaleTargetRef = autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "api"}
 	h.Spec.Metrics = []autoscalingv2.MetricSpec{{Type: autoscalingv2.ResourceMetricSourceType, Resource: &autoscalingv2.ResourceMetricSource{Name: "cpu", Target: autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: ptr32(70)}}}}
 	w := map[string]any{
@@ -116,6 +117,18 @@ func TestHPAFixBlocksSourceManagedTargets(t *testing.T) {
 	o.delivery = "cluster"
 	o.yes = true
 	f.GitOps.FluxHint = "managed"
+	var out strings.Builder
+	if code := runHPAFixRuntime(context.Background(), &out, &strings.Builder{}, o, r, f); code != 0 || r.writes != 0 || !strings.Contains(out.String(), "direct delivery is blocked") {
+		t.Fatalf("code=%d writes=%d output=%s", code, r.writes, out.String())
+	}
+}
+
+func TestHPAFixBlocksTargetManagedByHelm(t *testing.T) {
+	o, r, f := hpaCLIFixture(t)
+	o.preview = false
+	o.delivery = "cluster"
+	o.yes = true
+	r.workload["metadata"].(map[string]any)["labels"] = map[string]any{"app.kubernetes.io/managed-by": "Helm"}
 	var out strings.Builder
 	if code := runHPAFixRuntime(context.Background(), &out, &strings.Builder{}, o, r, f); code != 0 || r.writes != 0 || !strings.Contains(out.String(), "direct delivery is blocked") {
 		t.Fatalf("code=%d writes=%d output=%s", code, r.writes, out.String())

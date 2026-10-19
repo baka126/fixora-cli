@@ -106,6 +106,23 @@ func (r hpaOwnerReader) GetResource(ctx context.Context, ns, res string) (map[st
 		return nil, errors.New("exact workload owner required")
 	}
 	c := &typedRuntime{k: r.k}
+	if strings.EqualFold(kind, "replicaset") {
+		obj, err := r.k.Clientset.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]any
+		if err = json.Unmarshal(b, &m); err != nil {
+			return nil, err
+		}
+		m["apiVersion"] = "apps/v1"
+		m["kind"] = "ReplicaSet"
+		return m, nil
+	}
 	return c.GetWorkload(ctx, ns, kind, name)
 }
 func (c *typedRuntime) PatchWorkload(ctx context.Context, ns, kind, name string, patch []byte, dry bool) (map[string]any, error) {
