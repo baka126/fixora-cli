@@ -14,6 +14,64 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 )
 
+// withHPAAnalysisContext adds bounded, non-secret autoscaler and workload
+// evidence. It deliberately omits request policy values and all env/secret data.
+func withHPAAnalysisContext(ctx context.Context, reader kube.Reader, finding analyzer.Finding) analyzer.Finding {
+	if !strings.EqualFold(finding.ResourceKind, "HorizontalPodAutoscaler") || reader == nil {
+		return finding
+	}
+	hpa, err := reader.GetResource(ctx, finding.Namespace, "hpa/"+finding.ResourceName)
+	if err != nil {
+		finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "HPA context", Value: "HPA object could not be read for AI analysis."})
+		return finding
+	}
+	spec := aiMap(hpa["spec"])
+	ref := aiMap(spec["scaleTargetRef"])
+	status := aiMap(hpa["status"])
+	kind, name := fmt.Sprint(ref["kind"]), fmt.Sprint(ref["name"])
+	data := map[string]any{"hpa": map[string]any{"name": finding.ResourceName, "spec": map[string]any{"scaleTargetRef": ref, "minReplicas": spec["minReplicas"], "maxReplicas": spec["maxReplicas"], "metrics": spec["metrics"]}, "status": map[string]any{"observedGeneration": status["observedGeneration"], "currentReplicas": status["currentReplicas"], "desiredReplicas": status["desiredReplicas"], "conditions": safeHPAConditions(status["conditions"]), "currentMetrics": status["currentMetrics"]}}}
+	if name != "" && (strings.EqualFold(kind, "Deployment") || strings.EqualFold(kind, "StatefulSet")) {
+		workload, e := reader.GetResource(ctx, finding.Namespace, strings.ToLower(kind)+"/"+name)
+		if e == nil {
+			ws := aiMap(workload["spec"])
+			template := aiMap(aiMap(ws["template"])["spec"])
+			containers := []map[string]any{}
+			if raw, ok := template["containers"].([]any); ok {
+				for _, item := range raw {
+					c := aiMap(item)
+					containers = append(containers, map[string]any{"name": c["name"], "image": c["image"], "resources": c["resources"]})
+				}
+			}
+			status := aiMap(workload["status"])
+			data["target"] = map[string]any{"kind": workload["kind"], "name": name, "generation": aiMap(workload["metadata"])["generation"], "replicas": ws["replicas"], "status": map[string]any{"observedGeneration": status["observedGeneration"], "replicas": status["replicas"], "updatedReplicas": status["updatedReplicas"], "readyReplicas": status["readyReplicas"], "availableReplicas": status["availableReplicas"]}, "containers": containers}
+		}
+	}
+	encoded, _ := json.Marshal(data)
+	value := string(encoded)
+	if len(value) > 2400 {
+		value = value[:2397] + "..."
+	}
+	finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "HPA analysis context", Value: value})
+	return finding
+}
+
+func aiMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	if m == nil {
+		return map[string]any{}
+	}
+	return m
+}
+func safeHPAConditions(v any) []map[string]any {
+	raw, _ := v.([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		c := aiMap(item)
+		out = append(out, map[string]any{"type": c["type"], "status": c["status"], "reason": c["reason"], "message": briefHPA(fmt.Sprint(c["message"]))})
+	}
+	return out
+}
+
 // selectAIRepair evaluates a model candidate against the live target, even when
 // deterministic inference already supplied a candidate. Model claims about
 // strategy or confidence never establish workload identity or verification.

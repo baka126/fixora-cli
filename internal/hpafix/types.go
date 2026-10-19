@@ -66,6 +66,14 @@ type PlanSummary struct {
 	ChangedPaths []string `json:"changedPaths"`
 }
 
+type RequestChange struct { Container string `json:"container"`; Resource string `json:"resource"`; Value string `json:"value"` }
+
 func (p Plan) Summary() PlanSummary {
 	return PlanSummary{Namespace: p.Namespace, HPA: p.HPAName, Target: p.TargetKind + "/" + p.TargetName, ChangedPaths: append([]string(nil), p.ChangedPaths...)}
+}
+
+func (p Plan) RequestChanges() []RequestChange {
+	out:=make([]RequestChange,0,len(p.ChangedPaths));containers,_:=nestedMap(p.candidate,"spec","template","spec")["containers"].([]any)
+	for _,path:=range p.ChangedPaths{name,resource,ok:=parseChangedPath(path);if !ok{continue};for _,raw:=range containers{c,ok:=raw.(map[string]any);if !ok||strMap(c["name"])!=name{continue};value:=nestedMap(c,"resources","requests")[resource];out=append(out,RequestChange{Container:name,Resource:resource,Value:strMap(value)});break}}
+	return out
 }

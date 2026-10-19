@@ -45,10 +45,14 @@ Delivery:
   --delivery cluster  Apply after validation and confirmation
   --delivery pr       Open a PR/MR from --repo
 
+HPA repairs require an exact local --hpa-policy. Only approved missing CPU/memory requests can be proposed;
+cluster delivery requires --delivery=cluster and confirmation. Source-managed targets remain review-only.
+
 Examples:
   kubectl fixora fix deployment/api -n prod --preview
   kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3
   kubectl fixora fix deployment/api -n prod --repo ./charts/api --delivery pr --yes
+  kubectl fixora fix hpa/api-scale -n prod --hpa-policy ./hpa-repair.yaml --preview
 
 Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, --startup-baseline, -o json
 Startup baselines must match the Deployment and image; restoration always runs shadow verification.
