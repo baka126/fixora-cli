@@ -256,6 +256,31 @@
     },
     {
       "source": "hpa.go",
+      "status": "HPAStatusStale",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "InvalidHPASpec",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MetricTargetInvalid",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MetricsUnavailable",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "UnsupportedScaleTarget",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
       "status": "MissingResourceRequests",
       "profile": "review"
     },

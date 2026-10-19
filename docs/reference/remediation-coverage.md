@@ -108,7 +108,7 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | daemonset.go | `DaemonSetFleetHeterogeneous`, `DaemonSetUnderScheduled`, `NotReady` | review |
 | deployment.go | `ReplicasMismatch` | review |
 | gateway_api.go | `BackendPortMismatch`, `ConditionFalse`, `MissingBackendRef`, `MissingParentRef` | review |
-| hpa.go | `MissingResourceRequests`, `MissingScaleTarget`, `MissingScaleTargetRef`, `ScaleTargetUnreadable` | review |
+| hpa.go | `HPAStatusStale`, `InvalidHPASpec`, `MetricTargetInvalid`, `MetricsUnavailable`, `MissingResourceRequests`, `MissingScaleTarget`, `MissingScaleTargetRef`, `ScaleTargetUnreadable`, `UnsupportedScaleTarget` | review |
 | ingress.go | `IngressPortMismatch`, `MissingBackendService`, `MissingIngressClass`, `MissingTLSSecret`, `TLSCertUnreadable`, `TLSSecretUnreadable` | review |
 | job.go | `Failed`, `JobRetrying`, `Suspended` | review |
 | logsignals.go | `ApplicationPanic`, `AuthenticationFailed`, `ConfigParseError`, `DiskFull`, `DNSResolutionFailed`, `MissingEnvVar`, `TLSHandshakeError` | review |
