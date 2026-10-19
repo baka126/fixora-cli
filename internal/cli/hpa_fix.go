@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/hpafix"
@@ -136,6 +137,16 @@ func runHPAFixRuntime(parent context.Context, out, errout io.Writer, o options, 
 	if observeErr != nil || observed.Partial {
 		report.Next = "Review workload readiness and HPA metrics; no automatic rollback was performed."
 		writeHPAReport(out, o, report)
+		if !o.yes && termui.ConfirmRollback("remove only the request fields Fixora added to this workload", inputFor(o), errout) {
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
+			rolled, rollbackErr := hpafix.Rollback(rollbackCtx, r, applied)
+			rollbackCancel()
+			if rollbackErr != nil {
+				fmt.Fprintln(errout, "HPA rollback:", rollbackErr)
+			} else {
+				fmt.Fprintln(out, rolled.Message)
+			}
+		}
 		if observeErr != nil {
 			fmt.Fprintln(errout, "HPA observation:", observeErr)
 		}

@@ -32,15 +32,13 @@ func Prepare(ctx context.Context, r Reader, authority *Authority, finding analyz
 	}
 	metricResources := map[string]bool{}
 	for _, metric := range hpa.Spec.Metrics {
-		if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil {
-			continue
+		if metric.Type != autoscalingv2.ResourceMetricSourceType || metric.Resource == nil || metric.Resource.Target.Type != autoscalingv2.UtilizationMetricType || metric.Resource.Target.AverageUtilization == nil {
+			return Plan{}, errors.New("HPA includes an unsupported metric source or target")
 		}
-		if metric.Resource.Target.Type != autoscalingv2.UtilizationMetricType || metric.Resource.Target.AverageUtilization == nil {
-			continue
+		if metric.Resource.Name != "cpu" && metric.Resource.Name != "memory" {
+			return Plan{}, errors.New("HPA resource metric must be CPU or memory utilization")
 		}
-		if metric.Resource.Name == "cpu" || metric.Resource.Name == "memory" {
-			metricResources[string(metric.Resource.Name)] = true
-		}
+		metricResources[string(metric.Resource.Name)] = true
 	}
 	if len(metricResources) == 0 {
 		return Plan{}, errors.New("HPA has no supported CPU or memory utilization metric")
@@ -131,7 +129,26 @@ func (p Plan) PatchYAML() (string, error) {
 	if err := p.check(); err != nil {
 		return "", err
 	}
-	b, err := syaml.Marshal(p.candidate)
+	grouped := map[string]map[string]string{}
+	for _, change := range p.RequestChanges() {
+		if grouped[change.Container] == nil {
+			grouped[change.Container] = map[string]string{}
+		}
+		grouped[change.Container][change.Resource] = change.Value
+	}
+	containerNames := make([]string, 0, len(grouped))
+	for name := range grouped {
+		containerNames = append(containerNames, name)
+	}
+	sort.Strings(containerNames)
+	containers := make([]any, 0, len(grouped))
+	for _, name := range containerNames {
+		requests := grouped[name]
+		containers = append(containers, map[string]any{"name": name, "resources": map[string]any{"requests": requests}})
+	}
+	metadata := nestedMap(p.original, "metadata")
+	patch := map[string]any{"apiVersion": p.original["apiVersion"], "kind": p.original["kind"], "metadata": map[string]any{"name": metadata["name"], "namespace": metadata["namespace"]}, "spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": containers}}}}
+	b, err := syaml.Marshal(patch)
 	return string(b), err
 }
 func (p Plan) check() error {

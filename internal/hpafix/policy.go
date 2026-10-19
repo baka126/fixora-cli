@@ -53,7 +53,7 @@ func LoadPolicy(path string) (*Authority, error) {
 	if err = dec.Decode(&p); err != nil {
 		return nil, fmt.Errorf("invalid HPA policy fields: %w", err)
 	}
-	if p.APIVersion != "fixora.io/v1alpha1" || p.Kind != "HPARepairPolicy" || !validDNS(p.Metadata.Name) || !validDNS(p.Metadata.Namespace) || !validDNS(p.Spec.HPA.Name) || !validDNS(p.Spec.Target.Name) {
+	if p.APIVersion != "fixora.io/v1alpha1" || p.Kind != "HPARepairPolicy" || !validDNS(p.Metadata.Name) || len(validation.IsDNS1123Label(p.Metadata.Namespace)) != 0 || !validDNS(p.Spec.HPA.Name) || !validDNS(p.Spec.Target.Name) {
 		return nil, errors.New("exact valid HPA and target policy identity required")
 	}
 	if p.Spec.Target.Kind != "Deployment" && p.Spec.Target.Kind != "StatefulSet" {

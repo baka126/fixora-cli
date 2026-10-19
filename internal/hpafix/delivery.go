@@ -120,7 +120,7 @@ func observeOnce(ctx context.Context, r Runtime, a *Applied) Outcome {
 		return Outcome{WorkloadConverged: workloadOK, Partial: true, Message: "HPA could not be observed"}
 	}
 	metrics, metricsErr := r.ListPodMetrics(ctx, a.namespace)
-	hpaOK := string(h.UID) == a.hpaUID && h.Spec.ScaleTargetRef.Kind == a.targetKind && h.Spec.ScaleTargetRef.Name == a.targetName && h.Status.ObservedGeneration != nil && *h.Status.ObservedGeneration == h.Generation && conditionTrue(h, autoscalingv2.AbleToScale) && conditionTrue(h, autoscalingv2.ScalingActive) && currentMetricsReady(h) && metricsErr == nil
+	hpaOK := string(h.UID) == a.hpaUID && h.Spec.ScaleTargetRef.Kind == a.targetKind && h.Spec.ScaleTargetRef.Name == a.targetName && h.Status.ObservedGeneration != nil && *h.Status.ObservedGeneration == h.Generation && h.Status.DesiredReplicas == replicas(nestedMap(w, "spec")["replicas"]) && h.Status.CurrentReplicas == h.Status.DesiredReplicas && !conditionTrue(h, autoscalingv2.ScalingLimited) && conditionTrue(h, autoscalingv2.AbleToScale) && conditionTrue(h, autoscalingv2.ScalingActive) && currentMetricsReady(h) && metricsErr == nil
 	if hpaOK && (!ownersComplete || len(owned) == 0 || validateMetricsForPods(metrics, owned, h) != nil) {
 		hpaOK = false
 	}

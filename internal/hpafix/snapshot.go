@@ -79,16 +79,13 @@ func collectSnapshot(ctx context.Context, r Reader, p *Plan) (Snapshot, error) {
 	owners := map[string]kube.WorkloadOwner{}
 	owned := []corev1.Pod{}
 	for _, pod := range pods {
-		if pod.DeletionTimestamp != nil {
-			return Snapshot{}, errors.New("terminating Pod makes target inventory unstable")
-		}
 		owner, e := r.ResolveOwner(ctx, pod)
 		if e != nil {
 			return Snapshot{}, fmt.Errorf("resolve Pod %s owner: %w", pod.Name, e)
 		}
-		owners[string(pod.UID)] = owner
 		if owner.Matches(p.TargetKind, p.TargetName, strMap(meta["uid"])) {
-			if pod.Namespace != p.Namespace || pod.UID == "" || !podReady(pod) {
+			owners[string(pod.UID)] = owner
+			if pod.DeletionTimestamp != nil || pod.Namespace != p.Namespace || pod.UID == "" || !podReady(pod) {
 				return Snapshot{}, fmt.Errorf("owned Pod %s is not stably Ready", pod.Name)
 			}
 			owned = append(owned, pod)
@@ -100,6 +97,12 @@ func collectSnapshot(ctx context.Context, r Reader, p *Plan) (Snapshot, error) {
 	}
 	if hpa.Status.DesiredReplicas < 1 || hpa.Status.CurrentReplicas != hpa.Status.DesiredReplicas {
 		return Snapshot{}, errors.New("HPA is actively changing replica count")
+	}
+	if hpa.Status.DesiredReplicas != desired {
+		return Snapshot{}, errors.New("HPA desired replicas differ from the stable target workload")
+	}
+	if conditionTrue(hpa, autoscalingv2.ScalingLimited) {
+		return Snapshot{}, errors.New("HPA reports a replica scaling limit")
 	}
 	if !conditionTrue(hpa, autoscalingv2.AbleToScale) {
 		return Snapshot{}, errors.New("HPA scale target is not currently operable")
@@ -124,7 +127,20 @@ func collectSnapshot(ctx context.Context, r Reader, p *Plan) (Snapshot, error) {
 	if err := validateMetricsForPods(metrics, owned, hpa); err != nil {
 		return Snapshot{}, err
 	}
-	s := Snapshot{HPA: *hpa, Workload: workload, Pods: owned, HPAs: hpas, Metrics: metrics, Owners: owners}
+	ownedMetrics := make([]map[string]any, 0, len(owned))
+	metricByName := map[string]map[string]any{}
+	for _, metric := range metrics {
+		name := strMap(nestedMap(metric, "metadata")["name"])
+		if name != "" {
+			metricByName[name] = metric
+		}
+	}
+	for _, pod := range owned {
+		if metric, ok := metricByName[pod.Name]; ok {
+			ownedMetrics = append(ownedMetrics, metric)
+		}
+	}
+	s := Snapshot{HPA: *hpa, Workload: workload, Pods: owned, HPAs: hpas, Metrics: ownedMetrics, Owners: owners}
 	s.Digest, err = snapshotDigest(s)
 	if err != nil {
 		return Snapshot{}, err

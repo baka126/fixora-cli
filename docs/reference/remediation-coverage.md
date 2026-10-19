@@ -136,7 +136,9 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 
 The `resources` profile for Pending/Unschedulable applies only to proved requests exceeding node allocatable. Taints, affinity, quota, policy and PVC scheduling failures keep review/diagnosis outcomes. CrashLoopBackOff can become OOMKilled, PermissionDenied or another cause after evidence/log refinement. The `startup` profile does not make every CrashLoop a command problem.
 
-ServicePortMismatch, MissingResourceRequests, controller rollout/replica findings and similar detections currently lack dedicated automatic repair inference. In particular, the HPA planner's substring match on “HPA” does **not** select its template for the precision status MissingResourceRequests. This is a gap, not completed HPA remediation. A review-only template can contain placeholders and is not a concrete repair.
+The generic inference planner keeps HPA findings review-only. A separate `--hpa-policy` path can prepare an exact request-only candidate for `autoscaling/v2` CPU or memory utilization metrics on an unmanaged same-namespace Deployment or StatefulSet. The policy supplies every request value; Fixora and AI never infer or approve them. Delivery requires explicit cluster selection, a successful live evidence preflight and server-side dry-run. The controller and HPA are observed separately, and an operator may explicitly restore only the fields Fixora added if observation is incomplete. Unsupported targets, metric types, multiple HPAs, source-managed workloads, unstable rollouts, missing metrics or incomplete owner evidence remain review-only.
+
+This HPA candidate does not change limits, HPA metric targets, min/max replicas, scaling behavior, or workload images and commands. It does not forecast future demand, prove capacity for later scale-out, or verify application SLOs. See the [HPA repair guide](../guides/hpa-repairs.md).
 
 ## Dynamic findings and optional APIs
 
@@ -165,7 +167,8 @@ The 24 precision checks are: `service-endpoints`, `service-ports`, `ingress-back
 | Job | Pod template; batch-specific isolation restrictions apply | Completion condition | Restore source; no rollout undo |
 | CronJob | Job pod template; batch-specific isolation restrictions apply | Schedule/suspension/recent-run checks; next scheduled run is not awaited | Restore source; no rollout undo |
 | Standalone Pod | Pod spec | Unsupported rollout can be skipped/unknown; immutable fields can block apply | Restore known-good manifest |
-| Service, Ingress, HPA, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| Service, Ingress, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| HPA (dedicated policy path) | No synthetic workload or HPA | Fresh owner/readiness/metrics snapshot and server-side dry-run; post-write rollout and HPA metrics observed separately | Explicit field-only inverse guarded by target UID and current request values |
 | PDB (dedicated policy path) | Non-disruptive admission/evidence preflight | Current-generation budget and healthy membership observation | Explicit field-only inverse with conflict guards |
 | Helm/GitOps source | Direct cluster delivery blocked | Render/review source; automatic Helm translation blocked | Revert source; Helm rollback advice may exist |
 
@@ -205,7 +208,7 @@ Validation on 2026-10-04: the full Go unit suite passed with a fresh run; the ne
 2. **Controller parity:** exercise common repairs, immutable fields, batch completion, owning-template resolution and rollback across supported targets.
 3. **Verification policies checkpoint:** proof-bound startup, approved placement, security strengthening and independently verified coordinated controller repairs; see [policy requirements and limits](controller-repairs.md).
 4. **Helm source delivery:** map changes to chart values/templates, render and compare, then validate.
-5. **Cross-resource/stateful coverage:** dependency wiring, scaling/disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
+5. **Cross-resource/stateful coverage:** dependency wiring beyond the HPA request-only slice, disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
 
 Keep the working Deployment fixtures as the baseline when implementing later points. A new “supported” finding requires positive repair tests, ambiguous/unsafe refusal tests, an explicit verification method and delivery/rollback evidence.
 

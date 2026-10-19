@@ -140,3 +140,21 @@ func TestHPAFixOutputIsConciseAndStructured(t *testing.T) {
 		t.Fatalf("structured output not concise or wrote cluster: bytes=%d writes=%d", len(out.String()), r.writes)
 	}
 }
+
+func TestHPARepairPolicyFlagParses(t *testing.T) {
+	parsed, rest, err := parseFlags([]string{"hpa/api-scale", "--hpa-policy", "approved.yaml", "--preview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.hpaPolicy != "approved.yaml" || !parsed.preview || len(rest) != 1 || rest[0] != "hpa/api-scale" {
+		t.Fatalf("unexpected parsed HPA options: %+v rest=%v", parsed, rest)
+	}
+}
+
+func TestHPAAIContextOmitsMetricSelectors(t *testing.T) {
+	metrics := safeHPASpecMetrics([]any{map[string]any{"type": "External", "external": map[string]any{"metric": map[string]any{"name": "queue-depth", "selector": map[string]any{"matchLabels": map[string]any{"tenant-token": "do-not-send"}}}}}})
+	encoded, _ := json.Marshal(metrics)
+	if strings.Contains(string(encoded), "do-not-send") || strings.Contains(string(encoded), "tenant-token") {
+		t.Fatalf("metric selector leaked into AI context: %s", encoded)
+	}
+}

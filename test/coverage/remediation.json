@@ -1,6 +1,6 @@
 {
-  "asOf": "2026-10-05",
-  "checkpoint": "fffb721",
+  "asOf": "2026-10-18",
+  "checkpoint": "codex/hpa-repairs",
   "analyzers": [
     "ConfigMap",
     "CronJob",

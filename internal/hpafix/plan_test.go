@@ -59,7 +59,7 @@ spec:
 	hpa.Namespace = "prod"
 	hpa.Spec.ScaleTargetRef = autoscalingv2.CrossVersionObjectReference{APIVersion: "apps/v1", Kind: "Deployment", Name: "api"}
 	hpa.Spec.Metrics = []autoscalingv2.MetricSpec{{Type: autoscalingv2.ResourceMetricSourceType, Resource: &autoscalingv2.ResourceMetricSource{Name: "cpu", Target: autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: ptr(int32(70))}}}, {Type: autoscalingv2.ResourceMetricSourceType, Resource: &autoscalingv2.ResourceMetricSource{Name: "memory", Target: autoscalingv2.MetricTarget{Type: autoscalingv2.UtilizationMetricType, AverageUtilization: ptr(int32(80))}}}}
-	w := map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "api", "namespace": "prod", "uid": "target-uid", "generation": int64(2), "resourceVersion": "target-rv"}, "spec": map[string]any{"replicas": int64(1), "template": map[string]any{"spec": map[string]any{"containers": []any{map[string]any{"name": "web", "image": "example/app", "resources": map[string]any{"requests": map[string]any{"cpu": "100m"}}}}}}}, "status": map[string]any{"observedGeneration": int64(2), "replicas": int64(1), "updatedReplicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}}
+	w := map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "api", "namespace": "prod", "uid": "target-uid", "generation": int64(2), "resourceVersion": "target-rv"}, "spec": map[string]any{"replicas": int64(1), "template": map[string]any{"spec": map[string]any{"containers": []any{map[string]any{"name": "web", "image": "example/app", "env": []any{map[string]any{"name": "PRIVATE_TOKEN", "value": "never-print-this"}}, "resources": map[string]any{"requests": map[string]any{"cpu": "100m"}}}}}}}, "status": map[string]any{"observedGeneration": int64(2), "replicas": int64(1), "updatedReplicas": int64(1), "readyReplicas": int64(1), "availableReplicas": int64(1)}}
 	f := analyzer.Finding{Namespace: "prod", ResourceKind: "HorizontalPodAutoscaler", ResourceName: "api-scale", Status: "MissingResourceRequests"}
 	return a, planReader{hpa, w}, f
 }
@@ -80,6 +80,9 @@ func TestPrepareAddsOnlyPolicyApprovedMissingRequests(t *testing.T) {
 	}
 	if !strings.Contains(patch, "memory: 128Mi") || strings.Contains(patch, "cpu: 250m") {
 		t.Fatalf("candidate did not limit patch to the missing request:\n%s", patch)
+	}
+	if strings.Contains(patch, "never-print-this") {
+		t.Fatalf("review patch leaked unrelated environment data:\n%s", patch)
 	}
 }
 
@@ -105,6 +108,13 @@ func TestPrepareRejectsNonUtilizationAndUnsupportedTarget(t *testing.T) {
 		r.hpa.Spec.Metrics[0].Resource.Target = autoscalingv2.MetricTarget{Type: autoscalingv2.AverageValueMetricType, AverageValue: resource.NewQuantity(1, resource.DecimalSI)}
 		if _, err := Prepare(context.Background(), r, a, f); err == nil {
 			t.Fatal("AverageValue metric authorized request patch")
+		}
+	})
+	t.Run("mixed external metric", func(t *testing.T) {
+		a, r, f := candidateFixture(t)
+		r.hpa.Spec.Metrics = append(r.hpa.Spec.Metrics, autoscalingv2.MetricSpec{Type: autoscalingv2.ExternalMetricSourceType, External: &autoscalingv2.ExternalMetricSource{Metric: autoscalingv2.MetricIdentifier{Name: "requests-per-second"}, Target: autoscalingv2.MetricTarget{Type: autoscalingv2.AverageValueMetricType, AverageValue: resource.NewQuantity(1, resource.DecimalSI)}}})
+		if _, err := Prepare(context.Background(), r, a, f); err == nil {
+			t.Fatal("mixed external metric HPA was allowed into request repair")
 		}
 	})
 	t.Run("unsupported workload", func(t *testing.T) {

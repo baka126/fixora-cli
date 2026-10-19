@@ -1,0 +1,32 @@
+# HPA request repair acceptance report
+
+Date: 2026-10-18  
+Branch: `codex/hpa-repairs`  
+Implementation base: `02eea0a`
+
+## Delivered
+
+Fixora now diagnoses HPA generation, target, metric-condition and request-utilization failures. A strict local `HPARepairPolicy` can authorize exact missing CPU or memory requests for named regular containers on a same-namespace Deployment or StatefulSet. The dedicated runtime collects typed HPA/workload/Pod/owner/PodMetrics evidence, server-side dry-runs the narrow request patch, issues a private one-use receipt, applies with UID/resourceVersion tests, observes rollout and HPA metrics separately, and supports a guarded field-only inverse.
+
+The CLI exposes `--hpa-policy`. Preview and JSON/YAML output remain read-only. AI receives bounded HPA and workload evidence but cannot authorize or change request values. Source-managed workloads remain review-only. The local kind harness is explicit opt-in and owns a unique cluster and kubeconfig.
+
+## Verification
+
+Passed:
+
+- `go test ./test/coverage ./internal/hpafix ./internal/analyzer ./internal/cli ./test/e2e -count=1`
+- `go test ./... -count=1`
+- `go test -race ./... -count=1`
+- `go vet ./...`
+- `make build`
+- `go test -c -tags='e2e,e2e_delivery' -o /tmp/fixora-hpa-e2e.test ./test/e2e`
+- `bash -n hack/e2e-hpa.sh`
+- `git diff --check`
+
+The static harness tests confirm explicit opt-in precedes cluster creation and that cluster operations use the dedicated kubeconfig. Live kind execution was skipped because Docker is unavailable in this environment. The tagged controller test compiled but was not run against a live metrics-server or Kubernetes controller.
+
+## Scope limits
+
+Only autoscaling/v2 CPU/memory `Resource` metrics with `target.type=Utilization` can enter the candidate path. External/custom/container metrics, cross-namespace targets, unsupported controllers, multiple HPAs for one workload, incomplete ownership or metrics evidence, scaling transitions, stale status, and scaling limits remain blocked or review-only. An approved request is operator intent; it does not prove sustained capacity, future scale-out headroom, or application SLOs.
+
+No EKS demo resources or external cluster were accessed during this work.

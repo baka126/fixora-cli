@@ -86,6 +86,15 @@ func TestSnapshotPreservesPodMetricsReadFailure(t *testing.T) {
 	}
 }
 
+func TestSnapshotRejectsHPAReplicaDrift(t *testing.T) {
+	p, _, _, runtime := verifyFixture(t)
+	runtime.hpa.Status.DesiredReplicas = 2
+	runtime.hpa.Status.CurrentReplicas = 2
+	if _, err := collectSnapshot(context.Background(), runtime, &p); err == nil {
+		t.Fatal("HPA desired replicas differing from the stable target were accepted")
+	}
+}
+
 func TestVerifyDryRunsExactTemplatePatch(t *testing.T) {
 	p, _, _, runtime := verifyFixture(t)
 	receipt, err := Verify(context.Background(), runtime, p)

@@ -65,6 +65,25 @@ func TestObserveSeparatesRolloutFromHPAHealth(t *testing.T) {
 	}
 }
 
+func TestObserveTreatsScalingLimitAsPartial(t *testing.T) {
+	p, r, receipt := authorizedRuntime(t)
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.hpa.Status.Conditions = append(r.hpa.Status.Conditions, autoscalingv2.HorizontalPodAutoscalerCondition{Type: autoscalingv2.ScalingLimited, Status: corev1.ConditionTrue, Reason: "TooManyReplicas"})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	out, err := Observe(ctx, r, applied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.HPAHealthy || !out.Partial {
+		t.Fatalf("scaling limit reported healthy: %+v", out)
+	}
+}
+
 func TestRollbackRestoresOnlyAddedRequests(t *testing.T) {
 	p, r, receipt := authorizedRuntime(t)
 	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }

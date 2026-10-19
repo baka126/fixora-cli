@@ -29,7 +29,7 @@ func withHPAAnalysisContext(ctx context.Context, reader kube.Reader, finding ana
 	ref := aiMap(spec["scaleTargetRef"])
 	status := aiMap(hpa["status"])
 	kind, name := fmt.Sprint(ref["kind"]), fmt.Sprint(ref["name"])
-	data := map[string]any{"hpa": map[string]any{"name": finding.ResourceName, "spec": map[string]any{"scaleTargetRef": ref, "minReplicas": spec["minReplicas"], "maxReplicas": spec["maxReplicas"], "metrics": spec["metrics"]}, "status": map[string]any{"observedGeneration": status["observedGeneration"], "currentReplicas": status["currentReplicas"], "desiredReplicas": status["desiredReplicas"], "conditions": safeHPAConditions(status["conditions"]), "currentMetrics": status["currentMetrics"]}}}
+	data := map[string]any{"hpa": map[string]any{"name": finding.ResourceName, "spec": map[string]any{"scaleTargetRef": map[string]any{"apiVersion": ref["apiVersion"], "kind": ref["kind"], "name": ref["name"]}, "minReplicas": spec["minReplicas"], "maxReplicas": spec["maxReplicas"], "metrics": safeHPASpecMetrics(spec["metrics"])}, "status": map[string]any{"observedGeneration": status["observedGeneration"], "currentReplicas": status["currentReplicas"], "desiredReplicas": status["desiredReplicas"], "conditions": safeHPAConditions(status["conditions"]), "currentMetrics": safeHPACurrentMetrics(status["currentMetrics"])}}}
 	if name != "" && (strings.EqualFold(kind, "Deployment") || strings.EqualFold(kind, "StatefulSet")) {
 		workload, e := reader.GetResource(ctx, finding.Namespace, strings.ToLower(kind)+"/"+name)
 		if e == nil {
@@ -68,6 +68,47 @@ func safeHPAConditions(v any) []map[string]any {
 	for _, item := range raw {
 		c := aiMap(item)
 		out = append(out, map[string]any{"type": c["type"], "status": c["status"], "reason": c["reason"], "message": briefHPA(fmt.Sprint(c["message"]))})
+	}
+	return out
+}
+
+func safeHPASpecMetrics(v any) []map[string]any {
+	raw, _ := v.([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		metric := aiMap(item)
+		entry := map[string]any{"type": metric["type"]}
+		resource := aiMap(metric["resource"])
+		if len(resource) > 0 {
+			target := aiMap(resource["target"])
+			entry["resource"] = map[string]any{"name": resource["name"], "target": map[string]any{"type": target["type"], "averageUtilization": target["averageUtilization"], "averageValue": target["averageValue"]}}
+		}
+		external := aiMap(metric["external"])
+		if len(external) > 0 {
+			entry["externalMetricName"] = aiMap(external["metric"])["name"]
+		}
+		out = append(out, entry)
+		if len(out) == 8 {
+			break
+		}
+	}
+	return out
+}
+func safeHPACurrentMetrics(v any) []map[string]any {
+	raw, _ := v.([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		metric := aiMap(item)
+		resource := aiMap(metric["resource"])
+		if len(resource) == 0 {
+			out = append(out, map[string]any{"type": metric["type"]})
+			continue
+		}
+		current := aiMap(resource["current"])
+		out = append(out, map[string]any{"type": metric["type"], "resource": map[string]any{"name": resource["name"], "averageUtilization": current["averageUtilization"], "averageValue": current["averageValue"]}})
+		if len(out) == 8 {
+			break
+		}
 	}
 	return out
 }
