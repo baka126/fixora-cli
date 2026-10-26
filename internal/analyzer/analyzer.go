@@ -189,6 +189,17 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		return Finding{}, fmt.Errorf("resource must look like kind/name")
 	}
 	ns := a.opts.Namespace
+	if isPersistentVolumeClaimKind(kind) {
+		findings, err := a.analyzePVCs(NewScanContext(ctx, a.k, a.opts))
+		if err != nil {
+			return Finding{}, err
+		}
+		for _, finding := range findings {
+			if finding.Namespace == ns && finding.ResourceName == name {
+				return finding, nil
+			}
+		}
+	}
 	if kind == "pod" || kind == "pods" {
 		pod, err := a.k.GetPod(ctx, ns, name)
 		if err != nil {
@@ -807,12 +818,15 @@ func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanCont
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {
 	labels, annotations := objectLabelsAnnotations(obj)
+	meta, _ := obj["metadata"].(map[string]any)
+	uid, _ := meta["uid"].(string)
 	status := "Unknown"
 	if s, ok := obj["status"].(map[string]any); ok {
 		status = compactMap(s)
 	}
 	return Finding{
 		ID:           namespace + "/" + kind + "/" + name,
+		ResourceUID:  uid,
 		Namespace:    namespace,
 		ResourceKind: toTitle(kind),
 		ResourceName: name,
@@ -827,6 +841,15 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 			Description:   "Controller resources often need pod, event, service, and endpoint evidence before a safe fix can be suggested.",
 			SafeByDefault: true,
 		}},
+	}
+}
+
+func isPersistentVolumeClaimKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
+		return true
+	default:
+		return false
 	}
 }
 

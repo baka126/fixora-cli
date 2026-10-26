@@ -462,12 +462,12 @@
     {
       "source": "pvc.go",
       "status": "MissingStorageClass",
-      "profile": "review"
+      "profile": "pvc-policy"
     },
     {
       "source": "pvc.go",
       "status": "Pending",
-      "profile": "review"
+      "profile": "pvc-policy"
     },
     {
       "source": "pvc.go",
@@ -477,7 +477,7 @@
     {
       "source": "pvc.go",
       "status": "SmallStorageRequest",
-      "profile": "review"
+      "profile": "pvc-policy"
     },
     {
       "source": "pvc.go",
@@ -497,7 +497,7 @@
     {
       "source": "pvc.go",
       "status": "VolumeResizePending",
-      "profile": "review"
+      "profile": "pvc-policy"
     },
     {
       "source": "rbac.go",

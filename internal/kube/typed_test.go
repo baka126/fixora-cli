@@ -12,6 +12,7 @@ func TestResourceCandidateHandlesShortcutsAndGroups(t *testing.T) {
 	tests := map[string]string{
 		"hpa":                                  "autoscaling/v2, Resource=horizontalpodautoscalers",
 		"pdb":                                  "policy/v1, Resource=poddisruptionbudgets",
+		"pvc":                                  "/, Resource=persistentvolumeclaims",
 		"httproutes.gateway.networking.k8s.io": "gateway.networking.k8s.io/, Resource=httproutes",
 		"pods":                                 "/, Resource=pods",
 	}

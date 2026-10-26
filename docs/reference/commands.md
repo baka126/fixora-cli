@@ -79,7 +79,7 @@ The following require [codex/production-hardening](https://github.com/baka126/fi
 | Output | `-o, --output`, `--out`, `--wide`, `--no-color`, `--max-findings`, `--watch-interval` |
 | AI and privacy | `--ai`, `--redact`, `--paranoid`, `--unsafe-ai-no-redact`, `--profile`, `--ai-budget-tokens` |
 | Planning | `--auto-fix`, `--preview`, `--strategy`, `--force-risky`, `--container`, `--image`, `--memory-request`, `--memory-limit`, `--cpu-request`, `--env-name`, `--configmap`, `--config-key` |
-| Delivery | `--apply`, `--apply-dry-run`, `--source-patch`, `--repo`, `--gitops`, `--shadow`, `--shadow-timeout`, `--shadow-retries`, `--keep-shadow`, `--shadow-egress`, `--delivery`, `--pr-base`, `--pr-title`, `--yes` |
+| Delivery | `--apply`, `--apply-dry-run`, `--source-patch`, `--repo`, `--gitops`, `--shadow`, `--shadow-timeout`, `--shadow-retries`, `--keep-shadow`, `--shadow-egress`, `--delivery`, `--pvc-policy` (exact StorageClass assignment or bounded expansion), `--pr-base`, `--pr-title`, `--yes` |
 | Presets and files | `--quick`, `--safe`, `-f, --filename`, `--tui` |
 
 Some flags only affect relevant commands. `--quick` can skip default shadow verification; an output without shadow is not shadow-verified. PR delivery in v0.8.0 requires `--yes` for its remote Git operation; it may still request shadow review. `--unsafe-ai-no-redact` can expose sensitive evidence to a provider.

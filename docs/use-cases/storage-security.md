@@ -21,6 +21,8 @@ kubectl fixora scan -n prod --filter PVC,StorageClass,StatefulSet
 
 Check Pending/Lost claims, provisioning Events, class existence, capacity, and attachment constraints. A bound claim does not prove the filesystem is healthy inside the container. The `StorageClass` and `StatefulSet` analyzers can be selected explicitly when they are outside the default set.
 
+Policy-bound repair is available for a narrowly approved class assignment or monotonic volume expansion. See the [PVC repair guide]({{ '/guides/pvc-repairs/' | relative_url }}); Lost claims, reclaim/rebind changes, data recovery, and source-managed storage remain review-only.
+
 ## RBAC and policy
 
 **Effect:** Reads service-account authorization and security/policy signals. It does not grant permissions or change policy.

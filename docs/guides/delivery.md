@@ -48,4 +48,6 @@ In v0.8.0, PR delivery requires `--yes` to acknowledge the remote Git operation;
 
 `fix Service/<name> --service-policy <local-file>` uses a dedicated routing verifier rather than a workload clone. See [Service repairs](service-repairs.md) for local intent and the fixed probe image. Preview and JSON/YAML output create no verifier or production resources.
 
+`fix pvc/<name> --pvc-policy <local-file>` is a separate exact-intent flow for unbound class assignment or bounded volume expansion. It uses a PVC server-side dry-run and live binding/capacity observation; it never mounts production storage in a shadow. See [PVC repairs](pvc-repairs.md) for policy examples and the non-rollbackable expansion limits.
+
 A successful temporary-Service TCP/HTTP contract permits a guarded selector/targetPort patch for an unmanaged ClusterIP Service. The production gate repeats the contract against the real Service; it does not establish dependent application recovery. Failed gates offer an explicit field-only inverse. `--yes` never silently authorizes rollback. Helm Service values translation remains manual review. Raw/Kustomize source delivery produces a reviewed patch and retains the existing source/Git validation flow; a temporary routing contract does not certify a rendered source change or reconciliation.

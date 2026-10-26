@@ -50,6 +50,7 @@ import (
 
 type options struct {
 	servicePolicy                                                           string
+	pvcPolicy                                                               string
 	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
 	helmValues, helmAPIVersions, helmMappings                               listFlag
 	repairBaseline                                                          string
@@ -355,6 +356,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.servicePolicy != "" {
 			return runServiceFix(ctx, stdout, stderr, opts, finding)
 		}
+		if opts.pvcPolicy != "" || isPVCResourceKind(finding.ResourceKind) {
+			return runPVCFix(ctx, stdout, stderr, opts, finding)
+		}
 		if hasHelmSourceContext(opts) {
 			return runHelmSourceDelivery(ctx, stdout, stderr, opts, reader, k, finding, plan)
 		}
@@ -630,6 +634,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
+	fs.StringVar(&opts.pvcPolicy, "pvc-policy", "", "exact local PVC StorageClass assignment or bounded expansion policy")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
@@ -1629,6 +1634,8 @@ func nextConcreteFixHint(resourceArg string, plan fix.Plan) string {
 	switch strings.ToLower(plan.Strategy) {
 	case "repair-selector", "service":
 		return base + " --service-policy <approved-local-file> --preview"
+	case "pvc", "storage":
+		return base + " --pvc-policy <approved-local-file> --preview"
 	case "image":
 		return base + " --container <container> --image <pinned-image>"
 	case "resources":
@@ -3036,6 +3043,7 @@ Global flags:
       --repo string            Local repo/chart/overlay path
       --strategy string        Fix strategy such as rollback, right-size, repair-selector
       --service-policy string  Approved local Service routing intent and pinned verifier image
+      --pvc-policy string      Exact local PVC StorageClass assignment or bounded expansion policy
       --preview                Preview patch plan only
       --force-risky            Allow risky concrete fixes after review
       --typed-client           Use client-go/controller-runtime typed client for analyzer reads

@@ -49,12 +49,15 @@ Examples:
   kubectl fixora fix deployment/api -n prod --preview
   kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3
   kubectl fixora fix deployment/api -n prod --repo ./charts/api --delivery pr --yes
+  kubectl fixora fix pvc/data -n prod --pvc-policy ./pvc-repair.yaml --preview
 
 Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, --startup-baseline, -o json
 Startup baselines must match the Deployment and image; restoration always runs shadow verification.
 Fix enables AI when configured; --no-ai disables it. AI candidates and startup/cache
 repairs require shadow verification, including with --quick. Other quick repairs
 skip shadow verification. Use --yes for scripted delivery.
+PVC repairs require an exact local --pvc-policy. Expansion is non-rollbackable and remains
+pending until the provisioner reports capacity; Fixora never mounts a production PVC in a shadow.
 `
 	case "coordinate", "fix-set":
 		help = `Usage: kubectl fixora coordinate <kind/name>... [-n namespace] [flags]

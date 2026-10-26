@@ -2,6 +2,8 @@ package analyzer
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
@@ -34,6 +36,106 @@ func TestPVCStorageClassNotFound(t *testing.T) {
 	for _, f := range findings {
 		if f.Status == "StorageClassNotFound" && f.Severity != "high" {
 			t.Fatalf("expected high severity for StorageClassNotFound, got %q", f.Severity)
+		}
+	}
+}
+
+func TestPVCFindingIncludesIdentityBoundStorageEvidenceChain(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{items: map[string][]map[string]any{
+		"pvc":            {{"metadata": map[string]any{"namespace": "prod", "name": "data", "uid": "pvc-1", "resourceVersion": "5"}, "spec": map[string]any{"storageClassName": "gp3", "volumeName": "pv-data", "accessModes": []any{"ReadWriteOnce"}, "resources": map[string]any{"requests": map[string]any{"storage": "8Gi"}}}, "status": map[string]any{"phase": "Pending", "capacity": map[string]any{"storage": "8Gi"}}}},
+		"storageclasses": {{"metadata": map[string]any{"name": "gp3", "uid": "sc-1", "resourceVersion": "4"}, "provisioner": "ebs.csi.aws.com", "allowVolumeExpansion": true, "volumeBindingMode": "WaitForFirstConsumer"}},
+		"pv":             {{"metadata": map[string]any{"name": "pv-data", "uid": "pv-1", "resourceVersion": "3"}, "spec": map[string]any{"storageClassName": "gp3", "persistentVolumeReclaimPolicy": "Retain", "claimRef": map[string]any{"namespace": "prod", "name": "data", "uid": "pvc-1"}, "nodeAffinity": map[string]any{"required": map[string]any{"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{map[string]any{"key": "topology.kubernetes.io/zone", "values": []any{"us-east-1a"}}}}}}}}, "status": map[string]any{"phase": "Bound"}}},
+		"pods":           {{"metadata": map[string]any{"namespace": "prod", "name": "consumer", "uid": "pod-1", "ownerReferences": []any{map[string]any{"kind": "Deployment", "name": "api", "uid": "deployment-1"}}}, "spec": map[string]any{"nodeName": "node-a", "volumes": []any{map[string]any{"name": "data", "persistentVolumeClaim": map[string]any{"claimName": "data"}}}}, "status": map[string]any{"phase": "Running", "conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}}},
+	}}, Options{Namespace: "prod"})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil || len(findings) == 0 {
+		t.Fatalf("findings=%v err=%v", findings, err)
+	}
+	if findings[0].ResourceUID != "pvc-1" {
+		t.Fatalf("PVC finding UID=%q, want pvc-1 for guarded repairs", findings[0].ResourceUID)
+	}
+	labels := map[string]string{}
+	for _, evidence := range findings[0].Evidence {
+		labels[evidence.Label] = evidence.Value
+	}
+	for _, want := range []struct{ label, value string }{
+		{"PVC identity", "uid=pvc-1 resourceVersion=5 phase=Pending"},
+		{"Requested and observed capacity", "requested=8Gi observed=8Gi"},
+		{"StorageClass", "gp3 uid=sc-1 resourceVersion=4 provisioner=ebs.csi.aws.com bindingMode=WaitForFirstConsumer expansion=true"},
+		{"PersistentVolume", "pv-data uid=pv-1 resourceVersion=3 phase=Bound storageClass=gp3 reclaimPolicy=Retain claim=prod/data uid=pvc-1 topology=topology.kubernetes.io/zone=us-east-1a"},
+		{"Consumers", "consumer uid=pod-1 phase=Running ready=true node=node-a owner=Deployment/api"},
+	} {
+		if labels[want.label] != want.value {
+			t.Errorf("evidence %q=%q, want %q", want.label, labels[want.label], want.value)
+		}
+	}
+}
+
+func TestAnalyzePVCUsesDeterministicPVCFindingAndIdentity(t *testing.T) {
+	pvc := map[string]any{
+		"metadata": map[string]any{"namespace": "prod", "name": "data", "uid": "pvc-1", "resourceVersion": "5"},
+		"spec":     map[string]any{"storageClassName": "", "resources": map[string]any{"requests": map[string]any{"storage": "1Gi"}}},
+		"status":   map[string]any{"phase": "Pending"},
+	}
+	reader := fakeReader{
+		resource: pvc,
+		items: map[string][]map[string]any{
+			"pvc":            {pvc},
+			"storageclasses": {},
+			"pv":             {},
+			"pods":           {},
+		},
+	}
+	finding, err := New(reader, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "pvc/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.ResourceKind != "PersistentVolumeClaim" || finding.ResourceUID != "pvc-1" || finding.Status != "MissingStorageClass" {
+		t.Fatalf("PVC target did not return the exact analyzer finding: %#v", finding)
+	}
+	if finding.Summary != "PVC explicitly opts out of StorageClasses; this claim cannot be assigned a class in place." {
+		t.Fatalf("explicit empty StorageClass was not explained accurately: %q", finding.Summary)
+	}
+}
+
+func TestAnalyzeHealthyPVCStillReturnsUIDForPolicyBoundExpansion(t *testing.T) {
+	pvc := map[string]any{
+		"metadata": map[string]any{"namespace": "prod", "name": "data", "uid": "pvc-2", "resourceVersion": "8"},
+		"spec": map[string]any{
+			"storageClassName": "gp3",
+			"volumeName":       "pv-data",
+			"resources":        map[string]any{"requests": map[string]any{"storage": "1Gi"}},
+		},
+		"status": map[string]any{"phase": "Bound", "capacity": map[string]any{"storage": "1Gi"}},
+	}
+	reader := fakeReader{resource: pvc, items: map[string][]map[string]any{
+		"pvc":            {pvc},
+		"storageclasses": {{"metadata": map[string]any{"name": "gp3"}, "provisioner": "ebs.csi.aws.com", "allowVolumeExpansion": true}},
+		"pv":             {},
+		"pods":           {},
+	}}
+	finding, err := New(reader, Options{Namespace: "prod"}).AnalyzeResource(context.Background(), "pvc/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding.ResourceUID != "pvc-2" || finding.ResourceKind != "Pvc" {
+		t.Fatalf("healthy PVC lost its identity: %#v", finding)
+	}
+}
+
+func TestPVCFindingReportsUnavailableInventoryInsteadOfAbsence(t *testing.T) {
+	ctx := NewScanContext(context.Background(), fakeReader{items: map[string][]map[string]any{"pvc": {{"metadata": map[string]any{"namespace": "prod", "name": "data", "uid": "pvc-1", "resourceVersion": "5"}, "spec": map[string]any{"storageClassName": "gp3"}, "status": map[string]any{"phase": "Pending"}}}}, itemErrs: map[string]error{"storageclasses": errors.New("forbidden"), "pv": errors.New("forbidden"), "pods": errors.New("forbidden")}}, Options{Namespace: "prod"})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzePVCs(ctx)
+	if err != nil || len(findings) == 0 {
+		t.Fatalf("findings=%v err=%v", findings, err)
+	}
+	joined := ""
+	for _, evidence := range findings[0].Evidence {
+		joined += evidence.Label + ":" + evidence.Value + "\n"
+	}
+	for _, want := range []string{"StorageClass inventory:unavailable", "PersistentVolume inventory unavailable:PV", "Consumer inventory unavailable:consumer"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("evidence does not report %q: %s", want, joined)
 		}
 	}
 }
@@ -133,6 +235,15 @@ func TestPVCVolumeAttachFailed(t *testing.T) {
 	for _, f := range findings {
 		if f.Status == "VolumeAttachFailed" && f.Severity != "high" {
 			t.Fatalf("expected high severity for VolumeAttachFailed, got %q", f.Severity)
+		}
+		if f.Status == "VolumeAttachFailed" {
+			joined := ""
+			for _, evidence := range f.Evidence {
+				joined += evidence.Value + "\n"
+			}
+			if !strings.Contains(joined, "FailedMount") || !strings.Contains(joined, "unmounted volumes") {
+				t.Fatalf("mount event evidence was lost: %s", joined)
+			}
 		}
 	}
 }

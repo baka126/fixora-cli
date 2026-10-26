@@ -29,6 +29,7 @@ An AI proposal is possible for every failing profile when enough evidence is ava
 | probe | Unambiguous numeric readiness port mismatch → port candidate | Readiness/liveness/startup probe fields | Yes, if source is cloneable | Conditional; AI may propose path/timing repairs using evidence |
 | filesystem | Narrow proved transient-cache write → emptyDir/fsGroup candidate for Deployment/StatefulSet/DaemonSet/ReplicaSet templates | Cache-only filesystem policy; preserve security and storage | Yes, if source is cloneable | Conditional; AI can choose workload-specific mount/name; live evidence is Deployment-only |
 | service-routing | Explicit local `--service-policy`, same-namespace Ready Deployment/StatefulSet/DaemonSet backend and operator-approved digest-pinned verifier | Exact policy selector/targetPort only; mixed changes rejected | Dedicated temporary Service and IP-only TCP/HTTP verifier | UID/RV guarded ClusterIP routing delivery; production contract gate and explicit field-only rollback; Helm values remain manual review |
+| pvc-policy | Exact local `--pvc-policy`; unbound class assignment or Bound claim expansion within explicit max | AI is explanatory only; exact PVC/class/size policy is mutation authority | No shadow mounts production storage; server-side dry-run plus live binding/capacity and original consumer readiness observation | UID/RV guarded PVC field patch; expansion cannot be rolled back; source-managed and data/reclaim operations remain review-only |
 | connection | Approved connection ConfigMap + ready TCP Service + proved client consumption → env candidate (Deployment only) | Env patch; source/key/endpoint checks | Yes, if source is cloneable | Conditional; no dependency creation or credential invention |
 | placement | Explicit matching baseline + current placement predicate failure, safe compatible nodes and capacity | Approved fields only; narrative grants no authority | Required with admitted placement checks | Conditional controllers; unsupported scheduling constraints remain review |
 | startup | CrashLoop is a symptom; command repair requires explicit matching --startup-baseline (matching workload envelope); other proved causes can use another family | restore-command baseline; arbitrary AI commands stay review-only | Yes for approved baseline | Conditional baseline restore; guessed startup never automatic |
@@ -71,7 +72,7 @@ All entries below also have the registered status-summary fallback when enabled 
 | OLMOperatorGroup | OLM precision | Review/diagnosis; see named findings below |
 | OLMSubscription | OLM precision | Review/diagnosis; see named findings below |
 | PDB | Disruption availability | Review/diagnosis; see named findings below |
-| PVC | PVC events/class/volume precision | Review/diagnosis; see named findings below |
+| PVC | PVC events/class/volume/consumer/PV/StorageClass/topology evidence | Exact-policy class assignment or monotonic expansion for eligible claims; other findings remain review/diagnosis |
 | Pod | Container states/events/logs/probes | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ReplicaSet | ReplicaSet creation + owned pods | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ResourceClaim | DeviceClass reference (opt-in/optional API) | Review/diagnosis; see named findings below |
@@ -121,7 +122,8 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | pdb.go | `DisruptionsBlocked` | review |
 | pod_security.go | `DefaultServiceAccount`, `HostNamespaceEnabled`, `PrivilegedContainer/`, `RunAsNonRootMissing/` | review |
 | pod_terminating.go | `PodStuckTerminating` | review |
-| pvc.go | `Lost`, `MissingStorageClass`, `Pending`, `ProvisioningFailed`, `SmallStorageRequest`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer`, `VolumeResizePending` | review |
+| pvc.go | `MissingStorageClass`, `Pending`, `SmallStorageRequest`, `VolumeResizePending` | pvc-policy only with exact local intent and eligible live identity/capability evidence; status alone never authorizes delivery |
+| pvc.go | `Lost`, `ProvisioningFailed`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer` | review |
 | rbac.go | `ClusterAdminBinding`, `WildcardRBAC` | review |
 | registry.go | `Unhealthy` | diagnosis |
 | analyzer.go | `FailedCreate` (current revision-linked PSA denial) | security |
@@ -165,7 +167,7 @@ The 24 precision checks are: `service-endpoints`, `service-ports`, `ingress-back
 | Job | Pod template; batch-specific isolation restrictions apply | Completion condition | Restore source; no rollout undo |
 | CronJob | Job pod template; batch-specific isolation restrictions apply | Schedule/suspension/recent-run checks; next scheduled run is not awaited | Restore source; no rollout undo |
 | Standalone Pod | Pod spec | Unsupported rollout can be skipped/unknown; immutable fields can block apply | Restore known-good manifest |
-| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | Production PVCs are never mounted in a shadow | PVCs use exact UID/RV patch, server-side dry-run, and binding/capacity observation; no application semantics claim | Expansion has no automatic rollback; Lost/reclaim/rebind/data operations remain review-only |
 | Helm/GitOps source | Direct cluster delivery blocked | Render/review source; automatic Helm translation blocked | Revert source; Helm rollback advice may exist |
 
 These describe code paths, not equal live coverage across controllers. The existing eight-workload live baseline used Deployments. Expanding controller parity is point 2 and remains outstanding.

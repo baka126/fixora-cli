@@ -105,7 +105,7 @@ func TestRemediationInventoryCoversDetectors(t *testing.T) {
 	}
 	checkNames(t, "precision check", precision, inv.PrecisionChecks)
 	documented := map[string]bool{}
-	profiles := map[string]bool{"diagnosis": true, "review": true, "image": true, "resources": true, "startup": true, "config": true, "probe": true, "filesystem": true, "connection": true, "service-routing": true, "healthy": true, "security": true}
+	profiles := map[string]bool{"diagnosis": true, "review": true, "image": true, "resources": true, "startup": true, "config": true, "probe": true, "filesystem": true, "connection": true, "service-routing": true, "pvc-policy": true, "healthy": true, "security": true}
 	for _, e := range inv.Findings {
 		key := e.Source + ":" + e.Status
 		if documented[key] {
@@ -119,6 +119,17 @@ func TestRemediationInventoryCoversDetectors(t *testing.T) {
 	for key := range actual {
 		if !documented[key] {
 			t.Errorf("unreviewed finding %s; add its outcome to remediation.json and the coverage reference", key)
+		}
+	}
+	for _, status := range []string{"MissingStorageClass", "Pending", "SmallStorageRequest", "VolumeResizePending"} {
+		if !documented["pvc.go:"+status] {
+			t.Errorf("PVC repair outcome %s is not inventoried", status)
+			continue
+		}
+		for _, e := range inv.Findings {
+			if e.Source == "pvc.go" && e.Status == status && e.Profile != "pvc-policy" {
+				t.Errorf("%s has profile %s, want pvc-policy", status, e.Profile)
+			}
 		}
 	}
 }

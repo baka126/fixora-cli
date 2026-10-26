@@ -397,6 +397,8 @@ func resourceCandidate(resource string) schema.GroupVersionResource {
 		return schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}
 	case "pdb":
 		return schema.GroupVersionResource{Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"}
+	case "pvc":
+		return schema.GroupVersionResource{Resource: "persistentvolumeclaims"}
 	}
 	parts := strings.Split(resource, ".")
 	if len(parts) > 1 {
