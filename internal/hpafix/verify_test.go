@@ -126,6 +126,21 @@ func TestVerifyRejectsAdmissionMetadataMutation(t *testing.T) {
 	}
 }
 
+func TestVerifyAcceptsEquivalentCanonicalizedQuantity(t *testing.T) {
+	a, reader, f := candidateFixture(t)
+	a.intent.Spec.Requests[0].Memory = "0.125Gi"
+	p, err := Prepare(context.Background(), reader, a, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newVerifyRuntime(t, reader)
+	runtime.patchResult = cloneObject(p.candidate)
+	nestedMap(runtime.patchResult, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)["memory"] = "128Mi"
+	if _, err := Verify(context.Background(), runtime, p); err != nil {
+		t.Fatalf("equivalent admitted quantity rejected: %v", err)
+	}
+}
+
 func TestVerifyRejectsReplacedTargetUID(t *testing.T) {
 	p, _, _, runtime := verifyFixture(t)
 	runtime.patchResult["metadata"].(map[string]any)["uid"] = "replacement"

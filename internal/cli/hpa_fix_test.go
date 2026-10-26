@@ -81,6 +81,16 @@ func TestHPAFixPreviewNeverWrites(t *testing.T) {
 	}
 }
 
+func TestHPAPolicySelectsPreciseRequestFindingOverMetricsSymptom(t *testing.T) {
+	base := analyzer.Finding{Namespace: "prod", ResourceKind: "HorizontalPodAutoscaler", ResourceName: "api-scale", Status: "MetricsUnavailable", Severity: "high"}
+	other := analyzer.Finding{Namespace: "prod", ResourceKind: "HorizontalPodAutoscaler", ResourceName: "other", Status: "MissingResourceRequests"}
+	precise := analyzer.Finding{Namespace: "prod", ResourceKind: "HorizontalPodAutoscaler", ResourceName: "api-scale", Status: "MissingResourceRequests"}
+	selected := preferHPAPolicyFinding(base, []analyzer.Finding{other, precise})
+	if selected.Status != "MissingResourceRequests" || selected.ResourceName != base.ResourceName {
+		t.Fatalf("selected finding = %+v", selected)
+	}
+}
+
 func TestHPAFixRequiresPolicyAndExplicitClusterDelivery(t *testing.T) {
 	o, _, f := hpaCLIFixture(t)
 	o.hpaPolicy = ""

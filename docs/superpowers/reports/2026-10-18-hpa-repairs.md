@@ -50,3 +50,9 @@ The implementation remains clean after the final review fixes. Fresh verificatio
 
 Loopback tests required sandbox escalation and passed. The local `kind` binary is available, but Docker is not, so live kind execution remains skipped; tagged tests compile, but do not establish live HPA-controller behavior.
 The documentation source checker flags only the pre-existing missing front matter in `docs/helm-source-delivery.md`; HPA and PDB guide front matter has been added.
+
+## Follow-up review — 2026-10-26
+
+A fresh review found five additional edge cases in the pushed branch. Fixora now compares admitted CPU/memory quantities semantically across Kubernetes canonicalization, normalizes omitted empty resource maps when validating rollback, computes the rollback expectation before issuing the patch, refuses rollback after the target becomes source-managed, resolves ordinary Job/DaemonSet/CronJob owner chains while scanning namespace Pods, and selects the exact missing-request finding when an explicit HPA policy is supplied alongside generic metrics failures. Each case has a regression test. A second independent review found no actionable regressions.
+
+After these fixes, focused HPA/CLI/analyzer/coverage tests and race tests passed; the final `go test ./... -count=1` rerun also passed. `go vet ./...`, `make build`, and `git diff --check` passed.

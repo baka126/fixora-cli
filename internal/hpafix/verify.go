@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 type Receipt struct{ state *receiptState }
@@ -142,10 +144,55 @@ func validateAdmitted(p Plan, before, admitted map[string]any) error {
 	if !sameUserMetadata(old, meta) {
 		return errors.New("admission changed target metadata outside the approved HPA request patch")
 	}
-	if !reflect.DeepEqual(nestedMap(admitted, "spec"), nestedMap(p.candidate, "spec")) {
+	if !sameAdmittedSpec(p, nestedMap(admitted, "spec"), nestedMap(p.candidate, "spec")) {
 		return errors.New("admission changed fields outside the approved HPA request candidate")
 	}
 	return nil
+}
+
+// Kubernetes may serialize equivalent quantities with a different spelling
+// (for example 0.125Gi as 128Mi). Compare approved request fields by value,
+// while still requiring every other spec field to match exactly.
+func sameAdmittedSpec(p Plan, admitted, candidate map[string]any) bool {
+	left, _, err := cloneMap(admitted)
+	if err != nil {
+		return false
+	}
+	right, _, err := cloneMap(candidate)
+	if err != nil {
+		return false
+	}
+	for _, path := range p.ChangedPaths {
+		name, res, ok := parseChangedPath(path)
+		if !ok {
+			return false
+		}
+		find := func(spec map[string]any) (map[string]any, bool) {
+			containers, ok := nestedMap(spec, "template", "spec")["containers"].([]any)
+			if !ok {
+				return nil, false
+			}
+			for _, raw := range containers {
+				c, ok := raw.(map[string]any)
+				if ok && strMap(c["name"]) == name {
+					return nestedMap(c, "resources", "requests"), true
+				}
+			}
+			return nil, false
+		}
+		lreq, lok := find(left)
+		rreq, rok := find(right)
+		if !lok || !rok {
+			return false
+		}
+		lq, errL := resource.ParseQuantity(strMap(lreq[res]))
+		rq, errR := resource.ParseQuantity(strMap(rreq[res]))
+		if errL != nil || errR != nil || lq.Cmp(rq) != 0 {
+			return false
+		}
+		lreq[res], rreq[res] = lq.String(), lq.String()
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func sameUserMetadata(before, after map[string]any) bool {

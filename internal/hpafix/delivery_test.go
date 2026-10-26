@@ -199,3 +199,47 @@ func TestRollbackRejectsChangedRequestOrUID(t *testing.T) {
 		}
 	})
 }
+
+func TestRollbackAcceptsTypedResponseOmittingEmptyResources(t *testing.T) {
+	a, reader, f := candidateFixture(t)
+	container := nestedMap(reader.workload, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)
+	delete(nestedMap(container, "resources", "requests"), "cpu")
+	p, err := Prepare(context.Background(), reader, a, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newVerifyRuntime(t, reader)
+	r.patchResult = cloneObject(p.candidate)
+	receipt, err := Verify(context.Background(), r, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.afterPatch = func() {
+		r.workload = cloneObject(r.workload) // model a separately decoded typed API response
+		container := nestedMap(r.workload, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)
+		delete(container, "resources") // typed API serialization omits the now-empty ResourceRequirements
+		r.patchResult = cloneObject(r.workload)
+	}
+	out, err := Rollback(context.Background(), r, applied)
+	if err != nil || !out.RolledBack {
+		t.Fatalf("empty typed resources response rejected: outcome=%+v err=%v", out, err)
+	}
+}
+
+func TestRollbackRefusesAfterTargetBecomesSourceManaged(t *testing.T) {
+	p, r, receipt := authorizedRuntime(t)
+	r.afterPatch = func() { r.workload = cloneObject(p.candidate) }
+	applied, _, err := Apply(context.Background(), r, p, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedMap(r.workload, "metadata")["labels"] = map[string]any{"app.kubernetes.io/managed-by": "Helm"}
+	if _, err := Rollback(context.Background(), r, applied); err == nil || r.writes != 1 {
+		t.Fatalf("source-managed target was changed during rollback: writes=%d err=%v", r.writes, err)
+	}
+}

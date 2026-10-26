@@ -208,6 +208,9 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 	if strMap(meta["uid"]) != a.targetUID {
 		return Outcome{}, errors.New("target UID changed; refusing HPA rollback")
 	}
+	if sourceManagedObject(current) {
+		return Outcome{}, errors.New("target became source-managed; refusing HPA rollback")
+	}
 	containers, ok := nestedMap(current, "spec", "template", "spec")["containers"].([]any)
 	if !ok {
 		return Outcome{}, errors.New("target containers unavailable")
@@ -266,6 +269,10 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	expectedSpec, err := rollbackExpectedSpec(current, a.changedPaths)
+	if err != nil {
+		return Outcome{Partial: true, Message: "rollback response could not be validated"}, err
+	}
 	updated, err := r.PatchWorkload(ctx, a.namespace, a.targetKind, a.targetName, patch, false)
 	if err != nil {
 		return Outcome{Partial: true, Message: "rollback response was not confirmed"}, fmt.Errorf("HPA rollback outcome uncertain: %w", err)
@@ -273,14 +280,35 @@ func Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error) {
 	if updated == nil || strMap(nestedMap(updated, "metadata")["uid"]) != a.targetUID {
 		return Outcome{Partial: true, Message: "rollback returned a different target"}, errors.New("HPA rollback target identity mismatch")
 	}
-	expectedSpec, err := rollbackExpectedSpec(current, a.changedPaths)
-	if err != nil {
-		return Outcome{Partial: true, Message: "rollback response could not be validated"}, err
-	}
-	if !reflect.DeepEqual(expectedSpec, nestedMap(updated, "spec")) {
+	if !reflect.DeepEqual(normalizeEmptyResourceMaps(expectedSpec), normalizeEmptyResourceMaps(nestedMap(updated, "spec"))) {
 		return Outcome{Partial: true, Message: "rollback response did not confirm only the approved request fields were removed"}, errors.New("HPA rollback response differs from the field-only inverse")
 	}
 	return Outcome{RolledBack: true, Message: "Fixora-added request fields were removed; unrelated workload fields were preserved"}, nil
+}
+
+func normalizeEmptyResourceMaps(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			normalized := normalizeEmptyResourceMaps(child)
+			if key == "requests" || key == "resources" {
+				if m, ok := normalized.(map[string]any); ok && len(m) == 0 {
+					continue
+				}
+			}
+			out[key] = normalized
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i := range v {
+			out[i] = normalizeEmptyResourceMaps(v[i])
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func appliedRequestsPresent(workload map[string]any, a *Applied) bool {

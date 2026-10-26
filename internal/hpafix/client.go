@@ -105,25 +105,50 @@ func (r hpaOwnerReader) GetResource(ctx context.Context, ns, res string) (map[st
 	if !ok {
 		return nil, errors.New("exact workload owner required")
 	}
-	c := &typedRuntime{k: r.k}
-	if strings.EqualFold(kind, "replicaset") {
-		obj, err := r.k.Clientset.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return nil, err
-		}
-		b, err := json.Marshal(obj)
-		if err != nil {
-			return nil, err
-		}
-		var m map[string]any
-		if err = json.Unmarshal(b, &m); err != nil {
-			return nil, err
-		}
-		m["apiVersion"] = "apps/v1"
-		m["kind"] = "ReplicaSet"
-		return m, nil
+	var obj any
+	var err error
+	apiVersion := "apps/v1"
+	switch strings.ToLower(kind) {
+	case "deployment":
+		kind = "Deployment"
+		obj, err = r.k.Clientset.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	case "statefulset":
+		kind = "StatefulSet"
+		obj, err = r.k.Clientset.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
+	case "replicaset":
+		kind = "ReplicaSet"
+		obj, err = r.k.Clientset.AppsV1().ReplicaSets(ns).Get(ctx, name, metav1.GetOptions{})
+	case "daemonset":
+		kind = "DaemonSet"
+		obj, err = r.k.Clientset.AppsV1().DaemonSets(ns).Get(ctx, name, metav1.GetOptions{})
+	case "job":
+		kind = "Job"
+		apiVersion = "batch/v1"
+		obj, err = r.k.Clientset.BatchV1().Jobs(ns).Get(ctx, name, metav1.GetOptions{})
+	case "cronjob":
+		kind = "CronJob"
+		apiVersion = "batch/v1"
+		obj, err = r.k.Clientset.BatchV1().CronJobs(ns).Get(ctx, name, metav1.GetOptions{})
+	default:
+		return nil, errors.New("unsupported HPA owner kind")
 	}
-	return c.GetWorkload(ctx, ns, kind, name)
+	if err != nil {
+		return nil, err
+	}
+	if obj == nil {
+		return nil, errors.New("HPA owner read returned no object")
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err = json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["apiVersion"] = apiVersion
+	m["kind"] = kind
+	return m, nil
 }
 func (c *typedRuntime) PatchWorkload(ctx context.Context, ns, kind, name string, patch []byte, dry bool) (map[string]any, error) {
 	opts := metav1.PatchOptions{FieldManager: "fixora-hpa-repair"}
