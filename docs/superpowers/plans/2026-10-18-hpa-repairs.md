@@ -43,11 +43,11 @@
 - Consumes: `Analyzer.analyzeHPATargets(*ScanContext) ([]Finding, error)` and generic resource maps returned by `kube.Reader`.
 - Produces: stable HPA status names for missing/incomplete targets, unsupported target kinds, invalid specs, stale status, unavailable metrics, invalid targets and missing resource requests. Existing `Finding` JSON fields stay compatible.
 
-- [ ] **Step 1: Write failing diagnosis tests** named `TestHPAObservedGenerationStale`, `TestHPAMetricsConditionsRemainDistinct`, `TestHPAMissingRequestsOnlyForUtilization`, and `TestHPAReadFailuresRemainUnavailable`. Assert exact status, target identity, metric evidence, and no conversion of API errors into absence.
-- [ ] **Step 2: Run the focused tests and confirm they fail** with the current analyzer collapsing condition/metric states or omitting the new evidence.
-- [ ] **Step 3: Implement precise HPA condition and metric classification** in `internal/analyzer/hpa.go`. Read `status.observedGeneration`; inspect HPA conditions and current metric entries; emit missing-request findings only for `Resource` metrics with `target.type=Utilization`; retain target read errors separately from NotFound. Do not add request values or a repair candidate here.
-- [ ] **Step 4: Run `go test ./internal/analyzer ./test/coverage`** and confirm all focused diagnosis and inventory tests pass.
-- [ ] **Step 5: Commit** as `feat(analyzer): diagnose HPA target and metric states`.
+- [x] **Step 1: Write failing diagnosis tests** named `TestHPAObservedGenerationStale`, `TestHPAMetricsConditionsRemainDistinct`, `TestHPAMissingRequestsOnlyForUtilization`, and `TestHPAReadFailuresRemainUnavailable`. Assert exact status, target identity, metric evidence, and no conversion of API errors into absence.
+- [x] **Step 2: Run the focused tests and confirm they fail** with the current analyzer collapsing condition/metric states or omitting the new evidence.
+- [x] **Step 3: Implement precise HPA condition and metric classification** in `internal/analyzer/hpa.go`. Read `status.observedGeneration`; inspect HPA conditions and current metric entries; emit missing-request findings only for `Resource` metrics with `target.type=Utilization`; retain target read errors separately from NotFound. Do not add request values or a repair candidate here.
+- [x] **Step 4: Run `go test ./internal/analyzer ./test/coverage`** and confirm all focused diagnosis and inventory tests pass.
+- [x] **Step 5: Commit** as `feat(analyzer): diagnose HPA target and metric states`.
 
 ### Task 2: Strict HPA policy and exact request candidate
 
@@ -66,15 +66,15 @@
 - `Reader` has `GetHPA(context.Context, string, string) (*autoscalingv2.HorizontalPodAutoscaler, error)`, `GetWorkload(context.Context, string, string, string) (map[string]any, error)`, `ListPods(context.Context, string) ([]corev1.Pod, error)`, `ListHPAs(context.Context, string) ([]autoscalingv2.HorizontalPodAutoscaler, error)`, `ListPodMetrics(context.Context, string) ([]map[string]any, error)`, and `ResolveOwner(context.Context, corev1.Pod) (kube.WorkloadOwner, error)`.
 - `Plan` privately binds HPA/target identity, original and candidate workload templates, policy digest, changed request paths, evidence snapshot and a plan digest. Public plan fields contain display data only.
 
-- [ ] **Step 1: Write failing policy tests** named `TestLoadPolicyStrictSchema`, `TestLoadPolicyRejectsDuplicateKeysAndSpecialFiles`, `TestLoadPolicyRejectsInvalidQuantitiesAndDuplicateContainers`, and `TestPolicyRecheckRejectsReplacement`. Assert unknown/multiple YAML documents, duplicate keys, oversized/nonregular inputs, path replacement and invalid Kubernetes quantities fail closed.
-- [ ] **Step 2: Run the focused policy tests and confirm the missing loader rejects none of the new contract cases.**
-- [ ] **Step 3: Implement `LoadPolicy` and private `Authority`** in `policy.go` with strict one-document decoding, the schema in the Interfaces block, a 1 MiB limit, no-follow platform opens, exact-byte digest and explicit revalidation.
-- [ ] **Step 4: Run `go test ./internal/hpafix -run 'TestLoadPolicy|TestPolicyRecheck'`** and confirm all policy tests pass.
-- [ ] **Step 5: Write failing candidate tests** named `TestPrepareAddsOnlyPolicyApprovedMissingRequests`, `TestPrepareRejectsUnknownOrDuplicateContainer`, `TestPrepareRejectsNonUtilizationAndUnsupportedTarget`, and `TestPrepareRequiresExactHPAAndTargetIdentity`. Include generated workload/container names and mixed missing/existing requests.
-- [ ] **Step 6: Run candidate tests and confirm they fail** before candidate preparation exists.
-- [ ] **Step 7: Implement `Prepare` and immutable `Plan`** in `plan.go`. Support only same-namespace Deployment/StatefulSet targets and CPU/memory `averageUtilization`; add exact approved values only to missing regular-container request paths; reject no-op, unknown container, mismatched identity, and any other changed field.
-- [ ] **Step 8: Run `go test ./internal/hpafix`** and confirm all policy and candidate tests pass.
-- [ ] **Step 9: Commit** as `feat(hpafix): validate approved HPA request candidates`.
+- [x] **Step 1: Write failing policy tests** named `TestLoadPolicyStrictSchema`, `TestLoadPolicyRejectsDuplicateKeysAndSpecialFiles`, `TestLoadPolicyRejectsInvalidQuantitiesAndDuplicateContainers`, and `TestPolicyRecheckRejectsReplacement`. Assert unknown/multiple YAML documents, duplicate keys, oversized/nonregular inputs, path replacement and invalid Kubernetes quantities fail closed.
+- [x] **Step 2: Run the focused policy tests and confirm the missing loader rejects none of the new contract cases.**
+- [x] **Step 3: Implement `LoadPolicy` and private `Authority`** in `policy.go` with strict one-document decoding, the schema in the Interfaces block, a 1 MiB limit, no-follow platform opens, exact-byte digest and explicit revalidation.
+- [x] **Step 4: Run `go test ./internal/hpafix -run 'TestLoadPolicy|TestPolicyRecheck'`** and confirm all policy tests pass.
+- [x] **Step 5: Write failing candidate tests** named `TestPrepareAddsOnlyPolicyApprovedMissingRequests`, `TestPrepareRejectsUnknownOrDuplicateContainer`, `TestPrepareRejectsNonUtilizationAndUnsupportedTarget`, and `TestPrepareRequiresExactHPAAndTargetIdentity`. Include generated workload/container names and mixed missing/existing requests.
+- [x] **Step 6: Run candidate tests and confirm they fail** before candidate preparation exists.
+- [x] **Step 7: Implement `Prepare` and immutable `Plan`** in `plan.go`. Support only same-namespace Deployment/StatefulSet targets and CPU/memory `averageUtilization`; add exact approved values only to missing regular-container request paths; reject no-op, unknown container, mismatched identity, and any other changed field.
+- [x] **Step 8: Run `go test ./internal/hpafix`** and confirm all policy and candidate tests pass.
+- [x] **Step 9: Commit** as `feat(hpafix): validate approved HPA request candidates`.
 
 ### Task 3: Typed evidence snapshot and non-mutating preflight
 
@@ -89,13 +89,13 @@
 - Produces: `NewClient(k *kube.TypedClient) (Runtime, error)`; `Verify(ctx context.Context, r Runtime, p Plan) (*Receipt, error)`; opaque single-use `Receipt`.
 - `Runtime` embeds `Reader` and adds only `PatchWorkload(context.Context, string, string, string, []byte, bool) (map[string]any, error)`.
 
-- [ ] **Step 1: Write failing tests** named `TestSnapshotRequiresStableOwnedReadyPods`, `TestSnapshotPreservesPodMetricsReadFailure`, `TestOperationContextPreservesParentDeadline`, `TestVerifyDryRunsExactTemplatePatch`, `TestVerifyRejectsAdmissionRewrite`, `TestVerifyRejectsReplacedTargetUID`, `TestVerifyRejectsHPAOrMetricsDrift`, and `TestReceiptCannotBeCopiedOrReused`. Assert no non-dry-run mutation is called.
-- [ ] **Step 2: Run the focused verifier tests and confirm they fail** before the runtime and preflight exist.
-- [ ] **Step 3: Implement `typedRuntime`** in `client.go` using typed AutoscalingV2, AppsV1 and CoreV1 clients plus `TypedClient.Dynamic.Resource(schema.GroupVersionResource{Group:"metrics.k8s.io", Version:"v1beta1", Resource:"pods"})` for PodMetrics. Resolve owner chains by UID; preserve API errors; implement target-template JSON Patch dry-run with UID/resourceVersion tests and strict returned-object decoding.
-- [ ] **Step 4: Implement `collectSnapshot`** in `snapshot.go` to read exact HPA, target, all namespace Pods and HPAs, PodMetrics, owner chain, readiness, rollout state and HPA status. Refuse unreadable, incomplete, stale, scaling, multiple-target and unsupported evidence. Add `OperationContext(parent context.Context) (context.Context, context.CancelFunc)` with one three-minute default deadline from the start of the exact-target operation, preserving any earlier parent deadline; the CLI creates it once and passes that context through preparation, preflight, apply, observation and rollback.
-- [ ] **Step 5: Implement `Verify` and receipt consumption** in `verify.go`. Compare the server-admitted target against the candidate, recollect all bound evidence and policy bytes, then issue a private shared-state single-use receipt. No create/delete/scale/eviction methods are added.
-- [ ] **Step 6: Run `go test ./internal/hpafix`** and confirm all preflight tests pass.
-- [ ] **Step 7: Commit** as `feat(hpafix): verify HPA repairs before delivery`.
+- [x] **Step 1: Write failing tests** named `TestSnapshotRequiresStableOwnedReadyPods`, `TestSnapshotPreservesPodMetricsReadFailure`, `TestOperationContextPreservesParentDeadline`, `TestVerifyDryRunsExactTemplatePatch`, `TestVerifyRejectsAdmissionRewrite`, `TestVerifyRejectsReplacedTargetUID`, `TestVerifyRejectsHPAOrMetricsDrift`, and `TestReceiptCannotBeCopiedOrReused`. Assert no non-dry-run mutation is called.
+- [x] **Step 2: Run the focused verifier tests and confirm they fail** before the runtime and preflight exist.
+- [x] **Step 3: Implement `typedRuntime`** in `client.go` using typed AutoscalingV2, AppsV1 and CoreV1 clients plus `TypedClient.Dynamic.Resource(schema.GroupVersionResource{Group:"metrics.k8s.io", Version:"v1beta1", Resource:"pods"})` for PodMetrics. Resolve owner chains by UID; preserve API errors; implement target-template JSON Patch dry-run with UID/resourceVersion tests and strict returned-object decoding.
+- [x] **Step 4: Implement `collectSnapshot`** in `snapshot.go` to read exact HPA, target, all namespace Pods and HPAs, PodMetrics, owner chain, readiness, rollout state and HPA status. Refuse unreadable, incomplete, stale, scaling, multiple-target and unsupported evidence. Add `OperationContext(parent context.Context) (context.Context, context.CancelFunc)` with one three-minute default deadline from the start of the exact-target operation, preserving any earlier parent deadline; the CLI creates it once and passes that context through preparation, preflight, apply, observation and rollback.
+- [x] **Step 5: Implement `Verify` and receipt consumption** in `verify.go`. Compare the server-admitted target against the candidate, recollect all bound evidence and policy bytes, then issue a private shared-state single-use receipt. No create/delete/scale/eviction methods are added.
+- [x] **Step 6: Run `go test ./internal/hpafix`** and confirm all preflight tests pass.
+- [x] **Step 7: Commit** as `feat(hpafix): verify HPA repairs before delivery`.
 
 ### Task 4: Guarded apply, HPA observation, and explicit inverse
 
@@ -109,13 +109,13 @@
 - Produces: `Apply(ctx context.Context, r Runtime, p Plan, receipt *Receipt) (*Applied, Outcome, error)`; `Observe(ctx context.Context, r Runtime, a *Applied) (Outcome, error)`; `Rollback(ctx context.Context, r Runtime, a *Applied) (Outcome, error)`.
 - `Applied` privately owns deep copies of the original and admitted target, changed paths, HPA identity, and the resulting resourceVersion.
 
-- [ ] **Step 1: Write failing delivery tests** named `TestApplyConsumesReceiptAndPatchesApprovedPaths`, `TestApplyLostResponseIsNotRetried`, `TestObserveSeparatesRolloutFromHPAHealth`, `TestRollbackRestoresOnlyAddedRequests`, and `TestRollbackRejectsChangedRequestOrUID`.
-- [ ] **Step 2: Run delivery tests and confirm they fail** before guarded apply/observe/inverse exist.
-- [ ] **Step 3: Implement `Apply`** with one atomic JSON Patch, receipt consumption, policy/evidence revalidation, strict response identity/field checks, and read-after-lost-response classification. Never retry or automatically roll back an uncertain write.
-- [ ] **Step 4: Implement `Observe`** under the operation deadline. Require target current-generation rollout and all desired replicas Ready, HPA `status.observedGeneration` matching metadata generation, `ScalingActive=True`, and a current supported metric. Report workload convergence separately from autoscaler health and partial writes accurately.
-- [ ] **Step 5: Implement explicit `Rollback`** guarded by the original target UID and current candidate values. Restore only request paths added by Fixora; preserve unrelated edits and reject conflicts.
-- [ ] **Step 6: Run `go test ./internal/hpafix`** and confirm all delivery tests pass.
-- [ ] **Step 7: Commit** as `feat(hpafix): apply and observe approved request repairs`.
+- [x] **Step 1: Write failing delivery tests** named `TestApplyConsumesReceiptAndPatchesApprovedPaths`, `TestApplyLostResponseIsNotRetried`, `TestObserveSeparatesRolloutFromHPAHealth`, `TestRollbackRestoresOnlyAddedRequests`, and `TestRollbackRejectsChangedRequestOrUID`.
+- [x] **Step 2: Run delivery tests and confirm they fail** before guarded apply/observe/inverse exist.
+- [x] **Step 3: Implement `Apply`** with one atomic JSON Patch, receipt consumption, policy/evidence revalidation, strict response identity/field checks, and read-after-lost-response classification. Never retry or automatically roll back an uncertain write.
+- [x] **Step 4: Implement `Observe`** under the operation deadline. Require target current-generation rollout and all desired replicas Ready, HPA `status.observedGeneration` matching metadata generation, `ScalingActive=True`, and a current supported metric. Report workload convergence separately from autoscaler health and partial writes accurately.
+- [x] **Step 5: Implement explicit `Rollback`** guarded by the original target UID and current candidate values. Restore only request paths added by Fixora; preserve unrelated edits and reject conflicts.
+- [x] **Step 6: Run `go test ./internal/hpafix`** and confirm all delivery tests pass.
+- [x] **Step 7: Commit** as `feat(hpafix): apply and observe approved request repairs`.
 
 ### Task 5: Dedicated CLI, AI context, concise output, and source refusal
 
@@ -130,14 +130,14 @@
 - Consumes: exact HPA `Finding`, optional AI assessment, `--hpa-policy`, existing delivery flags, and `hpafix` outcomes.
 - Produces: `runHPAFix`, `runHPAFixRuntime`, option validation, concise text/proof rendering, and output behavior consistent across text/JSON/YAML.
 
-- [ ] **Step 1: Write failing CLI tests** named `TestHPAFixPreviewNeverWrites`, `TestHPAFixRequiresPolicyAndExplicitClusterDelivery`, `TestHPAFixRejectsMixedRepairPolicies`, `TestHPAFixAIProposalCannotChangePolicyValues`, `TestHPAFixBlocksSourceManagedTargets`, and `TestHPAFixOutputIsConciseAndStructured`. Assert no file/cluster writes from preview or structured output and no serialized receipt.
-- [ ] **Step 2: Run focused CLI tests and confirm they fail** before the dedicated route exists.
-- [ ] **Step 3: Add `--hpa-policy` parsing and exact-HPA dispatch** in `root.go`; reject mixed HPA, PDB, Service and generic repair policy inputs; preserve all current workload routes.
-- [ ] **Step 4: Implement `runHPAFixRuntime`** in `hpa_fix.go`: show concise diagnosis, policy-backed exact candidate, explicit verification/delivery state and one next step; route source-managed objects to manual source instructions with no source writes.
-- [ ] **Step 5: Add sanitized workload/HPA context to AI preparation** and validate any returned patch against the exact policy and target-template allowlist. AI failure or malformed output must retain deterministic diagnosis and never grant authority.
-- [ ] **Step 6: Update short and advanced help** with `--hpa-policy` and one example; preserve the concise help style.
-- [ ] **Step 7: Run `go test ./internal/cli ./internal/hpafix ./internal/analyzer`** and confirm HPA-specific and existing dispatch tests pass.
-- [ ] **Step 8: Commit** as `feat(cli): deliver policy-bound HPA request repairs`.
+- [x] **Step 1: Write failing CLI tests** named `TestHPAFixPreviewNeverWrites`, `TestHPAFixRequiresPolicyAndExplicitClusterDelivery`, `TestHPAFixRejectsMixedRepairPolicies`, `TestHPAFixAIProposalCannotChangePolicyValues`, `TestHPAFixBlocksSourceManagedTargets`, and `TestHPAFixOutputIsConciseAndStructured`. Assert no file/cluster writes from preview or structured output and no serialized receipt.
+- [x] **Step 2: Run focused CLI tests and confirm they fail** before the dedicated route exists.
+- [x] **Step 3: Add `--hpa-policy` parsing and exact-HPA dispatch** in `root.go`; reject mixed HPA, PDB, Service and generic repair policy inputs; preserve all current workload routes.
+- [x] **Step 4: Implement `runHPAFixRuntime`** in `hpa_fix.go`: show concise diagnosis, policy-backed exact candidate, explicit verification/delivery state and one next step; route source-managed objects to manual source instructions with no source writes.
+- [x] **Step 5: Add sanitized workload/HPA context to AI preparation** and validate any returned patch against the exact policy and target-template allowlist. AI failure or malformed output must retain deterministic diagnosis and never grant authority.
+- [x] **Step 6: Update short and advanced help** with `--hpa-policy` and one example; preserve the concise help style.
+- [x] **Step 7: Run `go test ./internal/cli ./internal/hpafix ./internal/analyzer`** and confirm HPA-specific and existing dispatch tests pass.
+- [x] **Step 8: Commit** as `feat(cli): deliver policy-bound HPA request repairs`.
 
 ### Task 6: Acceptance harness, coverage inventory, and final regression
 
@@ -154,11 +154,11 @@
 - Consumes: analyzer statuses, policy, CLI and runtime behavior from Tasks 1–5.
 - Produces: an isolated opt-in kind acceptance harness; updated named remediation profiles; user-facing policy/limits guide; durable report with executed and skipped checks.
 
-- [ ] **Step 1: Write failing harness safety tests** named `TestHPAHarnessChecksPrerequisitesBeforeCreate` and `TestHPAHarnessRequiresDedicatedContext`. Assert it refuses an arbitrary current context before any mutation and only manages its uniquely named local kind cluster.
-- [ ] **Step 2: Implement the harness and fixtures** using a generated Deployment, `autoscaling/v2` HPA, policy file, and metrics-server prerequisite. Keep cluster creation behind explicit opt-in and cleanup limited to harness-owned resources.
-- [ ] **Step 3: Update the coverage inventory and guide** with exact diagnosis, candidate, policy and verification limits. Document that the policy fixes only approved missing requests and does not prove future scale-out capacity or application SLOs.
-- [ ] **Step 4: Run targeted acceptance and project checks:** `go test ./test/coverage ./internal/hpafix ./internal/analyzer ./internal/cli`; `go test ./...`; `go test -race ./...`; `go vet ./...`; `make build`; `go test -c -tags='e2e,e2e_delivery' -o /tmp/fixora-hpa-e2e.test ./test/e2e`; `bash -n hack/e2e-hpa.sh`; and `git diff --check`. Run live kind only if Docker and kind are available; otherwise record it as skipped.
-- [ ] **Step 5: Review repository status and commit only Fixora files** as `test(hpafix): cover policy-bound HPA repairs`.
+- [x] **Step 1: Write failing harness safety tests** named `TestHPAHarnessChecksPrerequisitesBeforeCreate` and `TestHPAHarnessRequiresDedicatedContext`. Assert it refuses an arbitrary current context before any mutation and only manages its uniquely named local kind cluster.
+- [x] **Step 2: Implement the harness and fixtures** using a generated Deployment, `autoscaling/v2` HPA, policy file, and metrics-server prerequisite. Keep cluster creation behind explicit opt-in and cleanup limited to harness-owned resources.
+- [x] **Step 3: Update the coverage inventory and guide** with exact diagnosis, candidate, policy and verification limits. Document that the policy fixes only approved missing requests and does not prove future scale-out capacity or application SLOs.
+- [x] **Step 4: Run targeted acceptance and project checks:** `go test ./test/coverage ./internal/hpafix ./internal/analyzer ./internal/cli`; `go test ./...`; `go test -race ./...`; `go vet ./...`; `make build`; `go test -c -tags='e2e,e2e_delivery' -o /tmp/fixora-hpa-e2e.test ./test/e2e`; `bash -n hack/e2e-hpa.sh`; and `git diff --check`. Run live kind only if Docker and kind are available; otherwise record it as skipped.
+- [x] **Step 5: Review repository status and commit only Fixora files** as `test(hpafix): cover policy-bound HPA repairs`.
 
 ## Spec coverage check
 

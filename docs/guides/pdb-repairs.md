@@ -1,3 +1,11 @@
+---
+layout: default
+title: PDB repairs
+description: Diagnose disruption budgets and prepare policy-bound, guarded corrections.
+permalink: /guides/pdb-repairs/
+section: guides
+---
+
 # PDB diagnosis and approved repair intent
 
 Fixora distinguishes unavailable selected replicas, missing selections, overlapping budgets, stale controller status and intentional disruption protection. Zero permitted disruptions alone does not prove a configuration error. Full evidence is available through proof output. Diagnosis needs no approval file or AI.

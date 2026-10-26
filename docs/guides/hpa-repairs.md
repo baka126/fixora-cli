@@ -1,3 +1,11 @@
+---
+layout: default
+title: HPA request repairs
+description: Diagnose autoscaler issues and safely apply explicitly approved workload requests.
+permalink: /guides/hpa-repairs/
+section: guides
+---
+
 # HPA request repairs
 
 Fixora diagnoses HorizontalPodAutoscaler target, condition and metric failures without guessing what a workload needs. For CPU or memory utilization, a separate local policy can approve exact missing container requests. The generic planner and AI output cannot authorize those values.
