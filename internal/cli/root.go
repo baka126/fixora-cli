@@ -1303,6 +1303,9 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 			fmt.Fprintf(w, " reason=%s", attempt.ExitReason)
 		}
 		fmt.Fprintln(w)
+		if attempt.Message != "" {
+			fmt.Fprintf(w, "  Verdict: %s\n", trimEvidence(attempt.Message, 220))
+		}
 		if len(attempt.Logs) > 0 {
 			lastLog := redact.KubernetesText(attempt.Logs[len(attempt.Logs)-1])
 			fmt.Fprintf(w, "  Last log: %s\n", trimEvidence(lastLog, 220))
@@ -1315,11 +1318,19 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 	if len(result.Attempts) == 0 {
 		fmt.Fprintln(w, "No candidate was created. Resolve the isolation or dependency prerequisite before retrying.")
 	} else {
-		fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+		if result.Status == shadow.VerificationInconclusive {
+			fmt.Fprintln(w, "Verification did not finish, so the candidate was neither accepted nor rejected. Increase --shadow-timeout or resolve the verification interruption before retrying.")
+		} else {
+			fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+		}
 	}
 }
 
 func writeShadowFailureGuidance(w io.Writer, result shadow.Result, finding analyzer.Finding, plan fix.Plan) {
+	if result.Status == shadow.VerificationInconclusive {
+		fmt.Fprintln(w, "  Fixora could not diagnose the candidate because observation ended before a verdict was available.")
+		return
+	}
 	diagnosis := shadow.DiagnoseFailure(result, finding, plan)
 	if diagnosis.Summary != "" {
 		fmt.Fprintln(w, "\nFollow-up diagnosis")

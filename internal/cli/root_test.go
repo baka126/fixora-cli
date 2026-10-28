@@ -803,6 +803,23 @@ func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	}
 }
 
+func TestWriteShadowInconclusiveDoesNotCallCandidateRejected(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status:   shadow.VerificationInconclusive,
+		Attempts: []shadow.Attempt{{Number: 1, Phase: "Running", Inconclusive: true, Message: "verification ended before checks completed"}},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"Shadow verification inconclusive", "candidate was neither accepted nor rejected", "could not diagnose the candidate"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("inconclusive output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "candidate was rejected") {
+		t.Fatalf("inconclusive output must not say the candidate was rejected:\n%s", got)
+	}
+}
+
 func TestWriteShadowIsolationBlockExplainsNoCandidateWasCreated(t *testing.T) {
 	var output bytes.Buffer
 	writeShadowFailure(&output, shadow.Result{

@@ -187,11 +187,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready
-		if result.Verified {
-			result.Status = VerificationVerified
-		} else {
-			result.Status = VerificationFailed
-		}
+		result.Status = statusForAttempt(verification)
 		if result.Verified && req.Plan.PolicyProof != nil {
 			pod, err := c.GetPod(ctx, plan.Clone.Namespace, plan.Clone.Name)
 			if err == nil {
@@ -216,6 +212,11 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		}
 		if result.Verified {
 			result.Caveats = appendUnique(result.Caveats, partialPassCaveats(plan.Original, plan.NamespaceMetadata)...)
+			break
+		}
+		if result.Status == VerificationInconclusive {
+			// An incomplete observation does not prove that the candidate is bad
+			// and cannot justify an automatic revision/retry.
 			break
 		}
 		if attempt <= req.Retries {

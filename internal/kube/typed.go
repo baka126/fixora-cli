@@ -250,12 +250,13 @@ func (c *TypedClient) DeletePodUID(ctx context.Context, namespace, name string, 
 	})
 }
 
-func (c *TypedClient) WatchPod(ctx context.Context, namespace, name string) (watch.Interface, error) {
+func (c *TypedClient) WatchPod(ctx context.Context, namespace, name, resourceVersion string) (watch.Interface, error) {
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
 	}
 	return c.Clientset.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: "metadata.name=" + name,
+		FieldSelector:   "metadata.name=" + name,
+		ResourceVersion: resourceVersion,
 	})
 }
 

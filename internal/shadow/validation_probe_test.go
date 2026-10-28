@@ -153,8 +153,43 @@ func TestProbeStrategyRejectsSlowLivenessProbe(t *testing.T) {
 	if err == nil {
 		t.Fatal("a livenessProbe whose first check lands past the soak window must be rejected")
 	}
-	if !strings.Contains(err.Error(), "shadow soak window") {
-		t.Fatalf("want a soak-window rejection reason, got: %v", err)
+	if !strings.Contains(err.Error(), "shadow stability window") {
+		t.Fatalf("want a stability-window rejection reason, got: %v", err)
+	}
+}
+
+func TestProbeStrategyRejectsLivenessProbePastStabilityWindow(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        livenessProbe:
+          httpGet:
+            port: 8080
+          initialDelaySeconds: 121
+`
+	if err := ValidateRevisedPatch(probeOriginal, revised, "probe"); err == nil {
+		t.Fatal("a livenessProbe delayed beyond the stability window must be rejected")
+	}
+}
+
+func TestProbeStrategyAccountsForLivenessFailureThreshold(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        livenessProbe:
+          httpGet:
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 10
+          failureThreshold: 3
+          timeoutSeconds: 1
+`
+	if err := ValidateRevisedPatch(probeOriginal, revised, "probe"); err == nil {
+		t.Fatal("liveness failures that may occur after the stability window must be rejected")
 	}
 }
 
@@ -167,14 +202,30 @@ func TestProbeStrategyRejectsSlowStartupProbe(t *testing.T) {
         startupProbe:
           tcpSocket:
             port: 8080
-          initialDelaySeconds: 120
+          initialDelaySeconds: 181
 `
 	err := ValidateRevisedPatch(probeOriginal, revised, "probe")
 	if err == nil {
-		t.Fatal("a startupProbe with a first check past the soak window must be rejected")
+		t.Fatal("a startupProbe whose first check lands past the observation horizon must be rejected")
 	}
-	if !strings.Contains(err.Error(), "shadow soak window") {
-		t.Fatalf("want a soak-window rejection reason, got: %v", err)
+	if !strings.Contains(err.Error(), "shadow startup allowance") {
+		t.Fatalf("want a startup-allowance rejection reason, got: %v", err)
+	}
+}
+
+func TestProbeStrategyRejectsStartupProbePastStartupAllowance(t *testing.T) {
+	revised := `spec:
+  template:
+    spec:
+      containers:
+      - name: web-app
+        startupProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 61
+`
+	if err := ValidateRevisedPatch(probeOriginal, revised, "probe"); err == nil {
+		t.Fatal("a startupProbe delayed beyond the startup allowance must be rejected")
 	}
 }
 

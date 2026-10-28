@@ -84,16 +84,17 @@ type IsolationReport struct {
 }
 
 type Attempt struct {
-	Number     int      `json:"number"`
-	CloneName  string   `json:"cloneName"`
-	Phase      string   `json:"phase"`
-	Ready      bool     `json:"ready"`
-	Restarts   int      `json:"restarts"`
-	ExitReason string   `json:"exitReason,omitempty"`
-	Logs       []string `json:"logs,omitempty"`
-	Events     []string `json:"events,omitempty"`
-	Revised    bool     `json:"revised,omitempty"`
-	Message    string   `json:"message,omitempty"`
+	Number       int      `json:"number"`
+	CloneName    string   `json:"cloneName"`
+	Phase        string   `json:"phase"`
+	Ready        bool     `json:"ready"`
+	Inconclusive bool     `json:"inconclusive,omitempty"`
+	Restarts     int      `json:"restarts"`
+	ExitReason   string   `json:"exitReason,omitempty"`
+	Logs         []string `json:"logs,omitempty"`
+	Events       []string `json:"events,omitempty"`
+	Revised      bool     `json:"revised,omitempty"`
+	Message      string   `json:"message,omitempty"`
 }
 
 type PatchValidationError struct {
