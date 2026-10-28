@@ -14,8 +14,7 @@ import (
 )
 
 // TestShadowCleansUpOnFailure is the load-bearing case. A failed shadow run
-// that leaks a pod plus an ingress-deny NetworkPolicy into a production
-// namespace is the most damaging outcome this tool can produce.
+// that leaks its isolated namespace is the most damaging outcome this tool can produce.
 func TestShadowCleansUpOnFailure(t *testing.T) {
 	t.Parallel()
 	ns := newNamespace(t)
@@ -63,26 +62,15 @@ func TestShadowCleansUpOnFailure(t *testing.T) {
 		t.Fatal("a never-ready clone must not verify")
 	}
 
-	// Positive cleanup record, not just absence: requireGone cannot tell "made
-	// then deleted" from "never existed". shadow.Result.Cleanup lists what was
-	// actually torn down — the exact strings come from run.go:115 and run.go:126
-	// ("deleted pod/"+plan.Clone.Name / "deleted networkpolicy/"+plan.Policy.Name,
-	// with plan.Clone.Name == res.CloneName and plan.Policy.Name == res.NetworkPolicyName).
-	wantPod := "deleted pod/" + res.CloneName
-	wantNP := "deleted networkpolicy/" + res.NetworkPolicyName
-	if res.CloneName == "" || !slices.Contains(res.Cleanup, wantPod) {
-		t.Fatalf("Cleanup does not record deleting the clone pod (want %q); Cleanup=%v", wantPod, res.Cleanup)
+	if len(res.Attempts) == 0 {
+		t.Fatalf("isolation gate did not pass and create a candidate: status=%s isolation=%#v", res.Status, res.Isolation)
 	}
-	if res.NetworkPolicyName == "" || !slices.Contains(res.Cleanup, wantNP) {
-		t.Fatalf("Cleanup does not record deleting the NetworkPolicy (want %q); Cleanup=%v", wantNP, res.Cleanup)
+	wantNamespace := "deleted namespace/" + res.IsolationNamespace
+	if res.IsolationNamespace == "" || !slices.Contains(res.Cleanup, wantNamespace) {
+		t.Fatalf("Cleanup does not record deleting the run namespace (want %q); Cleanup=%v", wantNamespace, res.Cleanup)
 	}
-
-	// The failure path must still clean up.
-	if res.CloneName != "" {
-		requireGone(t, ns, "pod", res.CloneName)
-	}
-	if res.NetworkPolicyName != "" {
-		requireGone(t, ns, "networkpolicy", res.NetworkPolicyName)
+	if _, _, code := run(t, "kubectl", "--context", kubeContext, "get", "namespace/"+res.IsolationNamespace); code == 0 {
+		t.Fatalf("isolated namespace %s still exists after cleanup", res.IsolationNamespace)
 	}
 	requireUnchanged(t, ns, "deployment/shadow-target", before)
 }

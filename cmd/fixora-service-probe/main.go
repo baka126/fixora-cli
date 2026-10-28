@@ -18,9 +18,28 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 	flags := flag.NewFlagSet("fixora-service-probe", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	rawArg := flags.String("request-json", "", "bound verifier request")
+	listen := flags.Bool("listen", false, "run the fixed TCP isolation-control responder")
 	if flags.Parse(args) != nil || len(flags.Args()) != 0 {
 		fmt.Fprintln(errout, "invalid verifier arguments")
 		return 2
+	}
+	if *listen {
+		if *rawArg != "" {
+			fmt.Fprintln(errout, "listener mode cannot include a verifier request")
+			return 2
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		listener, err := serviceprobe.StartIsolationListener(ctx, fmt.Sprintf(":%d", serviceprobe.IsolationListenerPort))
+		if err != nil {
+			fmt.Fprintln(errout, "isolation listener could not start")
+			return 1
+		}
+		if listener.Wait() != nil {
+			fmt.Fprintln(errout, "isolation listener stopped unexpectedly")
+			return 1
+		}
+		return 0
 	}
 	var raw []byte
 	var err error

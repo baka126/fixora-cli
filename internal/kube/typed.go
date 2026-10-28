@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
@@ -191,6 +192,36 @@ func (c *TypedClient) GetTypedPod(ctx context.Context, namespace, name string) (
 	})
 }
 
+func (c *TypedClient) CreateNamespace(ctx context.Context, namespace *corev1.Namespace) (*corev1.Namespace, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return withRetry(ctx, func() (*corev1.Namespace, error) {
+		return c.Clientset.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
+	})
+}
+
+func (c *TypedClient) GetNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
+	if c.Clientset == nil {
+		return nil, fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	return withRetry(ctx, func() (*corev1.Namespace, error) {
+		return c.Clientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	})
+}
+
+func (c *TypedClient) DeleteNamespaceUID(ctx context.Context, name string, uid types.UID) error {
+	if c.Clientset == nil {
+		return fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	if uid == "" {
+		return fmt.Errorf("namespace UID is required for guarded deletion")
+	}
+	return c.Clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
+}
+
 func (c *TypedClient) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
@@ -205,6 +236,18 @@ func (c *TypedClient) DeletePod(ctx context.Context, namespace, name string) err
 		return fmt.Errorf("typed Kubernetes client is not configured")
 	}
 	return c.Clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (c *TypedClient) DeletePodUID(ctx context.Context, namespace, name string, uid types.UID) error {
+	if c.Clientset == nil {
+		return fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	if uid == "" {
+		return fmt.Errorf("pod UID is required for guarded deletion")
+	}
+	return c.Clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
 }
 
 func (c *TypedClient) WatchPod(ctx context.Context, namespace, name string) (watch.Interface, error) {

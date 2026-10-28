@@ -681,8 +681,8 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
 	fs.DurationVar(&opts.rolloutTimeout, "rollout-timeout", 2*time.Minute, "post-apply rollout verification timeout")
 	fs.IntVar(&opts.shadowRetries, "shadow-retries", 0, "number of shadow re-clone attempts after failure")
-	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep shadow Pod and NetworkPolicy after verification")
-	fs.StringVar(&opts.shadowEgress, "shadow-egress", "allow", "shadow egress policy: allow or deny")
+	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep the isolated shadow namespace for inspection")
+	fs.StringVar(&opts.shadowEgress, "shadow-egress", "deny", "shadow egress policy (only deny is supported)")
 	fs.StringVar(&opts.delivery, "delivery", "patch", "verified shadow delivery: patch, cluster, or pr")
 	fs.StringVar(&opts.prBase, "pr-base", "", "base branch for --delivery=pr")
 	fs.StringVar(&opts.prTitle, "pr-title", "", "pull request title for --delivery=pr")
@@ -983,7 +983,7 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 		Redact:      opts.redact || opts.paranoid,
 		AI:          retryProvider,
 	}
-	fmt.Fprintln(stdout, "Creating isolated shadow Pod and NetworkPolicy...")
+	fmt.Fprintln(stdout, "Creating per-run isolated namespace and proving NetworkPolicy enforcement...")
 	result, err := shadow.Run(ctx, typed, req)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: shadow verification: %v\n", err)
@@ -1119,6 +1119,9 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stdout, "warning: %s\n", warning)
+			}
+			if opts.keepShadow && result.IsolationNamespace != "" {
+				fmt.Fprintf(stdout, "Kept isolated namespace: %s (default-deny ingress and egress)\n", result.IsolationNamespace)
 			}
 			status := "Unverified"
 			if verified {
@@ -1278,7 +1281,17 @@ func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
 }
 
 func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, finding analyzer.Finding, plan fix.Plan) {
-	fmt.Fprintln(w, "\nShadow verification failed")
+	title := "Shadow verification failed"
+	if result.Status == shadow.VerificationBlocked || result.Status == shadow.VerificationInconclusive {
+		title = "Shadow verification " + string(result.Status)
+	}
+	fmt.Fprintln(w, "\n"+title)
+	if result.Isolation != nil && result.Isolation.Summary != "" {
+		fmt.Fprintf(w, "  Network isolation: %s\n", trimEvidence(result.Isolation.Summary, 240))
+	}
+	if result.IsolationNamespace != "" && len(result.Cleanup) == 0 {
+		fmt.Fprintf(w, "  Sandbox namespace: %s\n", result.IsolationNamespace)
+	}
 	fmt.Fprintln(w, "No production mutation, PR/MR, or source delivery was performed.")
 	for _, attempt := range result.Attempts {
 		phase := attempt.Phase
@@ -1299,7 +1312,11 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 	if patchFile != "" {
 		fmt.Fprintf(w, "\nReviewed patch retained at %s\n", patchFile)
 	}
-	fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+	if len(result.Attempts) == 0 {
+		fmt.Fprintln(w, "No candidate was created. Resolve the isolation or dependency prerequisite before retrying.")
+	} else {
+		fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+	}
 }
 
 func writeShadowFailureGuidance(w io.Writer, result shadow.Result, finding analyzer.Finding, plan fix.Plan) {
@@ -3058,8 +3075,8 @@ Global flags:
       --shadow                 Verify patch in an isolated shadow clone before delivery
       --shadow-timeout duration Shadow clone verification timeout
       --shadow-retries int     Shadow re-clone attempts after failure
-      --keep-shadow            Keep shadow Pod and NetworkPolicy after verification
-      --shadow-egress string   Shadow egress policy: allow or deny
+      --keep-shadow            Keep the isolated shadow namespace for inspection
+      --shadow-egress string   Shadow egress policy (only deny is supported)
       --delivery string        Verified shadow delivery: patch, cluster, or pr
       --pr-base string         Base branch for --delivery=pr
       --pr-title string        Pull request title for --delivery=pr

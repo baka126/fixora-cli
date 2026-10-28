@@ -12,13 +12,27 @@ The delivery mode decides where a reviewed change goes. It does not replace patc
 
 ## Shadow verification
 
-**Effect:** Reads cluster evidence and bounded logs by default, then creates a temporary shadow Pod and NetworkPolicy, reads their health, and deletes them afterward unless `--keep-shadow` is set. No production workload is changed by this option alone. Use `--include-logs=false` to skip log reads.
+**Effect:** Reads cluster evidence and bounded logs by default, then creates a per-run namespace. Fixora proves bidirectional NetworkPolicy enforcement before it creates the candidate Pod, applies the candidate patch there, and removes the namespace afterward unless `--keep-shadow` is set. No production workload is changed by this option alone. Use `--include-logs=false` to skip log reads.
 
 ```bash
 kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/example/api:v1.2.3 --shadow --delivery patch
 ```
 
-The clone omits workload identity and can differ from production traffic, dependencies, and policy. Its readiness is useful evidence, not proof of production success. Egress is allowed by default for parity; choose `--shadow-egress deny` when isolation is more important than outbound parity. Inspect the reported status; `--quick` skips default shadow verification.
+The clone omits workload identity and production dependencies. Both ingress and egress are denied. Fixora first runs positive and negative TCP controls; if the CNI does not enforce standard NetworkPolicy, API/object inventory is incomplete, or an active cluster-wide/CNI-specific policy may affect the run, no candidate Pod is created. An installed extension API with no active policy objects does not block by itself. The probe image must be built from `build/service-probe.Dockerfile`, published through your approved registry process, and configured as a digest-pinned reference in `FIXORA_SHADOW_PROBE_IMAGE`. Required ConfigMaps and image-pull secrets are not copied, so affected candidates report **inconclusive**. Secret and persistent storage references remain blocked. `--shadow-egress allow` is rejected. Inspect the reported status; `--quick` skips default shadow verification.
+
+Shadow verification requires cluster-scope permission to create, read, list, and delete uniquely labeled namespaces and list nonstandard cluster-wide policy APIs, plus namespaced ServiceAccount read and Pod/NetworkPolicy read, list, create, and delete permissions in the source and run namespaces. Namespace deletion is UID-guarded and awaited. `--keep-shadow` retains the isolated namespace for inspection; the namespace name and deny policy are reported.
+
+Build and publish the fixed probe image with your approved registry workflow, then configure its immutable digest:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  -f build/service-probe.Dockerfile \
+  -t registry.example/fixora/service-probe:reviewed --push .
+docker buildx imagetools inspect registry.example/fixora/service-probe:reviewed
+export FIXORA_SHADOW_PROBE_IMAGE='registry.example/fixora/service-probe@sha256:<64-character-manifest-digest>'
+```
+
+Choose the platform matching the Kubernetes nodes and use the published manifest digest. Do not use a mutable tag in `FIXORA_SHADOW_PROBE_IMAGE`. The probe image has only a fixed TCP listener mode and the IP-only service probe; it has no shell, credentials, API client, or DNS lookup. `hack/e2e-shadow-isolation.sh` creates a separate kind cluster with Calico, builds and digest-pins this image, runs the E2E suite, then removes only the cluster and registry it created.
 
 ## Local patch
 

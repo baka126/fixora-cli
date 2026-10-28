@@ -24,7 +24,7 @@ In **v0.8.0**, MCP `get-resource` and `get-logs` use the caller's Kubernetes per
 
 ## What shadow verification does
 
-An enabled shadow run clones a Pod or workload template, removes identity fields, labels it as a sandbox, attaches an ingress-deny NetworkPolicy, applies the candidate patch to the clone, waits for selected health signals, and reports parity/cleanup. Egress is allowed by default for parity and can be denied. `--keep-shadow` leaves resources for inspection and transfers cleanup responsibility to the operator.
+An enabled shadow run clones a Pod or workload template into a unique namespace, strips workload credentials, and refuses to create the candidate until positive and negative controls prove standard NetworkPolicy ingress and egress enforcement. The candidate runs under default-deny ingress and egress. NetworkPolicy API uncertainty, unsupported global/CNI policy APIs, missing probe prerequisites, or omitted namespaced dependencies block or make verification inconclusive; no candidate delivery follows those outcomes. The run namespace is deleted with UID preconditions and deletion is awaited. `--keep-shadow` leaves the isolated namespace and transfers cleanup responsibility to the operator.
 
 Shadow readiness cannot prove production traffic, dependencies, controller behavior, or rollout success. A skipped or inconclusive run must not be described as verified. `--quick` can skip the default shadow check.
 

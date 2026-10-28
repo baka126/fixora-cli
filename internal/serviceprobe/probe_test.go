@@ -107,3 +107,20 @@ func TestServiceProbeEncodedHealthPath(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIsolationListenerAcceptsTCPAndStopsWithContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	listener, err := StartIsolationListener(ctx, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	cancel()
+	if err := listener.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}

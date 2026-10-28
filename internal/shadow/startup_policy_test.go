@@ -17,7 +17,7 @@ func TestUntrustedShadowRequestCannotExecuteStartupMutation(t *testing.T) {
 	data, _ := json.Marshal(p)
 	var replay fix.Plan
 	_ = json.Unmarshal(data, &replay)
-	_, err := Run(context.Background(), c, Request{Plan: replay, Resource: p.Resource, Namespace: p.Namespace, Patch: startupPatch})
+	_, err := Run(context.Background(), c, Request{Plan: replay, Resource: p.Resource, Namespace: p.Namespace, Patch: startupPatch, ProbeImage: testIsolationProbeImage})
 	if err == nil || !strings.Contains(err.Error(), "proof") {
 		t.Fatalf("want missing proof refusal, got %v", err)
 	}
@@ -33,7 +33,7 @@ metadata: {name: api, namespace: prod}
 spec: {template: {spec: {nodeSelector: {pool: approved}}}}
 `} {
 		c := &kube.TypedClient{Clientset: fake.NewClientset()}
-		_, err := Run(context.Background(), c, Request{Resource: "Deployment/api", Namespace: "prod", Patch: patch, Plan: fix.Plan{Strategy: "image"}})
+		_, err := Run(context.Background(), c, Request{Resource: "Deployment/api", Namespace: "prod", Patch: patch, Plan: fix.Plan{Strategy: "image"}, ProbeImage: testIsolationProbeImage})
 		if err == nil || !strings.Contains(err.Error(), "proof") {
 			t.Fatalf("relabelled candidate accepted: %v", err)
 		}

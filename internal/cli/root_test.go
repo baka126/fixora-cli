@@ -803,6 +803,20 @@ func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	}
 }
 
+func TestWriteShadowIsolationBlockExplainsNoCandidateWasCreated(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status:    shadow.VerificationBlocked,
+		Isolation: &shadow.IsolationReport{Status: "blocked", Summary: "cluster NetworkPolicy enforcement could not be proven"},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"Shadow verification blocked", "Network isolation: cluster NetworkPolicy enforcement could not be proven", "No candidate was created"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("isolation block output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestWriteShadowFailureExplainsArchitectureOOMFollowup(t *testing.T) {
 	var output bytes.Buffer
 	writeShadowFailure(

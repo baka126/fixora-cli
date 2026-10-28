@@ -12,6 +12,15 @@ import (
 
 type DeliveryMode string
 
+type VerificationStatus string
+
+const (
+	VerificationVerified     VerificationStatus = "verified"
+	VerificationFailed       VerificationStatus = "failed"
+	VerificationInconclusive VerificationStatus = "inconclusive"
+	VerificationBlocked      VerificationStatus = "blocked"
+)
+
 const (
 	DeliveryPatch   DeliveryMode = "patch"
 	DeliveryCluster DeliveryMode = "cluster"
@@ -28,6 +37,7 @@ type Request struct {
 	Retries     int
 	Keep        bool
 	Egress      string
+	ProbeImage  string
 	Delivery    DeliveryMode
 	RepoPath    string
 	Branch      string
@@ -40,28 +50,37 @@ type Request struct {
 }
 
 type Result struct {
-	PolicyReceipt     *repairpolicy.Receipt `json:"-"`
-	PolicySummary     *repairpolicy.Summary `json:"policySummary,omitempty"`
-	LiveVerification  string                `json:"liveVerification,omitempty"`
-	LiveSummary       string                `json:"liveSummary,omitempty"`
-	Verified          bool                  `json:"verified"`
-	Parity            int                   `json:"parity"`
-	Resource          string                `json:"resource"`
-	Namespace         string                `json:"namespace"`
-	CloneName         string                `json:"cloneName,omitempty"`
-	NetworkPolicyName string                `json:"networkPolicyName,omitempty"`
-	Delivery          string                `json:"delivery,omitempty"`
-	PRURL             string                `json:"prUrl,omitempty"`
-	Attempts          []Attempt             `json:"attempts"`
-	Warnings          []string              `json:"warnings,omitempty"`
-	Cleanup           []string              `json:"cleanup,omitempty"`
-	VerifiedPatch     string                `json:"verifiedPatch,omitempty"`
-	FailureClass      string                `json:"failureClass,omitempty"`
-	FailureSummary    string                `json:"failureSummary,omitempty"`
+	PolicyReceipt      *repairpolicy.Receipt `json:"-"`
+	PolicySummary      *repairpolicy.Summary `json:"policySummary,omitempty"`
+	LiveVerification   string                `json:"liveVerification,omitempty"`
+	LiveSummary        string                `json:"liveSummary,omitempty"`
+	Verified           bool                  `json:"verified"`
+	Status             VerificationStatus    `json:"status"`
+	IsolationNamespace string                `json:"isolationNamespace,omitempty"`
+	Isolation          *IsolationReport      `json:"isolation,omitempty"`
+	Parity             int                   `json:"parity"`
+	Resource           string                `json:"resource"`
+	Namespace          string                `json:"namespace"`
+	CloneName          string                `json:"cloneName,omitempty"`
+	NetworkPolicyName  string                `json:"networkPolicyName,omitempty"`
+	Delivery           string                `json:"delivery,omitempty"`
+	PRURL              string                `json:"prUrl,omitempty"`
+	Attempts           []Attempt             `json:"attempts"`
+	Warnings           []string              `json:"warnings,omitempty"`
+	Cleanup            []string              `json:"cleanup,omitempty"`
+	VerifiedPatch      string                `json:"verifiedPatch,omitempty"`
+	FailureClass       string                `json:"failureClass,omitempty"`
+	FailureSummary     string                `json:"failureSummary,omitempty"`
 	// Caveats lists non-blocked production surfaces a PASS did not actually
 	// exercise. It lowers stated confidence only; it never feeds the apply gate
 	// (fix.Plan.ApplyEligible).
 	Caveats []string `json:"caveats,omitempty"`
+}
+
+type IsolationReport struct {
+	Status  string   `json:"status"`
+	Summary string   `json:"summary"`
+	Checks  []string `json:"checks,omitempty"`
 }
 
 type Attempt struct {
