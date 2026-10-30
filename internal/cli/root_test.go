@@ -803,6 +803,31 @@ func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	}
 }
 
+func TestWriteShadowFailureRendersBoundedEvidenceWithoutProbeHost(t *testing.T) {
+	ready := int64(8)
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status: shadow.VerificationFailed,
+		Evidence: &shadow.FailureEvidence{
+			Containers:          []shadow.ContainerEvidence{{Name: "api", RequestedImage: "registry/app:v2", ImageID: "containerd://sha256:abc", TerminationReason: "OOMKilled", MemoryRequest: "64Mi", MemoryLimit: "128Mi"}},
+			Probes:              []shadow.ProbeEvidence{{Container: "api", Type: "readiness", Protocol: "http", Path: "/ready", Port: "8080"}},
+			ConfigMaps:          []shadow.ConfigMapReferenceEvidence{{Name: "api-config", Key: "DATABASE_URL", SourceStatus: "key-present", SandboxStatus: "omitted-by-isolation"}},
+			TimeToReadySeconds:  &ready,
+			MemoryMetricsStatus: "unavailable",
+			ProbeFailureEvents:  []string{"Readiness probe failed: password=hunter2"},
+		},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"runtime ID: containerd://sha256:abc", "exit: OOMKilled", "Probe api/readiness (http GET /ready:8080)", "ConfigMap api-config (DATABASE_URL): source key-present; sandbox omitted-by-isolation", "Ready after 8s", "metrics.k8s.io unavailable", "password=[REDACTED]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow evidence output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "internal.example") || strings.Contains(got, "hunter2") {
+		t.Fatalf("shadow evidence output leaked probe host or secret:\n%s", got)
+	}
+}
+
 func TestWriteShadowInconclusiveDoesNotCallCandidateRejected(t *testing.T) {
 	var output bytes.Buffer
 	writeShadowFailure(&output, shadow.Result{

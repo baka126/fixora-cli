@@ -106,6 +106,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		}
 		plan.Namespace = shadowNS
 		lastPlan = plan
+		result.Evidence = collectFailureEvidence(ctx, c, req.Namespace, plan.Original, nil)
 		accountHasPullSecrets, accountErr := inspectSourceServiceAccount(ctx, c, req.Namespace, plan.Original)
 		if accountErr != nil {
 			result.Status = VerificationBlocked
@@ -183,7 +184,8 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			cleanup(ctx, c, plan, &result)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
-		verification := verifyClone(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource))
+		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
+		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready

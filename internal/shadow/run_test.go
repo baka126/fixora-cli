@@ -92,6 +92,9 @@ func TestRequiredConfigMapMakesShadowInconclusiveWithoutCandidate(t *testing.T) 
 	if err != nil || result.Status != VerificationInconclusive || result.Verified {
 		t.Fatalf("required ConfigMap must make shadow inconclusive: result=%#v err=%v", result, err)
 	}
+	if result.Evidence == nil || len(result.Evidence.ConfigMaps) != 1 || result.Evidence.ConfigMaps[0].SourceStatus != "not-found" || result.Evidence.ConfigMaps[0].SandboxStatus != "omitted-by-isolation" {
+		t.Fatalf("inconclusive result should preserve source ConfigMap key evidence: %#v", result.Evidence)
+	}
 	for _, action := range clientset.Actions() {
 		if action.GetVerb() == "create" && (action.GetResource().Resource == "pods" || action.GetResource().Resource == "networkpolicies") {
 			t.Fatalf("candidate resources created despite missing ConfigMap: %#v", action)

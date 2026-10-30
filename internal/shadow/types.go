@@ -71,6 +71,7 @@ type Result struct {
 	VerifiedPatch      string                `json:"verifiedPatch,omitempty"`
 	FailureClass       string                `json:"failureClass,omitempty"`
 	FailureSummary     string                `json:"failureSummary,omitempty"`
+	Evidence           *FailureEvidence      `json:"evidence,omitempty"`
 	// Caveats lists non-blocked production surfaces a PASS did not actually
 	// exercise. It lowers stated confidence only; it never feeds the apply gate
 	// (fix.Plan.ApplyEligible).
@@ -84,17 +85,71 @@ type IsolationReport struct {
 }
 
 type Attempt struct {
-	Number       int      `json:"number"`
-	CloneName    string   `json:"cloneName"`
-	Phase        string   `json:"phase"`
-	Ready        bool     `json:"ready"`
-	Inconclusive bool     `json:"inconclusive,omitempty"`
-	Restarts     int      `json:"restarts"`
-	ExitReason   string   `json:"exitReason,omitempty"`
-	Logs         []string `json:"logs,omitempty"`
-	Events       []string `json:"events,omitempty"`
-	Revised      bool     `json:"revised,omitempty"`
-	Message      string   `json:"message,omitempty"`
+	Number       int              `json:"number"`
+	CloneName    string           `json:"cloneName"`
+	Phase        string           `json:"phase"`
+	Ready        bool             `json:"ready"`
+	Inconclusive bool             `json:"inconclusive,omitempty"`
+	Restarts     int              `json:"restarts"`
+	ExitReason   string           `json:"exitReason,omitempty"`
+	Logs         []string         `json:"logs,omitempty"`
+	Events       []string         `json:"events,omitempty"`
+	Revised      bool             `json:"revised,omitempty"`
+	Message      string           `json:"message,omitempty"`
+	Evidence     *FailureEvidence `json:"evidence,omitempty"`
+}
+
+type FailureEvidence struct {
+	Containers           []ContainerEvidence          `json:"containers,omitempty"`
+	Probes               []ProbeEvidence              `json:"probes,omitempty"`
+	ProbeFailureEvents   []string                     `json:"probeFailureEvents,omitempty"`
+	ConfigMaps           []ConfigMapReferenceEvidence `json:"configMaps,omitempty"`
+	ReadyAt              *time.Time                   `json:"readyAt,omitempty"`
+	TimeToReadySeconds   *int64                       `json:"timeToReadySeconds,omitempty"`
+	ReadyTimingEstimated bool                         `json:"readyTimingEstimated,omitempty"`
+	MemoryMetricsStatus  string                       `json:"memoryMetricsStatus,omitempty"`
+	MemoryCurve          []MemorySample               `json:"memoryCurve,omitempty"`
+}
+
+type ContainerEvidence struct {
+	Name              string `json:"name"`
+	RequestedImage    string `json:"requestedImage,omitempty"`
+	RuntimeImage      string `json:"runtimeImage,omitempty"`
+	ImageID           string `json:"imageID,omitempty"`
+	Restarts          int32  `json:"restarts"`
+	TerminationReason string `json:"terminationReason,omitempty"`
+	ExitCode          *int32 `json:"exitCode,omitempty"`
+	MemoryRequest     string `json:"memoryRequest,omitempty"`
+	MemoryLimit       string `json:"memoryLimit,omitempty"`
+}
+
+type ProbeEvidence struct {
+	Container string `json:"container"`
+	Type      string `json:"type"`
+	Protocol  string `json:"protocol,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Port      string `json:"port,omitempty"`
+	Scheme    string `json:"scheme,omitempty"`
+}
+
+type ConfigMapReferenceEvidence struct {
+	Container     string `json:"container,omitempty"`
+	Name          string `json:"name"`
+	Key           string `json:"key,omitempty"`
+	SourceStatus  string `json:"sourceStatus"`
+	SandboxStatus string `json:"sandboxStatus"`
+	Optional      bool   `json:"optional,omitempty"`
+}
+
+type MemorySample struct {
+	Timestamp  time.Time               `json:"timestamp"`
+	Containers []ContainerMemorySample `json:"containers,omitempty"`
+}
+
+type ContainerMemorySample struct {
+	Name        string `json:"name"`
+	Memory      string `json:"memory"`
+	MemoryBytes int64  `json:"memoryBytes"`
 }
 
 type PatchValidationError struct {

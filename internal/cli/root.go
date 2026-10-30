@@ -1292,6 +1292,11 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 	if result.IsolationNamespace != "" && len(result.Cleanup) == 0 {
 		fmt.Fprintf(w, "  Sandbox namespace: %s\n", result.IsolationNamespace)
 	}
+	evidence := result.Evidence
+	if evidence == nil && len(result.Attempts) > 0 {
+		evidence = result.Attempts[len(result.Attempts)-1].Evidence
+	}
+	writeShadowEvidence(w, evidence)
 	fmt.Fprintln(w, "No production mutation, PR/MR, or source delivery was performed.")
 	for _, attempt := range result.Attempts {
 		phase := attempt.Phase
@@ -1323,6 +1328,91 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 		} else {
 			fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
 		}
+	}
+}
+
+func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
+	if evidence == nil {
+		return
+	}
+	hasEvidence := len(evidence.Containers)+len(evidence.Probes)+len(evidence.ConfigMaps)+len(evidence.MemoryCurve)+len(evidence.ProbeFailureEvents) > 0 || evidence.MemoryMetricsStatus != ""
+	if !hasEvidence {
+		return
+	}
+	fmt.Fprintln(w, "Evidence")
+	for _, container := range evidence.Containers {
+		fmt.Fprintf(w, "  Container %s", container.Name)
+		if container.RequestedImage != "" {
+			fmt.Fprintf(w, "; image: %s", container.RequestedImage)
+		}
+		if container.ImageID != "" {
+			fmt.Fprintf(w, "; runtime ID: %s", container.ImageID)
+		}
+		if container.TerminationReason != "" {
+			fmt.Fprintf(w, "; exit: %s", container.TerminationReason)
+		}
+		if container.MemoryLimit != "" || container.MemoryRequest != "" {
+			request, limit := container.MemoryRequest, container.MemoryLimit
+			if request == "" {
+				request = "-"
+			}
+			if limit == "" {
+				limit = "-"
+			}
+			fmt.Fprintf(w, "; memory request/limit: %s/%s", request, limit)
+		}
+		fmt.Fprintln(w)
+	}
+	if evidence.TimeToReadySeconds != nil {
+		fmt.Fprintf(w, "  Ready after %ds\n", *evidence.TimeToReadySeconds)
+	}
+	for _, probe := range evidence.Probes {
+		endpoint := probe.Protocol
+		if probe.Path != "" {
+			endpoint += " GET " + probe.Path
+		}
+		if probe.Port != "" {
+			endpoint += ":" + probe.Port
+		}
+		if endpoint != "" {
+			fmt.Fprintf(w, "  Probe %s/%s (%s)\n", probe.Container, probe.Type, endpoint)
+		}
+	}
+	for _, event := range evidence.ProbeFailureEvents {
+		fmt.Fprintf(w, "  Probe event: %s\n", trimEvidence(redact.KubernetesText(event), 180))
+	}
+	for _, ref := range evidence.ConfigMaps {
+		key := ref.Key
+		if key == "*" || key == "" {
+			key = "all keys"
+		}
+		fmt.Fprintf(w, "  ConfigMap %s (%s): source %s; sandbox %s\n", ref.Name, key, ref.SourceStatus, ref.SandboxStatus)
+	}
+	if len(evidence.MemoryCurve) > 0 {
+		for _, container := range evidence.Containers {
+			var samples []string
+			var maximum int64
+			for _, sample := range evidence.MemoryCurve {
+				for _, usage := range sample.Containers {
+					if usage.Name != container.Name {
+						continue
+					}
+					samples = append(samples, usage.Memory)
+					if usage.MemoryBytes > maximum {
+						maximum = usage.MemoryBytes
+					}
+				}
+			}
+			if len(samples) > 0 {
+				shown := samples
+				if len(shown) > 5 {
+					shown = append(append([]string{}, shown[:4]...), "…", shown[len(shown)-1])
+				}
+				fmt.Fprintf(w, "  Memory curve %s: %s (%d samples, peak %s)\n", container.Name, strings.Join(shown, " → "), len(samples), resource.NewQuantity(maximum, resource.BinarySI).String())
+			}
+		}
+	} else if evidence.MemoryMetricsStatus == "unavailable" {
+		fmt.Fprintln(w, "  Memory curve: metrics.k8s.io unavailable; memory limit and OOM status are still shown when observed")
 	}
 }
 

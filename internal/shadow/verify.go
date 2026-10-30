@@ -16,12 +16,32 @@ func verifyClone(ctx context.Context, c *kube.TypedClient, namespace, name strin
 }
 
 func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, startupAllowance, stabilityWindow time.Duration) Attempt {
+	return verifyCloneWithEvidence(ctx, c, namespace, name, timeout, attempt, allowCompletion, nil, nil, startupAllowance, stabilityWindow)
+}
+
+func verifyCloneWithSource(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence) Attempt {
+	return verifyCloneWithEvidence(ctx, c, namespace, name, timeout, attempt, allowCompletion, source, evidence, startupWindow, soakWindow(allowCompletion))
+}
+
+func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence, startupAllowance, stabilityWindow time.Duration) Attempt {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result := Attempt{Number: attempt, CloneName: name}
+	if evidence == nil {
+		evidence = collectFailureEvidence(ctx, c, namespace, source, nil)
+	}
+	result.Evidence = evidence
+	var memoryTicker *time.Ticker
+	var memorySamples <-chan time.Time
+	if c != nil && c.Dynamic != nil {
+		memoryTicker = time.NewTicker(shadowMemorySampleInterval)
+		defer memoryTicker.Stop()
+		memorySamples = memoryTicker.C
+		sampleMemoryEvidence(ctx, c, namespace, name, result.Evidence)
+	}
 	verificationStarted := time.Now()
 	var startupTimer *time.Timer
 	var startupDone <-chan time.Time
@@ -37,6 +57,7 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 	if pod, err := c.GetTypedPod(ctx, namespace, name); err == nil {
 		resourceVersion = pod.ResourceVersion
 		updateAttemptFromPod(&result, pod)
+		updateCandidateEvidence(result.Evidence, pod, time.Now())
 		if pod.Status.Phase == corev1.PodSucceeded {
 			if allowCompletion {
 				result.Ready = true
@@ -105,6 +126,7 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 					return result
 				}
 				updateAttemptFromPod(&result, pod)
+				updateCandidateEvidence(result.Evidence, pod, time.Now())
 				within, known := initialReadyWithinWindow(pod, time.Now(), verificationStarted, startupAllowance)
 				if pod.Status.Phase == corev1.PodRunning && podReady(pod) && within {
 					stableSince = time.Now()
@@ -130,6 +152,7 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 				return result
 			}
 			updateAttemptFromPod(&result, pod)
+			updateCandidateEvidence(result.Evidence, pod, time.Now())
 			if reason, stable := stillStable(pod, baselineRestarts); !stable {
 				result.Ready = false
 				result.Message = "shadow pod did not stay ready: " + reason
@@ -139,6 +162,8 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 			result.Ready = true
 			result.Message = fmt.Sprintf("shadow pod stayed ready for %s (%d restarts)", time.Since(stableSince).Round(time.Second), result.Restarts)
 			return result
+		case <-memorySamples:
+			sampleMemoryEvidence(ctx, c, namespace, name, result.Evidence)
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
 				result.Ready = false
@@ -152,6 +177,7 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 				continue
 			}
 			updateAttemptFromPod(&result, pod)
+			updateCandidateEvidence(result.Evidence, pod, time.Now())
 			if pod.Status.Phase == corev1.PodSucceeded {
 				if allowCompletion {
 					result.Ready = true
@@ -342,4 +368,5 @@ func enrichFailure(c *kube.TypedClient, namespace, name string, attempt *Attempt
 			attempt.Events = append(attempt.Events, fmt.Sprintf("%s %s: %s", ev.Type, ev.Reason, ev.Message))
 		}
 	}
+	recordProbeFailureEvents(attempt.Evidence, attempt.Events)
 }
