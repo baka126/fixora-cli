@@ -109,6 +109,7 @@ type FailureEvidence struct {
 	ReadyTimingEstimated bool                         `json:"readyTimingEstimated,omitempty"`
 	MemoryMetricsStatus  string                       `json:"memoryMetricsStatus,omitempty"`
 	MemoryCurve          []MemorySample               `json:"memoryCurve,omitempty"`
+	MemoryAssessment     *MemoryAssessment            `json:"memoryAssessment,omitempty"`
 }
 
 type ContainerEvidence struct {
@@ -151,6 +152,19 @@ type ContainerMemorySample struct {
 	Name        string `json:"name"`
 	Memory      string `json:"memory"`
 	MemoryBytes int64  `json:"memoryBytes"`
+}
+
+type MemoryAssessment struct {
+	Status             string  `json:"status"`
+	Summary            string  `json:"summary"`
+	Peak               string  `json:"peak,omitempty"`
+	PeakBytes          int64   `json:"peakBytes,omitempty"`
+	Limit              string  `json:"limit,omitempty"`
+	LimitBytes         int64   `json:"limitBytes,omitempty"`
+	HeadroomPercent    float64 `json:"headroomPercent,omitempty"`
+	SampleCount        int     `json:"sampleCount,omitempty"`
+	ObservationSeconds int64   `json:"observationSeconds,omitempty"`
+	Trend              string  `json:"trend,omitempty"`
 }
 
 type PatchValidationError struct {
