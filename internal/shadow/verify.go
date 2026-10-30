@@ -34,14 +34,12 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 		evidence = collectFailureEvidence(ctx, c, namespace, source, nil)
 	}
 	result.Evidence = evidence
-	var memoryTicker *time.Ticker
-	var memorySamples <-chan time.Time
-	if c != nil && c.Dynamic != nil {
-		memoryTicker = time.NewTicker(shadowMemorySampleInterval)
-		defer memoryTicker.Stop()
-		memorySamples = memoryTicker.C
-		sampleMemoryEvidence(ctx, c, namespace, name, result.Evidence)
-	}
+	memoryResults := startMemoryEvidenceSampler(ctx, c, namespace, name, result.Evidence)
+	defer func() {
+		if result.Evidence != nil && result.Evidence.MemoryMetricsStatus == "pending" {
+			result.Evidence.MemoryMetricsStatus = "not-observed"
+		}
+	}()
 	verificationStarted := time.Now()
 	var startupTimer *time.Timer
 	var startupDone <-chan time.Time
@@ -162,8 +160,12 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 			result.Ready = true
 			result.Message = fmt.Sprintf("shadow pod stayed ready for %s (%d restarts)", time.Since(stableSince).Round(time.Second), result.Restarts)
 			return result
-		case <-memorySamples:
-			sampleMemoryEvidence(ctx, c, namespace, name, result.Evidence)
+		case observation, ok := <-memoryResults:
+			if !ok {
+				memoryResults = nil
+				continue
+			}
+			applyMemorySampleResult(result.Evidence, observation)
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
 				result.Ready = false

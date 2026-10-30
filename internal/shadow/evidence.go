@@ -45,24 +45,25 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 		name      string
 		key       string
 		optional  bool
+		textOnly  bool
 	}
 	var references []reference
-	add := func(container, name, key string, optional bool) {
+	add := func(container, name, key string, optional, textOnly bool) {
 		if strings.TrimSpace(name) != "" {
-			references = append(references, reference{container: container, name: name, key: key, optional: optional})
+			references = append(references, reference{container: container, name: name, key: key, optional: optional, textOnly: textOnly})
 		}
 	}
 	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
 	for _, container := range containers {
 		for _, source := range container.EnvFrom {
 			if source.ConfigMapRef != nil {
-				add(container.Name, source.ConfigMapRef.Name, "*", source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional)
+				add(container.Name, source.ConfigMapRef.Name, "*", source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional, true)
 			}
 		}
 		for _, env := range container.Env {
 			if env.ValueFrom != nil && env.ValueFrom.ConfigMapKeyRef != nil {
 				ref := env.ValueFrom.ConfigMapKeyRef
-				add(container.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional)
+				add(container.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional, true)
 			}
 		}
 	}
@@ -72,11 +73,11 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 		}
 		isOptional := optional != nil && *optional
 		if len(items) == 0 {
-			add(volumeName, name, "*", isOptional)
+			add(volumeName, name, "*", isOptional, false)
 			return
 		}
 		for _, item := range items {
-			add(volumeName, name, item.Key, isOptional)
+			add(volumeName, name, item.Key, isOptional, false)
 		}
 	}
 	for _, volume := range pod.Spec.Volumes {
@@ -93,22 +94,24 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 	}
 
 	type configMapRead struct {
-		found bool
-		keys  map[string]bool
-		err   error
+		found      bool
+		dataKeys   map[string]bool
+		binaryKeys map[string]bool
+		err        error
 	}
 	cache := map[string]configMapRead{}
 	seen := map[string]bool{}
 	result := make([]ConfigMapReferenceEvidence, 0, len(references))
 	for _, ref := range references {
-		identity := ref.container + "\x00" + ref.name + "\x00" + ref.key
+		identity := fmt.Sprintf("%s\x00%s\x00%s\x00%t", ref.container, ref.name, ref.key, ref.textOnly)
 		if seen[identity] {
 			continue
 		}
 		seen[identity] = true
 		read, cached := cache[ref.name]
 		if !cached {
-			read.keys = map[string]bool{}
+			read.dataKeys = map[string]bool{}
+			read.binaryKeys = map[string]bool{}
 			if c == nil || c.Clientset == nil {
 				read.err = fmt.Errorf("typed Kubernetes client unavailable")
 			} else {
@@ -121,10 +124,10 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 				default:
 					read.found = true
 					for key := range configMap.Data {
-						read.keys[key] = true
+						read.dataKeys[key] = true
 					}
 					for key := range configMap.BinaryData {
-						read.keys[key] = true
+						read.binaryKeys[key] = true
 					}
 				}
 			}
@@ -136,7 +139,7 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 			status = "unknown"
 		case !read.found:
 			status = "not-found"
-		case ref.key != "*" && !read.keys[ref.key]:
+		case ref.key != "*" && !read.dataKeys[ref.key] && (ref.textOnly || !read.binaryKeys[ref.key]):
 			status = "key-missing"
 		case ref.key != "*":
 			status = "key-present"
@@ -164,7 +167,7 @@ func probeEvidence(pod *corev1.Pod) []ProbeEvidence {
 			switch {
 			case probe.HTTPGet != nil:
 				evidence.Protocol = "http"
-				evidence.Path = probe.HTTPGet.Path
+				evidence.Path = sanitizeProbePath(probe.HTTPGet.Path)
 				evidence.Port = probe.HTTPGet.Port.String()
 				evidence.Scheme = string(probe.HTTPGet.Scheme)
 			case probe.TCPSocket != nil:
@@ -181,6 +184,18 @@ func probeEvidence(pod *corev1.Pod) []ProbeEvidence {
 		appendProbe("startup", container.StartupProbe)
 	}
 	return result
+}
+
+func sanitizeProbePath(path string) string {
+	// Queries and fragments are not needed to identify a probe endpoint and may
+	// carry credentials. Keep the bounded path component only.
+	path = strings.SplitN(path, "?", 2)[0]
+	path = strings.SplitN(path, "#", 2)[0]
+	path = redact.KubernetesText(path)
+	if len(path) > 256 {
+		path = path[:256]
+	}
+	return path
 }
 
 func updateCandidateEvidence(evidence *FailureEvidence, pod *corev1.Pod, observedAt time.Time) {
@@ -211,10 +226,11 @@ func updateCandidateEvidence(evidence *FailureEvidence, pod *corev1.Pod, observe
 				item.TerminationReason = status.State.Terminated.Reason
 				code := status.State.Terminated.ExitCode
 				item.ExitCode = &code
-			case status.State.Waiting != nil:
-				item.TerminationReason = status.State.Waiting.Reason
 			}
-			if status.LastTerminationState.Terminated != nil && item.TerminationReason == "" {
+			if status.State.Waiting != nil {
+				item.WaitingReason = status.State.Waiting.Reason
+			}
+			if status.LastTerminationState.Terminated != nil && status.State.Terminated == nil {
 				item.TerminationReason = status.LastTerminationState.Terminated.Reason
 				code := status.LastTerminationState.Terminated.ExitCode
 				item.ExitCode = &code
@@ -297,20 +313,53 @@ func appendMemorySample(evidence *FailureEvidence, sample MemorySample) {
 	evidence.MemoryMetricsStatus = "available"
 }
 
-func sampleMemoryEvidence(ctx context.Context, c *kube.TypedClient, namespace, podName string, evidence *FailureEvidence) {
+type memorySampleResult struct {
+	sample MemorySample
+	err    error
+}
+
+func startMemoryEvidenceSampler(ctx context.Context, c *kube.TypedClient, namespace, podName string, evidence *FailureEvidence) <-chan memorySampleResult {
+	if evidence == nil {
+		return nil
+	}
+	evidence.MemoryMetricsStatus = "pending"
+	if c == nil || c.Dynamic == nil {
+		evidence.MemoryMetricsStatus = "unavailable"
+		return nil
+	}
+	results := make(chan memorySampleResult, 1)
+	go func() {
+		ticker := time.NewTicker(shadowMemorySampleInterval)
+		defer ticker.Stop()
+		for {
+			requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			sample, err := samplePodMemoryMetrics(requestCtx, c, namespace, podName)
+			cancel()
+			select {
+			case results <- memorySampleResult{sample: sample, err: err}:
+			default: // Keep only one pending observation; verification must never wait for metrics.
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return results
+}
+
+func applyMemorySampleResult(evidence *FailureEvidence, result memorySampleResult) {
 	if evidence == nil {
 		return
 	}
-	sampleCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	sample, err := samplePodMemoryMetrics(sampleCtx, c, namespace, podName)
-	if err != nil {
+	if result.err != nil {
 		if len(evidence.MemoryCurve) == 0 {
 			evidence.MemoryMetricsStatus = "unavailable"
 		}
 		return
 	}
-	appendMemorySample(evidence, sample)
+	appendMemorySample(evidence, result.sample)
 }
 
 func recordProbeFailureEvents(evidence *FailureEvidence, events []string) {

@@ -1351,6 +1351,9 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 		if container.TerminationReason != "" {
 			fmt.Fprintf(w, "; exit: %s", container.TerminationReason)
 		}
+		if container.WaitingReason != "" {
+			fmt.Fprintf(w, "; waiting: %s", container.WaitingReason)
+		}
 		if container.MemoryLimit != "" || container.MemoryRequest != "" {
 			request, limit := container.MemoryRequest, container.MemoryLimit
 			if request == "" {
@@ -1364,7 +1367,11 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 		fmt.Fprintln(w)
 	}
 	if evidence.TimeToReadySeconds != nil {
-		fmt.Fprintf(w, "  Ready after %ds\n", *evidence.TimeToReadySeconds)
+		if evidence.ReadyTimingEstimated {
+			fmt.Fprintf(w, "  Ready observed after approximately %ds\n", *evidence.TimeToReadySeconds)
+		} else {
+			fmt.Fprintf(w, "  Ready after %ds\n", *evidence.TimeToReadySeconds)
+		}
 	}
 	for _, probe := range evidence.Probes {
 		endpoint := probe.Protocol
@@ -1413,6 +1420,8 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 		}
 	} else if evidence.MemoryMetricsStatus == "unavailable" {
 		fmt.Fprintln(w, "  Memory curve: metrics.k8s.io unavailable; memory limit and OOM status are still shown when observed")
+	} else if evidence.MemoryMetricsStatus == "not-observed" {
+		fmt.Fprintln(w, "  Memory curve: no metrics sample completed before verification ended")
 	}
 }
 

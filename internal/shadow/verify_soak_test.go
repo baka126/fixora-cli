@@ -2,6 +2,7 @@ package shadow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +10,10 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	corefake "k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 func readyPod(restarts int32) *corev1.Pod {
@@ -110,6 +114,44 @@ func TestVerifyCloneStartsStabilityWindowFromInitialReadyRead(t *testing.T) {
 	attempt := verifyCloneWithWindows(context.Background(), client, "test", "candidate", time.Second, 1, false, time.Second, 10*time.Millisecond)
 	if !attempt.Ready {
 		t.Fatalf("already-ready pod should complete its stability window, got %#v", attempt)
+	}
+}
+
+func TestSlowOptionalMetricsDoNotDelayVerification(t *testing.T) {
+	pod := readyPod(0)
+	pod.Namespace = "test"
+	pod.Name = "candidate"
+	client := &kube.TypedClient{
+		Clientset: corefake.NewSimpleClientset(pod),
+		Dynamic:   dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()),
+	}
+	metricsStarted := make(chan struct{})
+	allowMetricsToReturn := make(chan struct{})
+	client.Dynamic.(*dynamicfake.FakeDynamicClient).PrependReactor("get", "pods", func(ktesting.Action) (bool, runtime.Object, error) {
+		close(metricsStarted)
+		<-allowMetricsToReturn
+		return true, nil, errors.New("optional metrics unavailable")
+	})
+	defer close(allowMetricsToReturn)
+	finished := make(chan Attempt, 1)
+	go func() {
+		finished <- verifyCloneWithEvidence(context.Background(), client, "test", "candidate", time.Second, 1, false, nil, nil, time.Second, 20*time.Millisecond)
+	}()
+	select {
+	case <-metricsStarted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("metrics sampler did not issue its optional read")
+	}
+	select {
+	case attempt := <-finished:
+		if !attempt.Ready {
+			t.Fatalf("slow optional metrics changed verification outcome: %#v", attempt)
+		}
+		if attempt.Evidence == nil || attempt.Evidence.MemoryMetricsStatus != "not-observed" {
+			t.Fatalf("cancelled optional metrics read should be reported as not observed: %#v", attempt.Evidence)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("verification waited on optional metrics")
 	}
 }
 

@@ -68,6 +68,51 @@ func TestFailureEvidenceReportsMissingConfigMapKeyWithoutValue(t *testing.T) {
 	}
 }
 
+func TestFailureEvidenceDoesNotTreatBinaryConfigMapKeyAsEnvironmentKey(t *testing.T) {
+	original := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "api",
+		Env: []corev1.EnvVar{{Name: "MODE", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "MODE",
+		}}}},
+	}}}}
+	client := &kube.TypedClient{Clientset: corefake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod"},
+		BinaryData: map[string][]byte{"MODE": []byte("binary")},
+	})}
+	evidence := collectFailureEvidence(context.Background(), client, "prod", original, nil)
+	if len(evidence.ConfigMaps) != 1 || evidence.ConfigMaps[0].SourceStatus != "key-missing" {
+		t.Fatalf("binary ConfigMap key cannot satisfy an env key reference, got %#v", evidence.ConfigMaps)
+	}
+}
+
+func TestFailureEvidenceAcceptsBinaryConfigMapKeyForVolume(t *testing.T) {
+	original := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Items: []corev1.KeyToPath{{Key: "settings", Path: "settings"}},
+	}}}}}}
+	client := &kube.TypedClient{Clientset: corefake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod"},
+		BinaryData: map[string][]byte{"settings": []byte("binary")},
+	})}
+	evidence := collectFailureEvidence(context.Background(), client, "prod", original, nil)
+	if len(evidence.ConfigMaps) != 1 || evidence.ConfigMaps[0].SourceStatus != "key-present" {
+		t.Fatalf("volume projection should accept a BinaryData key, got %#v", evidence.ConfigMaps)
+	}
+}
+
+func TestFailureEvidenceRedactsProbePathQueryAndPriorTermination(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Image: "registry/app:v2", ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready?token=hunter2", Port: intstr.FromInt(8080)}}}}}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "api", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}, LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}}},
+	}
+	evidence := collectFailureEvidence(context.Background(), nil, "prod", nil, pod)
+	if len(evidence.Probes) != 1 || strings.Contains(evidence.Probes[0].Path, "hunter2") || strings.Contains(evidence.Probes[0].Path, "?") {
+		t.Fatalf("probe path query must not be retained: %#v", evidence.Probes)
+	}
+	if evidence.Containers[0].TerminationReason != "OOMKilled" || evidence.Containers[0].ExitCode == nil || *evidence.Containers[0].ExitCode != 137 {
+		t.Fatalf("last container termination should be preserved while waiting: %#v", evidence.Containers[0])
+	}
+}
+
 func TestFailureEvidenceCapturesImageProbeAndReadinessTiming(t *testing.T) {
 	created := metav1.NewTime(time.Now().Add(-20 * time.Second))
 	readyAt := metav1.NewTime(created.Add(8 * time.Second))

@@ -118,6 +118,7 @@ type ContainerEvidence struct {
 	ImageID           string `json:"imageID,omitempty"`
 	Restarts          int32  `json:"restarts"`
 	TerminationReason string `json:"terminationReason,omitempty"`
+	WaitingReason     string `json:"waitingReason,omitempty"`
 	ExitCode          *int32 `json:"exitCode,omitempty"`
 	MemoryRequest     string `json:"memoryRequest,omitempty"`
 	MemoryLimit       string `json:"memoryLimit,omitempty"`
