@@ -1335,7 +1335,7 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 	if evidence == nil {
 		return
 	}
-	hasEvidence := len(evidence.Containers)+len(evidence.Probes)+len(evidence.ConfigMaps)+len(evidence.MemoryCurve)+len(evidence.ProbeFailureEvents) > 0 || evidence.MemoryMetricsStatus != ""
+	hasEvidence := len(evidence.Containers)+len(evidence.Probes)+len(evidence.ConfigMaps)+len(evidence.MemoryCurve)+len(evidence.ProbeFailureEvents) > 0 || evidence.MemoryMetricsStatus != "" || evidence.MemoryAssessment != nil
 	if !hasEvidence {
 		return
 	}
@@ -1394,6 +1394,13 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 			key = "all keys"
 		}
 		fmt.Fprintf(w, "  ConfigMap %s (%s): source %s; sandbox %s\n", ref.Name, key, ref.SourceStatus, ref.SandboxStatus)
+	}
+	if assessment := evidence.MemoryAssessment; assessment != nil {
+		fmt.Fprintf(w, "  OOM memory assessment: %s", assessment.Status)
+		if assessment.Summary != "" {
+			fmt.Fprintf(w, " — %s", trimEvidence(assessment.Summary, 220))
+		}
+		fmt.Fprintln(w)
 	}
 	if len(evidence.MemoryCurve) > 0 {
 		for _, container := range evidence.Containers {

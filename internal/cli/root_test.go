@@ -815,17 +815,28 @@ func TestWriteShadowFailureRendersBoundedEvidenceWithoutProbeHost(t *testing.T) 
 			TimeToReadySeconds:   &ready,
 			ReadyTimingEstimated: true,
 			MemoryMetricsStatus:  "unavailable",
+			MemoryAssessment:     &shadow.MemoryAssessment{Status: "failed", Summary: "peak 100Mi of 128Mi; 21.9% headroom; climbing"},
 			ProbeFailureEvents:   []string{"Readiness probe failed: password=hunter2"},
 		},
 	}, "", analyzer.Finding{}, fix.Plan{})
 	got := output.String()
-	for _, want := range []string{"runtime ID: containerd://sha256:abc", "exit: OOMKilled", "waiting: CrashLoopBackOff", "Probe api/readiness (http GET /ready:8080)", "ConfigMap api-config (DATABASE_URL): source key-present; sandbox omitted-by-isolation", "Ready observed after approximately 8s", "metrics.k8s.io unavailable", "password=[REDACTED]"} {
+	for _, want := range []string{"runtime ID: containerd://sha256:abc", "exit: OOMKilled", "waiting: CrashLoopBackOff", "Probe api/readiness (http GET /ready:8080)", "ConfigMap api-config (DATABASE_URL): source key-present; sandbox omitted-by-isolation", "Ready observed after approximately 8s", "OOM memory assessment: failed — peak 100Mi of 128Mi; 21.9% headroom; climbing", "metrics.k8s.io unavailable", "password=[REDACTED]"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("shadow evidence output missing %q:\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "internal.example") || strings.Contains(got, "hunter2") {
 		t.Fatalf("shadow evidence output leaked probe host or secret:\n%s", got)
+	}
+}
+
+func TestWriteShadowFailureExplainsInconclusiveOOMMemoryEvidence(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{Status: shadow.VerificationInconclusive, Evidence: &shadow.FailureEvidence{
+		MemoryAssessment: &shadow.MemoryAssessment{Status: "inconclusive", Summary: "at least three distinct memory samples are required"},
+	}}, "", analyzer.Finding{}, fix.Plan{})
+	if got := output.String(); !strings.Contains(got, "OOM memory assessment: inconclusive — at least three distinct memory samples are required") {
+		t.Fatalf("missing concise explanation of inconclusive OOM evidence:\n%s", got)
 	}
 }
 
