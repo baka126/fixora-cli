@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,6 +30,38 @@ func TestResourceAllowsCompletionOnlyForBatchControllers(t *testing.T) {
 		if resourceAllowsCompletion(resource) {
 			t.Fatalf("expected %s to require readiness", resource)
 		}
+	}
+}
+
+func TestOOMMemoryGateIsScopedAndFailsClosedOnMissingEvidence(t *testing.T) {
+	finding := analyzer.Finding{Status: "OOMKilled", Evidence: []analyzer.Evidence{{Label: "Failing container", Value: "api"}}}
+	attempt := Attempt{Ready: true, Phase: "Running", Evidence: &FailureEvidence{}}
+	got := gateOOMMemoryAssessment(finding, &attempt)
+	if got.Status != "inconclusive" || attempt.Ready || !attempt.Inconclusive {
+		t.Fatalf("OOM with absent memory evidence must be inconclusive: assessment=%#v attempt=%#v", got, attempt)
+	}
+
+	nonOOM := Attempt{Ready: true, Phase: "Running", Evidence: &FailureEvidence{}}
+	if got := gateOOMMemoryAssessment(analyzer.Finding{Status: "CrashLoopBackOff"}, &nonOOM); got != nil || !nonOOM.Ready || nonOOM.Inconclusive {
+		t.Fatalf("non-OOM verification behavior changed: assessment=%#v attempt=%#v", got, nonOOM)
+	}
+}
+
+func TestOOMMemoryGateMarksUnsafeCurveRetryableAndCandidateOOMFailed(t *testing.T) {
+	finding := analyzer.Finding{Status: "OOMKilled", Evidence: []analyzer.Evidence{{Label: "Failing container", Value: "api"}}}
+	unsafe := memoryEvidence(50*1024*1024, 55*1024*1024, 60*1024*1024)
+	attempt := Attempt{Ready: true, Phase: "Running", Evidence: unsafe}
+	assessment := gateOOMMemoryAssessment(finding, &attempt)
+	if assessment == nil || assessment.Status != "failed" || attempt.Ready || attempt.Inconclusive || attempt.Message == "" {
+		t.Fatalf("unsafe memory curve must become retryable failure: assessment=%#v attempt=%#v", assessment, attempt)
+	}
+
+	candidate := memoryEvidence(40*1024*1024, 40*1024*1024, 40*1024*1024)
+	candidate.Containers[0].TerminationReason = "OOMKilled"
+	attempt = Attempt{Ready: true, Phase: "Running", Evidence: candidate}
+	assessment = gateOOMMemoryAssessment(finding, &attempt)
+	if assessment == nil || assessment.Status != "failed" || attempt.Ready || attempt.Inconclusive {
+		t.Fatalf("candidate OOM must remain failed regardless of measured headroom: assessment=%#v attempt=%#v", assessment, attempt)
 	}
 }
 

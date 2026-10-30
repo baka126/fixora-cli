@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	corev1 "k8s.io/api/core/v1"
@@ -185,6 +186,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
 		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
+		gateOOMMemoryAssessment(req.Finding, &verification)
 		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
@@ -251,6 +253,42 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
 	return result, nil
+}
+
+// gateOOMMemoryAssessment applies the OOM-specific memory evidence gate after
+// the ordinary readiness soak. Other finding types retain their existing verdict.
+func gateOOMMemoryAssessment(finding analyzer.Finding, attempt *Attempt) *MemoryAssessment {
+	if attempt == nil || !strings.Contains(strings.ToLower(finding.Status), "oomkilled") {
+		return nil
+	}
+	failingContainer := ""
+	count := 0
+	for _, evidence := range finding.Evidence {
+		if evidence.Label == "Failing container" {
+			count++
+			failingContainer = strings.TrimSpace(evidence.Value)
+		}
+	}
+	if count != 1 {
+		failingContainer = ""
+	}
+	assessment := assessOOMMemory(attempt.Evidence, failingContainer)
+	if attempt.Evidence != nil {
+		attempt.Evidence.MemoryAssessment = &assessment
+	}
+	switch assessment.Status {
+	case "passed":
+		return &assessment
+	case "failed":
+		attempt.Ready = false
+		attempt.Inconclusive = false
+		attempt.Message = "OOM memory evidence failed: " + assessment.Summary
+	case "inconclusive":
+		attempt.Ready = false
+		attempt.Inconclusive = true
+		attempt.Message = "OOM memory evidence inconclusive: " + assessment.Summary
+	}
+	return &assessment
 }
 
 func resourceAllowsCompletion(resource string) bool {
