@@ -3,6 +3,8 @@ package shadow
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +46,147 @@ func TestFailureEvidenceResolvesConfigMapKeysWithoutValues(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), secretLookingValue) {
 		t.Fatalf("ConfigMap values must never be included in evidence: %s", encoded)
+	}
+}
+
+func TestPrepareShadowConfigMapsCopiesOnlyReferencedDataKeys(t *testing.T) {
+	const privateValue = "private-setting-value"
+	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod", Labels: map[string]string{"team": "payments"}},
+		Data:       map[string]string{"DATABASE_URL": privateValue, "UNUSED": "do-not-copy"},
+	})
+	client := &kube.TypedClient{Clientset: clientset}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "api",
+		Env: []corev1.EnvVar{{Name: "DATABASE_URL", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "DATABASE_URL",
+		}}}},
+	}}}}
+	prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow", pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prepared.Copied || len(prepared.Limitations) != 0 || len(prepared.Evidence) != 1 {
+		t.Fatalf("want one prepared key and no limitations, got %#v", prepared)
+	}
+	shadowMap, err := clientset.CoreV1().ConfigMaps("shadow").Get(context.Background(), "api-config", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("shadow ConfigMap was not created: %v", err)
+	}
+	if len(shadowMap.Data) != 1 || shadowMap.Data["DATABASE_URL"] != privateValue || len(shadowMap.Labels) != 1 || shadowMap.Labels[labelSandbox] != "true" {
+		t.Fatalf("shadow ConfigMap must contain only referenced key and no source metadata: %#v", shadowMap)
+	}
+	evidence := prepared.Evidence[0]
+	if evidence.EnvironmentVariable != "DATABASE_URL" || evidence.SourceStatus != "key-present" || evidence.SandboxStatus != "key-present" {
+		t.Fatalf("expected source and sandbox key-presence evidence: %#v", evidence)
+	}
+	encoded, err := json.Marshal(prepared.Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), privateValue) || strings.Contains(string(encoded), "do-not-copy") {
+		t.Fatalf("ConfigMap data leaked into evidence: %s", encoded)
+	}
+}
+
+func TestPrepareShadowConfigMapsMergesReferencesAndCapsSize(t *testing.T) {
+	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "prod"},
+		Data:       map[string]string{"A": "value-a", "B": "value-b"},
+	})
+	client := &kube.TypedClient{Clientset: clientset}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: []corev1.EnvVar{
+		{Name: "A_ENV", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "shared"}, Key: "A"}}},
+		{Name: "B_ENV", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "shared"}, Key: "B"}}},
+	}}}}}
+	prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow", pod)
+	if err != nil || len(prepared.Evidence) != 2 {
+		t.Fatalf("multiple direct refs should prepare, evidence=%#v err=%v", prepared, err)
+	}
+	objects, err := clientset.CoreV1().ConfigMaps("shadow").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(objects.Items) != 1 || len(objects.Items[0].Data) != 2 {
+		t.Fatalf("same-name references should merge into one minimal ConfigMap: items=%#v err=%v", objects, err)
+	}
+
+	keys := make([]string, 33)
+	data := make(map[string]string, len(keys))
+	envs := make([]corev1.EnvVar, len(keys))
+	for i := range keys {
+		keys[i] = fmt.Sprintf("K%d", i)
+		data[keys[i]] = "v"
+		envs[i] = corev1.EnvVar{Name: "E" + keys[i], ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "large"}, Key: keys[i]}}}
+	}
+	largeClientset := corefake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "large", Namespace: "prod"}, Data: data})
+	largeClient := &kube.TypedClient{Clientset: largeClientset}
+	prepared, err = prepareShadowConfigMaps(context.Background(), largeClient, "prod", "shadow", &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: envs}}}})
+	if err != nil || len(prepared.Limitations) == 0 || prepared.Copied {
+		t.Fatalf("more than 32 keys must be inconclusive before copying, prepared=%#v err=%v", prepared, err)
+	}
+	objects, _ = largeClientset.CoreV1().ConfigMaps("shadow").List(context.Background(), metav1.ListOptions{})
+	if len(objects.Items) != 0 {
+		t.Fatalf("key cap must prevent partial ConfigMap writes: %#v", objects.Items)
+	}
+
+	tooLargeClientset := corefake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "large-value", Namespace: "prod"}, Data: map[string]string{"K": strings.Repeat("x", 64*1024+1)}})
+	tooLargeClient := &kube.TypedClient{Clientset: tooLargeClientset}
+	tooLargePod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: []corev1.EnvVar{{Name: "E", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "large-value"}, Key: "K"}}}}}}}}
+	prepared, err = prepareShadowConfigMaps(context.Background(), tooLargeClient, "prod", "shadow", tooLargePod)
+	if err != nil || len(prepared.Limitations) == 0 || prepared.Copied {
+		t.Fatalf("more than 64KiB must be inconclusive before copying, prepared=%#v err=%v", prepared, err)
+	}
+}
+
+func TestPrepareShadowConfigMapsRejectsUnsupportedDependencies(t *testing.T) {
+	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod"}, Data: map[string]string{"MODE": "prod"}})
+	client := &kube.TypedClient{Clientset: clientset}
+	optional := true
+	tests := map[string]*corev1.Pod{
+		"optional key": {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: []corev1.EnvVar{{Name: "MODE", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "MODE", Optional: &optional}}}}}}}},
+		"envFrom":      {Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", EnvFrom: []corev1.EnvFromSource{{ConfigMapRef: &corev1.ConfigMapEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}}}}}}}},
+		"volume":       {Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}}}}}}},
+	}
+	for name, pod := range tests {
+		t.Run(name, func(t *testing.T) {
+			prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow-"+strings.ReplaceAll(name, " ", "-"), pod)
+			if err != nil || len(prepared.Limitations) == 0 || prepared.Copied {
+				t.Fatalf("unsupported dependency must fail closed: prepared=%#v err=%v", prepared, err)
+			}
+		})
+	}
+}
+
+func TestPrepareShadowConfigMapsMissingKeyIsInconclusiveWithoutPartialCopy(t *testing.T) {
+	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod"}, Data: map[string]string{"OTHER": "hidden"}})
+	client := &kube.TypedClient{Clientset: clientset}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: []corev1.EnvVar{{Name: "MODE", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "MODE"}}}}}}}}
+	prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow", pod)
+	if err != nil || len(prepared.Limitations) == 0 || prepared.Copied || prepared.Evidence[0].SourceStatus != "key-missing" || prepared.Evidence[0].SandboxStatus != "unresolved" {
+		t.Fatalf("missing key must remain inconclusive: prepared=%#v err=%v", prepared, err)
+	}
+	objects, _ := clientset.CoreV1().ConfigMaps("shadow").List(context.Background(), metav1.ListOptions{})
+	if len(objects.Items) != 0 {
+		t.Fatalf("missing key must not create partial ConfigMaps: %#v", objects.Items)
+	}
+}
+
+func TestPrepareShadowConfigMapsReadErrorIsValueFreeLimitation(t *testing.T) {
+	clientset := corefake.NewSimpleClientset()
+	clientset.PrependReactor("get", "configmaps", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("backend echoed token=private-value")
+	})
+	client := &kube.TypedClient{Clientset: clientset}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Env: []corev1.EnvVar{{Name: "MODE", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "MODE"}}}}}}}}
+	prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow", pod)
+	if err != nil || len(prepared.Limitations) == 0 {
+		t.Fatalf("ConfigMap read uncertainty must be inconclusive, prepared=%#v err=%v", prepared, err)
+	}
+	encoded, _ := json.Marshal(prepared)
+	if strings.Contains(string(encoded), "private-value") {
+		t.Fatalf("ConfigMap read error leaked into evidence: %s", encoded)
+	}
+	objects, _ := clientset.CoreV1().ConfigMaps("shadow").List(context.Background(), metav1.ListOptions{})
+	if len(objects.Items) != 0 {
+		t.Fatalf("ConfigMap read error must not create partial copies: %#v", objects.Items)
 	}
 }
 

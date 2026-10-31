@@ -135,12 +135,19 @@ type ProbeEvidence struct {
 }
 
 type ConfigMapReferenceEvidence struct {
-	Container     string `json:"container,omitempty"`
-	Name          string `json:"name"`
-	Key           string `json:"key,omitempty"`
-	SourceStatus  string `json:"sourceStatus"`
-	SandboxStatus string `json:"sandboxStatus"`
-	Optional      bool   `json:"optional,omitempty"`
+	Container           string `json:"container,omitempty"`
+	EnvironmentVariable string `json:"environmentVariable,omitempty"`
+	Name                string `json:"name"`
+	Key                 string `json:"key,omitempty"`
+	SourceStatus        string `json:"sourceStatus"`
+	SandboxStatus       string `json:"sandboxStatus"`
+	Optional            bool   `json:"optional,omitempty"`
+}
+
+type ConfigMapPreparation struct {
+	Evidence    []ConfigMapReferenceEvidence
+	Limitations []string
+	Copied      bool
 }
 
 type MemorySample struct {

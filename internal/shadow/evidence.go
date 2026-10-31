@@ -22,6 +22,8 @@ const (
 	shadowMemorySampleLimit    = 32
 	shadowProbeEventLimit      = 8
 	shadowProbeEventByteLimit  = 512
+	shadowConfigMapKeyLimit    = 32
+	shadowConfigMapByteLimit   = 64 * 1024
 )
 
 func collectFailureEvidence(ctx context.Context, c *kube.TypedClient, sourceNamespace string, source, candidate *corev1.Pod) *FailureEvidence {
@@ -41,29 +43,30 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 		return nil
 	}
 	type reference struct {
-		container string
-		name      string
-		key       string
-		optional  bool
-		textOnly  bool
+		container           string
+		environmentVariable string
+		name                string
+		key                 string
+		optional            bool
+		textOnly            bool
 	}
 	var references []reference
-	add := func(container, name, key string, optional, textOnly bool) {
+	add := func(container, environmentVariable, name, key string, optional, textOnly bool) {
 		if strings.TrimSpace(name) != "" {
-			references = append(references, reference{container: container, name: name, key: key, optional: optional, textOnly: textOnly})
+			references = append(references, reference{container: container, environmentVariable: environmentVariable, name: name, key: key, optional: optional, textOnly: textOnly})
 		}
 	}
 	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
 	for _, container := range containers {
 		for _, source := range container.EnvFrom {
 			if source.ConfigMapRef != nil {
-				add(container.Name, source.ConfigMapRef.Name, "*", source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional, true)
+				add(container.Name, "", source.ConfigMapRef.Name, "*", source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional, true)
 			}
 		}
 		for _, env := range container.Env {
 			if env.ValueFrom != nil && env.ValueFrom.ConfigMapKeyRef != nil {
 				ref := env.ValueFrom.ConfigMapKeyRef
-				add(container.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional, true)
+				add(container.Name, env.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional, true)
 			}
 		}
 	}
@@ -73,11 +76,11 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 		}
 		isOptional := optional != nil && *optional
 		if len(items) == 0 {
-			add(volumeName, name, "*", isOptional, false)
+			add(volumeName, "", name, "*", isOptional, false)
 			return
 		}
 		for _, item := range items {
-			add(volumeName, name, item.Key, isOptional, false)
+			add(volumeName, "", name, item.Key, isOptional, false)
 		}
 	}
 	for _, volume := range pod.Spec.Volumes {
@@ -103,7 +106,7 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 	seen := map[string]bool{}
 	result := make([]ConfigMapReferenceEvidence, 0, len(references))
 	for _, ref := range references {
-		identity := fmt.Sprintf("%s\x00%s\x00%s\x00%t", ref.container, ref.name, ref.key, ref.textOnly)
+		identity := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%t", ref.container, ref.environmentVariable, ref.name, ref.key, ref.textOnly)
 		if seen[identity] {
 			continue
 		}
@@ -145,11 +148,152 @@ func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namesp
 			status = "key-present"
 		}
 		result = append(result, ConfigMapReferenceEvidence{
-			Container: ref.container, Name: ref.name, Key: ref.key,
+			Container: ref.container, EnvironmentVariable: ref.environmentVariable, Name: ref.name, Key: ref.key,
 			SourceStatus: status, SandboxStatus: "omitted-by-isolation", Optional: ref.optional,
 		})
 	}
 	return result
+}
+
+type shadowConfigMapReference struct {
+	container           string
+	environmentVariable string
+	name                string
+	key                 string
+}
+
+func prepareShadowConfigMaps(ctx context.Context, c *kube.TypedClient, sourceNamespace, shadowNamespace string, pod *corev1.Pod) (ConfigMapPreparation, error) {
+	prepared := ConfigMapPreparation{}
+	refs, unsupported := shadowConfigMapReferences(pod)
+	prepared.Limitations = appendUnique(prepared.Limitations, unsupported...)
+	if len(prepared.Limitations) > 0 {
+		return prepared, nil
+	}
+	if len(refs) == 0 {
+		return prepared, nil
+	}
+	if c == nil || c.Clientset == nil || sourceNamespace == "" || shadowNamespace == "" {
+		return prepared, fmt.Errorf("typed Kubernetes client and source/shadow namespaces are required for ConfigMap evidence")
+	}
+	type sourceResult struct {
+		object *corev1.ConfigMap
+		err    error
+	}
+	sources := map[string]sourceResult{}
+	data := map[string]map[string]string{}
+	keyIDs := map[string]bool{}
+	totalBytes := 0
+	prepared.Evidence = make([]ConfigMapReferenceEvidence, 0, len(refs))
+	for _, ref := range refs {
+		source, cached := sources[ref.name]
+		if !cached {
+			cm, err := c.Clientset.CoreV1().ConfigMaps(sourceNamespace).Get(ctx, ref.name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				source.err = nil
+			} else if err != nil {
+				source.err = err
+			} else {
+				source.object = cm
+			}
+			sources[ref.name] = source
+		}
+		item := ConfigMapReferenceEvidence{Container: ref.container, EnvironmentVariable: ref.environmentVariable, Name: ref.name, Key: ref.key, SourceStatus: "not-found", SandboxStatus: "unresolved"}
+		if source.err != nil {
+			item.SourceStatus = "unknown"
+			prepared.Evidence = append(prepared.Evidence, item)
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("source ConfigMap %s could not be inspected", ref.name))
+			continue
+		}
+		if source.object != nil {
+			if value, ok := source.object.Data[ref.key]; ok {
+				item.SourceStatus = "key-present"
+				id := ref.name + "\x00" + ref.key
+				if !keyIDs[id] {
+					keyIDs[id] = true
+					totalBytes += len(value)
+					if data[ref.name] == nil {
+						data[ref.name] = map[string]string{}
+					}
+					data[ref.name][ref.key] = value
+				}
+			} else {
+				item.SourceStatus = "key-missing"
+			}
+		}
+		prepared.Evidence = append(prepared.Evidence, item)
+		if item.SourceStatus == "not-found" {
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("required ConfigMap %s is not present in the source namespace", ref.name))
+		} else if item.SourceStatus == "key-missing" {
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("required key %s is missing from ConfigMap %s", ref.key, ref.name))
+		}
+	}
+	if len(keyIDs) > shadowConfigMapKeyLimit {
+		prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("shadow ConfigMap key-copy limit exceeded (%d keys maximum)", shadowConfigMapKeyLimit))
+	}
+	if totalBytes > shadowConfigMapByteLimit {
+		prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("shadow ConfigMap key-copy data exceeds %d bytes", shadowConfigMapByteLimit))
+	}
+	if len(prepared.Limitations) > 0 {
+		return prepared, nil
+	}
+	for name, values := range data {
+		_, err := c.Clientset.CoreV1().ConfigMaps(shadowNamespace).Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: shadowNamespace, Labels: map[string]string{labelSandbox: "true"}},
+			Data:       values,
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return prepared, fmt.Errorf("create isolated ConfigMap %s: %w", name, err)
+		}
+	}
+	prepared.Copied = len(data) > 0
+	for i := range prepared.Evidence {
+		prepared.Evidence[i].SandboxStatus = "key-present"
+	}
+	return prepared, nil
+}
+
+func shadowConfigMapReferences(pod *corev1.Pod) ([]shadowConfigMapReference, []string) {
+	if pod == nil {
+		return nil, []string{"candidate Pod template is unavailable for ConfigMap key inspection"}
+	}
+	var refs []shadowConfigMapReference
+	var limitations []string
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				limitations = appendUnique(limitations, "ConfigMap envFrom references are not supported in the isolated namespace")
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil {
+				continue
+			}
+			ref := env.ValueFrom.ConfigMapKeyRef
+			if ref.Optional != nil && *ref.Optional {
+				limitations = appendUnique(limitations, "optional ConfigMap environment references are not supported in the isolated namespace")
+				continue
+			}
+			if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Key) == "" || strings.TrimSpace(env.Name) == "" {
+				limitations = appendUnique(limitations, "ConfigMap environment references must specify a name, key, and environment variable")
+				continue
+			}
+			refs = append(refs, shadowConfigMapReference{container: container.Name, environmentVariable: env.Name, name: ref.Name, key: ref.Key})
+		}
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.ConfigMap != nil {
+			limitations = appendUnique(limitations, "ConfigMap volumes are not supported in the isolated namespace")
+		}
+		if volume.Projected != nil {
+			for _, projected := range volume.Projected.Sources {
+				if projected.ConfigMap != nil {
+					limitations = appendUnique(limitations, "projected ConfigMap volumes are not supported in the isolated namespace")
+				}
+			}
+		}
+	}
+	return refs, limitations
 }
 
 func probeEvidence(pod *corev1.Pod) []ProbeEvidence {

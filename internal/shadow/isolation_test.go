@@ -55,7 +55,8 @@ func TestSandboxDependencyLimitationsDetectOnlyRequiredNamespacedInputs(t *testi
 		Containers:       []corev1.Container{{Name: "app", Env: []corev1.EnvVar{{Name: "OPTIONAL", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "optional-config"}, Optional: &optional}}}}}},
 	}}
 	got := sandboxDependencyLimitations(pod)
-	if len(got) != 2 || !strings.Contains(strings.Join(got, " "), "image pull secret") || !strings.Contains(strings.Join(got, " "), "ConfigMap") {
+	joined := strings.Join(got, " ")
+	if len(got) != 3 || !strings.Contains(joined, "image pull secret") || !strings.Contains(joined, "optional ConfigMap environment") || !strings.Contains(joined, "ConfigMap volumes") {
 		t.Fatalf("sandbox dependency limitations = %#v", got)
 	}
 }

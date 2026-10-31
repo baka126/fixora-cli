@@ -41,35 +41,8 @@ func sandboxDependencyLimitations(pod *corev1.Pod) []string {
 	if len(pod.Spec.ImagePullSecrets) > 0 {
 		limitations = append(limitations, "image pull secret references are not copied into the isolated namespace")
 	}
-	configMapDependency := false
-	for _, volume := range pod.Spec.Volumes {
-		if volume.ConfigMap != nil && (volume.ConfigMap.Optional == nil || !*volume.ConfigMap.Optional) {
-			configMapDependency = true
-		}
-		if volume.Projected != nil {
-			for _, source := range volume.Projected.Sources {
-				if source.ConfigMap != nil && (source.ConfigMap.Optional == nil || !*source.ConfigMap.Optional) {
-					configMapDependency = true
-				}
-			}
-		}
-	}
-	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
-	for _, container := range containers {
-		for _, source := range container.EnvFrom {
-			if source.ConfigMapRef != nil && (source.ConfigMapRef.Optional == nil || !*source.ConfigMapRef.Optional) {
-				configMapDependency = true
-			}
-		}
-		for _, env := range container.Env {
-			if env.ValueFrom != nil && env.ValueFrom.ConfigMapKeyRef != nil && (env.ValueFrom.ConfigMapKeyRef.Optional == nil || !*env.ValueFrom.ConfigMapKeyRef.Optional) {
-				configMapDependency = true
-			}
-		}
-	}
-	if configMapDependency {
-		limitations = append(limitations, "required ConfigMap references are not copied into the isolated namespace")
-	}
+	_, configLimitations := shadowConfigMapReferences(pod)
+	limitations = appendUnique(limitations, configLimitations...)
 	return limitations
 }
 
