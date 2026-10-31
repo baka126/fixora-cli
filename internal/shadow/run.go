@@ -208,7 +208,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
 		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
-		withholdCandidateLogs(&verification, configMaps.Copied, &result)
+		withholdCandidateDiagnostics(&verification, configMaps.Copied, &result)
 		gateOOMMemoryAssessment(req.Finding, &verification)
 		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
@@ -278,13 +278,17 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	return result, nil
 }
 
-func withholdCandidateLogs(attempt *Attempt, configMapsCopied bool, result *Result) {
+func withholdCandidateDiagnostics(attempt *Attempt, configMapsCopied bool, result *Result) {
 	if attempt == nil || !configMapsCopied {
 		return
 	}
 	attempt.Logs = nil
+	attempt.Events = nil
+	if attempt.Evidence != nil {
+		attempt.Evidence.ProbeFailureEvents = nil
+	}
 	if result != nil {
-		result.Warnings = appendUnique(result.Warnings, "candidate logs were withheld because referenced ConfigMap values are present in the isolated environment")
+		result.Warnings = appendUnique(result.Warnings, "candidate diagnostics were withheld because referenced ConfigMap values are present in the isolated environment")
 	}
 }
 

@@ -835,13 +835,13 @@ func TestWriteShadowEvidenceShowsConfigMapEnvironmentKeyWithoutValue(t *testing.
 	var output bytes.Buffer
 	writeShadowFailure(&output, shadow.Result{
 		Status:   shadow.VerificationFailed,
-		Warnings: []string{"candidate logs were withheld because referenced ConfigMap values are present in the isolated environment"},
+		Warnings: []string{"candidate diagnostics were withheld because referenced ConfigMap values are present in the isolated environment"},
 		Evidence: &shadow.FailureEvidence{ConfigMaps: []shadow.ConfigMapReferenceEvidence{{
 			Container: "api", EnvironmentVariable: "DB_URL", Name: "api-config", Key: "DB_URL", SourceStatus: "key-present", SandboxStatus: "key-present",
 		}}},
 	}, "", analyzer.Finding{}, fix.Plan{})
 	got := output.String()
-	for _, want := range []string{"ConfigMap api-config key DB_URL -> api.DB_URL: source key-present; sandbox key-present", "candidate logs were withheld"} {
+	for _, want := range []string{"ConfigMap api-config key DB_URL -> api.DB_URL: source key-present; sandbox key-present", "candidate diagnostics were withheld"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("ConfigMap key summary missing %q:\n%s", want, got)
 		}

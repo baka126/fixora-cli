@@ -3,6 +3,7 @@ package shadow
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -237,12 +238,21 @@ func prepareShadowConfigMaps(ctx context.Context, c *kube.TypedClient, sourceNam
 		return prepared, nil
 	}
 	for name, values := range data {
-		_, err := c.Clientset.CoreV1().ConfigMaps(shadowNamespace).Create(ctx, &corev1.ConfigMap{
+		created, err := c.Clientset.CoreV1().ConfigMaps(shadowNamespace).Create(ctx, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: shadowNamespace, Labels: map[string]string{labelSandbox: "true"}},
 			Data:       values,
 		}, metav1.CreateOptions{})
 		if err != nil {
 			return prepared, fmt.Errorf("create isolated ConfigMap %s: %w", name, err)
+		}
+		if created == nil || !reflect.DeepEqual(created.Data, values) || len(created.BinaryData) != 0 {
+			for i := range prepared.Evidence {
+				if prepared.Evidence[i].Name == name {
+					prepared.Evidence[i].SandboxStatus = "mismatch"
+				}
+			}
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("isolated ConfigMap %s did not preserve the requested key set", name))
+			return prepared, nil
 		}
 	}
 	prepared.Copied = len(data) > 0
@@ -271,7 +281,7 @@ func shadowConfigMapReferences(pod *corev1.Pod) ([]shadowConfigMapReference, []s
 			}
 			ref := env.ValueFrom.ConfigMapKeyRef
 			if ref.Optional != nil && *ref.Optional {
-				limitations = appendUnique(limitations, "optional ConfigMap environment references are not supported in the isolated namespace")
+				limitations = appendUnique(limitations, fmt.Sprintf("optional ConfigMap reference %s key %s is not supported in the isolated namespace", ref.Name, ref.Key))
 				continue
 			}
 			if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Key) == "" || strings.TrimSpace(env.Name) == "" {

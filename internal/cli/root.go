@@ -1298,7 +1298,7 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 	}
 	writeShadowEvidence(w, evidence)
 	for _, warning := range result.Warnings {
-		if strings.HasPrefix(warning, "candidate logs were withheld") {
+		if strings.HasPrefix(warning, "candidate diagnostics were withheld") {
 			fmt.Fprintf(w, "Note: %s\n", trimEvidence(warning, 220))
 		}
 	}

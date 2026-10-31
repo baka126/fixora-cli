@@ -89,6 +89,38 @@ func TestPrepareShadowConfigMapsCopiesOnlyReferencedDataKeys(t *testing.T) {
 	}
 }
 
+func TestPrepareShadowConfigMapsDetectsAdmissionMutation(t *testing.T) {
+	const privateValue = "private-setting-value"
+	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "api-config", Namespace: "prod"},
+		Data:       map[string]string{"DATABASE_URL": privateValue},
+	})
+	clientset.PrependReactor("create", "configmaps", func(action ktesting.Action) (bool, runtime.Object, error) {
+		created := action.(ktesting.CreateAction).GetObject().(*corev1.ConfigMap).DeepCopy()
+		created.Data["DATABASE_URL"] = "mutated-value"
+		created.Data["INJECTED"] = "extra-value"
+		return true, created, nil
+	})
+	client := &kube.TypedClient{Clientset: clientset}
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "api",
+		Env: []corev1.EnvVar{{Name: "DATABASE_URL", ValueFrom: &corev1.EnvVarSource{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "api-config"}, Key: "DATABASE_URL",
+		}}}},
+	}}}}
+	prepared, err := prepareShadowConfigMaps(context.Background(), client, "prod", "shadow", pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Copied || len(prepared.Limitations) == 0 || prepared.Evidence[0].SandboxStatus != "mismatch" {
+		t.Fatalf("mutated admitted ConfigMap must remain inconclusive: %#v", prepared)
+	}
+	encoded, _ := json.Marshal(prepared)
+	if strings.Contains(string(encoded), privateValue) || strings.Contains(string(encoded), "mutated-value") || strings.Contains(string(encoded), "extra-value") {
+		t.Fatalf("admission values leaked into evidence: %s", encoded)
+	}
+}
+
 func TestPrepareShadowConfigMapsMergesReferencesAndCapsSize(t *testing.T) {
 	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: "prod"},

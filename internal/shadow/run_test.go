@@ -136,16 +136,26 @@ func TestRunMissingConfigMapKeyIsInconclusiveWithoutCandidate(t *testing.T) {
 	}
 }
 
-func TestCandidateLogsAreSuppressedWhenConfigMapValuesAreCopied(t *testing.T) {
+func TestCandidateDiagnosticsAreSuppressedWhenConfigMapValuesAreCopied(t *testing.T) {
 	result := Result{}
-	attempt := Attempt{Logs: []string{"DB_URL=postgres://staging"}}
-	withholdCandidateLogs(&attempt, true, &result)
-	if len(attempt.Logs) != 0 || !strings.Contains(strings.Join(result.Warnings, " "), "candidate logs were withheld") {
-		t.Fatalf("copied ConfigMap values must not escape through captured logs: attempt=%#v result=%#v", attempt, result)
+	const privateValue = "postgres://staging-private"
+	attempt := Attempt{
+		Logs:     []string{"DB_URL=" + privateValue},
+		Events:   []string{"Readiness probe failed: " + privateValue},
+		Evidence: &FailureEvidence{ProbeFailureEvents: []string{"Readiness probe failed: " + privateValue}},
 	}
-	attempt = Attempt{Logs: []string{"ordinary diagnostic"}}
-	withholdCandidateLogs(&attempt, false, &result)
-	if len(attempt.Logs) != 1 {
+	withholdCandidateDiagnostics(&attempt, true, &result)
+	if len(attempt.Logs) != 0 || len(attempt.Events) != 0 || len(attempt.Evidence.ProbeFailureEvents) != 0 || !strings.Contains(strings.Join(result.Warnings, " "), "candidate diagnostics were withheld") {
+		t.Fatalf("copied ConfigMap values must not escape through candidate diagnostics: attempt=%#v result=%#v", attempt, result)
+	}
+	mock := &mockAI{patch: originalImagePatch}
+	_, _, _ = revisePatch(context.Background(), mock, originalImagePatch, "image", attempt, true)
+	if strings.Contains(fmt.Sprintf("%#v", mock.finding), privateValue) {
+		t.Fatalf("withheld ConfigMap value reached AI retry context: %#v", mock.finding)
+	}
+	attempt = Attempt{Logs: []string{"ordinary diagnostic"}, Events: []string{"ordinary event"}}
+	withholdCandidateDiagnostics(&attempt, false, &result)
+	if len(attempt.Logs) != 1 || len(attempt.Events) != 1 {
 		t.Fatalf("runs without copied ConfigMaps should retain ordinary diagnostics: %#v", attempt)
 	}
 }

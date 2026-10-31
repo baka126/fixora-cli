@@ -56,7 +56,7 @@ func TestSandboxDependencyLimitationsDetectOnlyRequiredNamespacedInputs(t *testi
 	}}
 	got := sandboxDependencyLimitations(pod)
 	joined := strings.Join(got, " ")
-	if len(got) != 3 || !strings.Contains(joined, "image pull secret") || !strings.Contains(joined, "optional ConfigMap environment") || !strings.Contains(joined, "ConfigMap volumes") {
+	if len(got) != 3 || !strings.Contains(joined, "image pull secret") || !strings.Contains(joined, "optional ConfigMap reference") || !strings.Contains(joined, "ConfigMap volumes") {
 		t.Fatalf("sandbox dependency limitations = %#v", got)
 	}
 }
