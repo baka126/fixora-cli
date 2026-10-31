@@ -1297,6 +1297,11 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 		evidence = result.Attempts[len(result.Attempts)-1].Evidence
 	}
 	writeShadowEvidence(w, evidence)
+	for _, warning := range result.Warnings {
+		if strings.HasPrefix(warning, "candidate logs were withheld") {
+			fmt.Fprintf(w, "Note: %s\n", trimEvidence(warning, 220))
+		}
+	}
 	fmt.Fprintln(w, "No production mutation, PR/MR, or source delivery was performed.")
 	for _, attempt := range result.Attempts {
 		phase := attempt.Phase
@@ -1393,7 +1398,11 @@ func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
 		if key == "*" || key == "" {
 			key = "all keys"
 		}
-		fmt.Fprintf(w, "  ConfigMap %s (%s): source %s; sandbox %s\n", ref.Name, key, ref.SourceStatus, ref.SandboxStatus)
+		if ref.EnvironmentVariable != "" {
+			fmt.Fprintf(w, "  ConfigMap %s key %s -> %s.%s: source %s; sandbox %s\n", ref.Name, key, ref.Container, ref.EnvironmentVariable, ref.SourceStatus, ref.SandboxStatus)
+		} else {
+			fmt.Fprintf(w, "  ConfigMap %s (%s): source %s; sandbox %s\n", ref.Name, key, ref.SourceStatus, ref.SandboxStatus)
+		}
 	}
 	if assessment := evidence.MemoryAssessment; assessment != nil {
 		fmt.Fprintf(w, "  OOM memory assessment: %s", assessment.Status)
