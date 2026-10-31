@@ -119,7 +119,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			}
 			return result, nil
 		}
-		limitations := sandboxDependencyLimitations(plan.Original)
+		limitations := sandboxDependencyLimitations(plan.Clone)
 		if accountHasPullSecrets {
 			limitations = appendUnique(limitations, "source ServiceAccount image-pull secret references are not copied into the isolated namespace")
 		}
@@ -181,11 +181,34 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			}
 			return result, nil
 		}
+		configMaps, configMapErr := prepareShadowConfigMaps(ctx, c, req.Namespace, plan.Clone.Namespace, plan.Clone)
+		if result.Evidence != nil {
+			result.Evidence.ConfigMaps = configMaps.Evidence
+		}
+		if configMapErr != nil || len(configMaps.Limitations) > 0 {
+			result.Status = VerificationInconclusive
+			summary := strings.Join(configMaps.Limitations, "; ")
+			if configMapErr != nil {
+				summary = "ConfigMap key dependencies could not be prepared in the isolated namespace"
+			}
+			if summary == "" {
+				summary = "ConfigMap key dependencies could not be verified"
+			}
+			result.Isolation = &IsolationReport{Status: string(VerificationInconclusive), Summary: summary}
+			result.Warnings = appendUnique(result.Warnings, summary)
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				result.Status = VerificationBlocked
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
+		}
 		if _, err := c.CreatePod(ctx, plan.Clone); err != nil {
 			cleanup(ctx, c, plan, &result)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
 		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
+		withholdCandidateLogs(&verification, configMaps.Copied, &result)
 		gateOOMMemoryAssessment(req.Finding, &verification)
 		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
@@ -253,6 +276,16 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
 	return result, nil
+}
+
+func withholdCandidateLogs(attempt *Attempt, configMapsCopied bool, result *Result) {
+	if attempt == nil || !configMapsCopied {
+		return
+	}
+	attempt.Logs = nil
+	if result != nil {
+		result.Warnings = appendUnique(result.Warnings, "candidate logs were withheld because referenced ConfigMap values are present in the isolated environment")
+	}
 }
 
 // gateOOMMemoryAssessment applies the OOM-specific memory evidence gate after
