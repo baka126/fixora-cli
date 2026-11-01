@@ -43,6 +43,8 @@ Shadow cloning rejects sources using Secrets, persistent storage and other restr
 
 Service routing support is described in [Service repairs](../guides/service-repairs.md). This is conditional capability for NoEndpoints/ServicePortMismatch; readiness failures, unsupported Service variants and absent intent remain review work. Unit/fake coverage is separate from local live E2E execution.
 
+Exact standard NetworkPolicy replacement is available only with an operator-authored local `--networkpolicy-policy` file. It is limited to one existing policy, a ready Deployment/StatefulSet/DaemonSet, selector-based peers and numeric TCP ports; source-managed targets, overlapping policies, incomplete evidence, and unsupported rule semantics remain review-only. Preview is read-only. `--apply` requires isolated allow/deny probes and separate operator consent. Results certify only the declared TCP cases under the active enforcing CNI; they do not claim application recovery or exhaustive traffic coverage. See [NetworkPolicy repair](../guides/networkpolicy-repairs.md).
+
 ## Registered analyzers
 
 All entries below also have the registered status-summary fallback when enabled and readable. Filters/defaults and skipped checks affect execution. A summary containing an unhealthy marker is weaker evidence than a precision finding; inventory-only objects may produce no finding.
@@ -117,6 +119,8 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | logsignals.go | `ExecFormatError` | image |
 | logsignals.go | `PermissionDenied` | filesystem |
 | networkpolicy.go | `EmptyPodSelector`, `NoSelectedPods` | review |
+| networkpolicy.go | `InvalidPodSelector` | diagnosis |
+| networkpolicy.go | `OverlappingPolicies` | review |
 | networkpolicy.go | `PodListUnavailable` | diagnosis |
 | olm.go | `CatalogSourceConnectionUnhealthy`, `ClusterCatalogUnhealthy`, `ClusterExtensionUnhealthy`, `CSVNotSucceeded`, `InstallPlanIncomplete`, `MultipleOperatorGroups`, `SubscriptionNotCurrent` | review |
 | pdb.go | `DisruptionsBlocked` | review |

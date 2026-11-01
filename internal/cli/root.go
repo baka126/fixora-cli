@@ -50,6 +50,7 @@ import (
 
 type options struct {
 	servicePolicy                                                           string
+	networkPolicyPolicy                                                     string
 	pvcPolicy                                                               string
 	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
 	helmValues, helmAPIVersions, helmMappings                               listFlag
@@ -347,6 +348,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
+		if opts.networkPolicyPolicy != "" || strings.HasPrefix(strings.ToLower(rest[0]), "networkpolicy/") || strings.HasPrefix(strings.ToLower(rest[0]), "netpol/") {
+			return runNetworkPolicyFix(ctx, stdout, stderr, opts, rest[0])
+		}
 		finding, plan, prepared, err := prepareFixPlan(analysisCtx, reader, k, opts, rest[0], stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -634,6 +638,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
+	fs.StringVar(&opts.networkPolicyPolicy, "networkpolicy-policy", "", "exact local NetworkPolicy replacement authority file")
 	fs.StringVar(&opts.pvcPolicy, "pvc-policy", "", "exact local PVC StorageClass assignment or bounded expansion policy")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")

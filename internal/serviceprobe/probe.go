@@ -46,9 +46,12 @@ func Validate(req Request) error {
 		if c.Path != "" || c.ExpectedStatus != 0 {
 			return errors.New("TCP contract cannot include HTTP fields")
 		}
+		if c.ExpectedResponseNonce != "" && !validNonce(c.ExpectedResponseNonce) {
+			return errors.New("valid TCP response nonce required")
+		}
 	case "http":
 		u, err := url.ParseRequestURI(c.Path)
-		if err != nil || !strings.HasPrefix(c.Path, "/") || strings.HasPrefix(c.Path, "//") || strings.Contains(c.Path, "#") || u.IsAbs() || u.Host != "" || u.RawQuery != "" || c.ExpectedStatus < 200 || c.ExpectedStatus > 399 {
+		if c.ExpectedResponseNonce != "" || err != nil || !strings.HasPrefix(c.Path, "/") || strings.HasPrefix(c.Path, "//") || strings.Contains(c.Path, "#") || u.IsAbs() || u.Host != "" || u.RawQuery != "" || c.ExpectedStatus < 200 || c.ExpectedStatus > 399 {
 			return errors.New("safe explicit HTTP contract required")
 		}
 	default:
@@ -79,8 +82,22 @@ func Run(ctx context.Context, req Request) (Result, error) {
 			if err != nil {
 				check.Error = "TCP connection failed"
 			} else {
-				connection.Close()
-				check.Success = true
+				if c.ExpectedResponseNonce == "" {
+					_ = connection.Close()
+					check.Success = true
+				} else {
+					stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+					_ = connection.SetDeadline(time.Now().Add(c.Timeout))
+					if _, err := io.WriteString(connection, req.Nonce+"\n"); err == nil {
+						response, readErr := readNonceLine(connection)
+						check.Success = readErr == nil && response == c.ExpectedResponseNonce
+					}
+					_ = connection.Close()
+					stop()
+					if !check.Success {
+						check.Error = "TCP response nonce did not match contract"
+					}
+				}
 			}
 		case "http":
 			transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: c.Timeout}).DialContext, DisableKeepAlives: true, DisableCompression: true, MaxResponseHeaderBytes: MaxWireBytes, ResponseHeaderTimeout: c.Timeout}

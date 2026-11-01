@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"github.com/fixora/kubectl-fixora/internal/serviceprobe"
 	"io"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -18,8 +21,32 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 	flags := flag.NewFlagSet("fixora-service-probe", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	rawArg := flags.String("request-json", "", "bound verifier request")
+	listenArg := flags.String("listen", "", "listen on a local TCP port as a fixed nonce responder")
+	responseNonceArg := flags.String("response-nonce", "", "fixed response nonce for --listen")
 	if flags.Parse(args) != nil || len(flags.Args()) != 0 {
 		fmt.Fprintln(errout, "invalid verifier arguments")
+		return 2
+	}
+	if *listenArg != "" || *responseNonceArg != "" {
+		if *listenArg == "" || *rawArg != "" || !validListenAddress(*listenArg) || !validResponseNonce(*responseNonceArg) {
+			fmt.Fprintln(errout, "invalid TCP responder arguments")
+			return 2
+		}
+		listener, err := net.Listen("tcp", *listenArg)
+		if err != nil {
+			fmt.Fprintln(errout, "TCP responder could not bind requested port")
+			return 1
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := serviceprobe.RunServer(ctx, *responseNonceArg, listener); err != nil {
+			fmt.Fprintln(errout, "TCP responder stopped")
+			return 1
+		}
+		return 0
+	}
+	if *responseNonceArg != "" {
+		fmt.Fprintln(errout, "--response-nonce requires --listen")
 		return 2
 	}
 	var raw []byte
@@ -61,4 +88,25 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validListenAddress(address string) bool {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || (host != "" && host != "0.0.0.0" && host != "::") {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	return err == nil && port > 0 && port <= 65535 && !strings.Contains(address, "%")
+}
+
+func validResponseNonce(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
 }
