@@ -34,6 +34,22 @@ Examples:
 
 Useful flags: --context, --ai, --proof, -o json
 `
+	case "ask":
+		help = `Usage: kubectl fixora ask <request> [-n namespace] [--continue] [--select number]
+
+Describe an active Kubernetes issue in natural language. Fixora resolves the
+request to live analyzer findings and uses the existing guarded fix preview.
+This command never applies or delivers a repair.
+
+Examples:
+  kubectl fixora ask "fix the crashing API" -n payments
+  kubectl fixora ask "fix the API" -n payments --select 2 --continue
+  kubectl fixora ask "fix the crashing API" -n payments -o json --continue
+
+Use an interactive terminal to confirm a preview. In scripts, pass --continue.
+The configured AI provider receives the request plus finding identities and
+short summaries; logs and proof are not sent for target resolution.
+`
 	case "fix", "repair":
 		help = `Usage: kubectl fixora fix <kind/name> [-n namespace] [flags]
 
@@ -142,7 +158,7 @@ var suggestedCommands = []string{
 	"filters", "integrations", "serve", "health", "watch", "report",
 	"bundle", "predict", "cost", "graph", "trace", "storage", "rbac",
 	"dns", "security", "node-pressure", "repo", "validate", "changes",
-	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup",
+	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup", "ask",
 }
 
 func suggestCommand(input string) string {

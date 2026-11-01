@@ -47,6 +47,18 @@ func TestCleanupCommandHelpExplainsPreviewAndExplicitDeletion(t *testing.T) {
 	}
 }
 
+func TestAskCommandHelpExplainsPreviewOnlyFlow(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"help", "ask"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("help ask exit %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{"natural language", "guarded fix preview", "never applies", "--continue", "--select"} {
+		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(want)) {
+			t.Fatalf("ask help omitted %q: %s", want, stdout.String())
+		}
+	}
+}
+
 func TestUnknownCommandSuggestsLikelyCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Execute([]string{"scna"}, &stdout, &stderr); code != 2 {

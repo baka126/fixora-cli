@@ -32,6 +32,18 @@ In v0.8.0, `doctor` is the AI setup check. The branch introduces `ai doctor` and
 kubectl fixora why deployment/api -n prod --proof --ai
 ```
 
+## Ask in natural language (branch-only)
+
+`ask` resolves a natural-language request against the current analyzer findings, shows the interpretation and exact target, then routes a confirmed request through the same guarded fix preview as `fix`. It never applies changes or delivers a patch. In a terminal, Fixora asks before previewing; in scripts or structured output, add `--continue` to request the preview. If several findings match, choose one with `--select <number>`; Fixora does not plan multi-resource repairs from one ask.
+
+```bash
+kubectl fixora ask "why is the payments API crashing?" -n payments
+kubectl fixora ask "fix the crashing API" -n payments --continue
+kubectl fixora ask "fix the API" -n payments --select 2 --continue
+```
+
+Target resolution sends the request and a bounded list of active finding identities with short summaries to the configured provider. It does not send logs or proof for the target-resolution call. A request with no active finding match does not start a preview. The regular preview may perform its normal evidence gathering and AI analysis according to the configured privacy and evidence flags.
+
 Read the provider's data handling terms before enabling AI. Redaction reduces exposure; it cannot guarantee that every sensitive string in arbitrary logs or annotations is removed. Avoid `--unsafe-ai-no-redact` in routine use and use `--paranoid` for a stricter evidence path. Fixora does not send data to a Fixora-hosted backend.
 
 ## When AI fails
