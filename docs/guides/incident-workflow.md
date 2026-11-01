@@ -56,4 +56,6 @@ kubectl fixora ask sessions delete <id>
 
 A resumed turn is bound to the current cluster and revalidates the original resource before collecting fresh evidence. Missing, recreated, or re-owned targets are rejected. Session files live under `~/.fixora/<cluster-hash>/ask-sessions.json`, use private local permissions, keep bounded summaries rather than raw logs or Kubernetes objects, and expire after 30 days. Every AI-backed turn sends current redacted incident evidence and bounded prior-turn summaries to the configured provider. Review provider and data handling settings before use.
 
-Ask is preview-only. A repair request may open Fixora's guarded repair preview, but the model cannot authorize apply or delivery. A missing active finding on resume is reported as “not observed by the selected checks,” not as proof that the workload is healthy.
+Text output shows a compact summary with a few cited signals; add `--proof` to display all bounded claims and evidence references, or use `-o json` for the complete structured result. A recovery is reported only when fresh analyzer evidence confirms a healthy target and its saved controller chain. If that identity evidence is missing, Fixora stops rather than claiming recovery.
+
+Ask is preview-only. A repair request may open Fixora's guarded repair preview, but the model cannot authorize apply or delivery.

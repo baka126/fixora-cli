@@ -51,9 +51,11 @@ Examples:
   kubectl fixora ask sessions list
   kubectl fixora ask sessions delete a1b2c3d4e5f6
 
-Session summaries are stored locally with private file permissions, scoped to
-the current cluster, and expire after 30 days. Each AI-backed turn sends the
-current redacted incident evidence and bounded conversation summaries to the
+Text output is compact by default; use --proof for all bounded claims and
+evidence references, or -o json for the complete structured result. Session
+summaries are stored locally with private file permissions, scoped to the
+current cluster, and expire after 30 days. Each AI-backed turn sends current
+redacted incident evidence and bounded conversation summaries to the
 configured provider. Session listing never prints conversation text.
 `
 	case "fix", "repair":

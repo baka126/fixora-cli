@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/ai"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -620,5 +622,49 @@ func TestAskSessionReportsRecoveryFromHealthyPodAfterOwnerValidation(t *testing.
 	code := runAskSessionWithFindings(context.Background(), &stdout, &stderr, options{output: "text", askSession: session.ID}, cluster, store, "Is it healthy now?", []analyzer.Finding{healthy}, nil, responder, nil)
 	if code != 0 || responder.calls != 0 || !strings.Contains(stdout.String(), "report the workload as healthy") {
 		t.Fatalf("healthy witness should close the incident after owner validation: code=%d calls=%d stdout=%q stderr=%q", code, responder.calls, stdout.String(), stderr.String())
+	}
+}
+
+func TestAskConversationTextKeepsEvidenceCompactUnlessProofRequested(t *testing.T) {
+	now := time.Now().UTC()
+	refs := make([]asksession.EvidenceRef, 12)
+	for i := range refs {
+		refs[i] = asksession.EvidenceRef{ID: fmt.Sprintf("ev-%02d", i+1), Resource: "pod/api", Signal: "Signal", At: now}
+	}
+	response := ai.IncidentTurnResponse{
+		Answer: "The API is restarting based on the latest scan.",
+		Observed: []ai.IncidentClaim{
+			{Text: "The exit code remains nonzero.", EvidenceIDs: []string{"ev-01"}},
+			{Text: "The pod restarted several times.", EvidenceIDs: []string{"ev-02"}},
+			{Text: "The image pull succeeded.", EvidenceIDs: []string{"ev-03"}},
+			{Text: "The process started before exiting.", EvidenceIDs: []string{"ev-04"}},
+			{Text: "The current node has capacity.", EvidenceIDs: []string{"ev-05"}},
+		},
+		LikelyCause: ai.IncidentClaim{Text: "The process exits after startup.", EvidenceIDs: []string{"ev-01"}},
+		Unknowns:    []string{"The intended startup behavior is not known.", "The source change is not known.", "The restart duration is not known.", "The full application health is not known.", "The deployment history is not known."},
+	}
+	session := asksession.Session{ID: "a1b2c3d4e5f6"}
+	target := ai.IntentCandidate{Namespace: "payments", ResourceKind: "Deployment", ResourceName: "api", Status: "CrashLoopBackOff"}
+	var compact bytes.Buffer
+	if code := writeAskConversation(&compact, options{output: "text"}, "why", session, target, response, refs, true); code != 0 {
+		t.Fatalf("compact text returned %d", code)
+	}
+	if got := strings.Count(compact.String(), "Evidence ev-"); got != 5 || !strings.Contains(compact.String(), "7 additional evidence references") || !strings.Contains(compact.String(), "2 additional observations") || !strings.Contains(compact.String(), "2 additional unknowns") || !strings.Contains(compact.String(), "--proof") {
+		t.Fatalf("default output should compact evidence, observations, and unknowns: rows=%d output=%q", got, compact.String())
+	}
+	var proof bytes.Buffer
+	if code := writeAskConversation(&proof, options{output: "text", proof: true}, "why", session, target, response, refs, true); code != 0 {
+		t.Fatalf("proof text returned %d", code)
+	}
+	if got := strings.Count(proof.String(), "Evidence ev-"); got != len(refs) || !strings.Contains(proof.String(), "The deployment history is not known") {
+		t.Fatalf("--proof should show all evidence and response details: rows=%d output=%q", got, proof.String())
+	}
+	var structured bytes.Buffer
+	if code := writeAskConversation(&structured, options{output: "json"}, "why", session, target, response, refs, true); code != 0 {
+		t.Fatalf("structured output returned %d", code)
+	}
+	var report askReport
+	if err := json.Unmarshal(structured.Bytes(), &report); err != nil || len(report.EvidenceRefs) != len(refs) || len(report.Observed) != len(response.Observed) || len(report.Unknowns) != len(response.Unknowns) {
+		t.Fatalf("structured output was truncated: report=%#v err=%v", report, err)
 	}
 }

@@ -52,7 +52,7 @@ func TestAskCommandHelpExplainsPreviewOnlyFlow(t *testing.T) {
 	if code := Execute([]string{"help", "ask"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("help ask exit %d: %s", code, stderr.String())
 	}
-	for _, want := range []string{"natural language", "guarded fix preview", "never applies", "--continue", "--select", "--session", "ask sessions list", "ask sessions delete", "redacted incident evidence"} {
+	for _, want := range []string{"natural language", "guarded fix preview", "never applies", "--continue", "--select", "--session", "--proof", "ask sessions list", "ask sessions delete", "redacted incident evidence"} {
 		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(want)) {
 			t.Fatalf("ask help omitted %q: %s", want, stdout.String())
 		}

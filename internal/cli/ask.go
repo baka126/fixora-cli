@@ -613,10 +613,20 @@ func writeAskConversation(stdout io.Writer, opts options, request string, sessio
 	if !aiAvailable {
 		fmt.Fprintln(stdout, "AI unavailable; answer uses deterministic analyzer evidence.")
 	}
+	claimLimit, evidenceLimit := 3, 5
+	if opts.proof {
+		claimLimit, evidenceLimit = len(response.Observed), len(refs)
+	}
 	if len(response.Observed) > 0 {
 		fmt.Fprintln(stdout, "Observed")
-		for _, claim := range response.Observed {
+		for i, claim := range response.Observed {
+			if i >= claimLimit {
+				break
+			}
 			fmt.Fprintf(stdout, "  %s [%s]\n", claim.Text, strings.Join(claim.EvidenceIDs, ", "))
+		}
+		if omitted := len(response.Observed) - claimLimit; omitted > 0 {
+			fmt.Fprintf(stdout, "  %d additional observations; use --proof for details.\n", omitted)
 		}
 	}
 	if strings.TrimSpace(response.LikelyCause.Text) != "" {
@@ -624,12 +634,28 @@ func writeAskConversation(stdout io.Writer, opts options, request string, sessio
 	}
 	if len(response.Unknowns) > 0 {
 		fmt.Fprintln(stdout, "Unknown")
-		for _, unknown := range response.Unknowns {
+		unknownLimit := 3
+		if opts.proof {
+			unknownLimit = len(response.Unknowns)
+		}
+		for i, unknown := range response.Unknowns {
+			if i >= unknownLimit {
+				break
+			}
 			fmt.Fprintf(stdout, "  %s\n", unknown)
 		}
+		if omitted := len(response.Unknowns) - unknownLimit; omitted > 0 {
+			fmt.Fprintf(stdout, "  %d additional unknowns; use --proof for details.\n", omitted)
+		}
 	}
-	for _, ref := range refs {
+	for i, ref := range refs {
+		if i >= evidenceLimit {
+			break
+		}
 		fmt.Fprintf(stdout, "Evidence %s: %s · %s · %s\n", ref.ID, ref.Resource, ref.Signal, ref.At.Format(time.RFC3339))
+	}
+	if omitted := len(refs) - evidenceLimit; omitted > 0 {
+		fmt.Fprintf(stdout, "%d additional evidence references; use --proof for details.\n", omitted)
 	}
 	if response.FollowUp != "" {
 		fmt.Fprintf(stdout, "Follow-up: %s\n", response.FollowUp)
