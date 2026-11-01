@@ -42,3 +42,18 @@ Fixora also keeps a small local history for the same cluster and workload. After
 ## Interactive or scripted
 
 Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, name the target and provide explicit values; inspect structured output and require your own approval before a write. Bare `kubectl fixora` opens the older dashboard in v0.8.0; the new no-argument chooser is **Upcoming** on [the development branch](https://github.com/baka126/fixora-cli/tree/codex/production-hardening).
+
+## Ask a follow-up and resume an incident
+
+Use `ask` to investigate a live analyzer finding in natural language. Fixora resolves the request against current findings, sends redacted evidence to the configured AI provider, and saves a short local session summary so you can continue in a later command:
+
+```bash
+kubectl fixora ask "why is the API crashing?" -n payments
+kubectl fixora ask --session <id> "what changed since my last question?"
+kubectl fixora ask sessions list
+kubectl fixora ask sessions delete <id>
+```
+
+A resumed turn is bound to the current cluster and revalidates the original resource before collecting fresh evidence. Missing, recreated, or re-owned targets are rejected. Session files live under `~/.fixora/<cluster-hash>/ask-sessions.json`, use private local permissions, keep bounded summaries rather than raw logs or Kubernetes objects, and expire after 30 days. Every AI-backed turn sends current redacted incident evidence and bounded prior-turn summaries to the configured provider. Review provider and data handling settings before use.
+
+Ask is preview-only. A repair request may open Fixora's guarded repair preview, but the model cannot authorize apply or delivery. A missing active finding on resume is reported as “not observed by the selected checks,” not as proof that the workload is healthy.

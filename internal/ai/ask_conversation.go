@@ -172,11 +172,11 @@ func parseIncidentTurnResponse(raw string, allowed map[string]struct{}) (Inciden
 	if err := decoder.Decode(&response); err != nil {
 		return IncidentTurnResponse{}, errors.New("AI incident response did not satisfy Fixora's response contract")
 	}
-	if strings.TrimSpace(response.Answer) == "" || len(response.Answer) > 1200 || response.Observed == nil || response.Unknowns == nil || response.LikelyCause.EvidenceIDs == nil || len(response.Observed) > 8 || len(response.Unknowns) > 8 || len(response.FollowUp) > 400 || strings.Count(response.FollowUp, "?") > 1 || containsCommandSuggestion(response.Answer) || containsCommandSuggestion(response.LikelyCause.Text) {
+	if strings.TrimSpace(response.Answer) == "" || len(response.Answer) > 1200 || response.Observed == nil || response.Unknowns == nil || response.LikelyCause.EvidenceIDs == nil || len(response.Observed) > 8 || len(response.Unknowns) > 8 || len(response.FollowUp) > 400 || strings.Count(response.FollowUp, "?") > 1 || containsCommandSuggestion(response.Answer) || containsCommandSuggestion(response.LikelyCause.Text) || containsCommandSuggestion(response.FollowUp) {
 		return IncidentTurnResponse{}, errors.New("AI incident response did not satisfy Fixora's response contract")
 	}
 	for _, claim := range response.Observed {
-		if strings.TrimSpace(claim.Text) == "" || len(claim.Text) > 600 || !validIncidentEvidenceIDs(claim.EvidenceIDs, allowed) {
+		if strings.TrimSpace(claim.Text) == "" || len(claim.Text) > 600 || containsCommandSuggestion(claim.Text) || !validIncidentEvidenceIDs(claim.EvidenceIDs, allowed) {
 			return IncidentTurnResponse{}, errors.New("AI incident response did not satisfy Fixora's response contract")
 		}
 	}
@@ -187,7 +187,7 @@ func parseIncidentTurnResponse(raw string, allowed map[string]struct{}) (Inciden
 		return IncidentTurnResponse{}, errors.New("AI incident response did not satisfy Fixora's response contract")
 	}
 	for _, unknown := range response.Unknowns {
-		if strings.TrimSpace(unknown) == "" || len(unknown) > 400 {
+		if strings.TrimSpace(unknown) == "" || len(unknown) > 400 || containsCommandSuggestion(unknown) {
 			return IncidentTurnResponse{}, errors.New("AI incident response did not satisfy Fixora's response contract")
 		}
 	}

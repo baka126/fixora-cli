@@ -60,6 +60,7 @@ type Session struct {
 	ResourceKind    string        `json:"resourceKind"`
 	ResourceName    string        `json:"resourceName"`
 	ResourceUID     string        `json:"resourceUid,omitempty"`
+	OwnerChain      []string      `json:"ownerChain,omitempty"`
 	FindingID       string        `json:"findingId"`
 	Status          string        `json:"status"`
 	AnalyzerFilters []string      `json:"analyzerFilters,omitempty"`
@@ -211,6 +212,7 @@ func (s Store) List(clusterID string) ([]Session, error) {
 		session.OpenQuestion = ""
 		session.EvidenceRefs = nil
 		session.AnalyzerFilters = nil
+		session.OwnerChain = nil
 		out = append(out, session)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
@@ -338,6 +340,15 @@ func normalizeSession(session *Session, now time.Time) error {
 	session.UpdatedAt = session.UpdatedAt.UTC()
 	session.Summary = redactText(session.Summary)
 	session.OpenQuestion = redactText(session.OpenQuestion)
+	if len(session.OwnerChain) > 16 {
+		return errors.New("ask session owner chain exceeds its size limit")
+	}
+	for i := range session.OwnerChain {
+		session.OwnerChain[i] = redactText(session.OwnerChain[i])
+		if len(session.OwnerChain[i]) == 0 || len(session.OwnerChain[i]) > 256 {
+			return errors.New("ask session owner chain contains an invalid identity")
+		}
+	}
 	if len(session.Turns) > maxTurns {
 		return errors.New("ask session turn limit reached; start a new session to continue")
 	}

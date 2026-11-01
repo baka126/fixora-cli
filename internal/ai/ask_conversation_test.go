@@ -160,3 +160,23 @@ func openAIConversationServer(t *testing.T, content string, calls *int) *httptes
 }
 
 func ioReadAll(r io.Reader) ([]byte, error) { return io.ReadAll(r) }
+
+func TestRespondToIncidentRejectsCommandsInEveryDisplayedField(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "observed", body: `{"answer":"Observed a failure.","observed":[{"text":"Run kubectl delete pod api","evidenceIds":["ev-1"]}],"likelyCause":{"text":"","evidenceIds":[]},"unknowns":[],"followUp":"","previewRequested":false}`},
+		{name: "unknown", body: `{"answer":"Observed a failure.","observed":[],"likelyCause":{"text":"","evidenceIds":[]},"unknowns":["Run helm uninstall api"],"followUp":"","previewRequested":false}`},
+		{name: "follow up", body: `{"answer":"Observed a failure.","observed":[],"likelyCause":{"text":"","evidenceIds":[]},"unknowns":[],"followUp":"Run aws eks update-kubeconfig?","previewRequested":false}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := openAIConversationServer(t, tc.body, nil)
+			defer server.Close()
+			client := Client{Provider: "openai", BaseURL: server.URL, Model: "test-model", HTTP: server.Client()}
+			if _, err := client.RespondToIncident(context.Background(), validIncidentInput()); err == nil {
+				t.Fatal("RespondToIncident() accepted command-like text in a displayed field")
+			}
+		})
+	}
+}

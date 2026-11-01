@@ -36,19 +36,25 @@ Useful flags: --context, --ai, --proof, -o json
 `
 	case "ask":
 		help = `Usage: kubectl fixora ask <request> [-n namespace] [--continue] [--select number]
+       kubectl fixora ask --session ID <follow-up>
+       kubectl fixora ask sessions list | delete <ID>
 
 Describe an active Kubernetes issue in natural language. Fixora resolves the
-request to live analyzer findings and uses the existing guarded fix preview.
-This command never applies or delivers a repair.
+request to live analyzer findings, then answers with fresh, redacted incident
+evidence. Sessions can be resumed across commands. Any repair request only
+opens the existing guarded fix preview; Ask never applies or delivers a repair.
 
 Examples:
-  kubectl fixora ask "fix the crashing API" -n payments
-  kubectl fixora ask "fix the API" -n payments --select 2 --continue
-  kubectl fixora ask "fix the crashing API" -n payments -o json --continue
+  kubectl fixora ask "why is the API crashing?" -n payments
+  kubectl fixora ask --session a1b2c3d4e5f6 "what changed since last time?"
+  kubectl fixora ask "preview a fix for the API" -n payments
+  kubectl fixora ask sessions list
+  kubectl fixora ask sessions delete a1b2c3d4e5f6
 
-Use an interactive terminal to confirm a preview. In scripts, pass --continue.
-The configured AI provider receives the request plus finding identities and
-short summaries; logs and proof are not sent for target resolution.
+Session summaries are stored locally with private file permissions, scoped to
+the current cluster, and expire after 30 days. Each AI-backed turn sends the
+current redacted incident evidence and bounded conversation summaries to the
+configured provider. Session listing never prints conversation text.
 `
 	case "fix", "repair":
 		help = `Usage: kubectl fixora fix <kind/name> [-n namespace] [flags]

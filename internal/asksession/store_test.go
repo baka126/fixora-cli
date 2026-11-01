@@ -3,6 +3,7 @@ package asksession
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,21 @@ func TestStoreUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 	}
 	if got := fileInfo.Mode().Perm(); got != 0o600 {
 		t.Fatalf("file mode = %#o, want 0600", got)
+	}
+}
+
+func TestStorePreservesOwnerChainOnRoundTrip(t *testing.T) {
+	store := Store{Path: filepath.Join(t.TempDir(), "sessions.json")}
+	cluster := strings.Repeat("a", 64)
+	created, err := store.Create(Session{ClusterID: cluster, Namespace: "payments", ResourceKind: "Deployment", ResourceName: "api", OwnerChain: []string{"ReplicaSet/api-abc", "Deployment/api"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(created.ID, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(loaded.OwnerChain, []string{"ReplicaSet/api-abc", "Deployment/api"}) {
+		t.Fatalf("OwnerChain = %#v", loaded.OwnerChain)
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/ai"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/asksession"
 	"github.com/fixora/kubectl-fixora/internal/bundle"
 	"github.com/fixora/kubectl-fixora/internal/cache"
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -124,6 +125,8 @@ type options struct {
 	gitops                                                                  bool
 	askContinue                                                             bool
 	askSelect                                                               string
+	askSession                                                              string
+	askConversation                                                         bool
 	interactive                                                             bool
 	visited                                                                 map[string]bool
 	promptInput                                                             *bufio.Reader
@@ -251,11 +254,24 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 
 	switch cmd {
 	case "ask":
+		if len(rest) > 0 && rest[0] == "sessions" {
+			clusterID, err := k.ClusterID(ctx)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: cannot identify the current Kubernetes cluster for Ask sessions: %v\n", err)
+				return 1
+			}
+			path, err := asksession.DefaultPath(clusterID)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: cannot create Ask session storage path: %v\n", err)
+				return 1
+			}
+			return runAskSessionsCommand(stdout, stderr, clusterID, asksession.Store{Path: path}, rest[1:])
+		}
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: ask requires a natural-language request")
 			return 2
 		}
-		return runAskCommand(ctx, stdout, stderr, opts, a, reader, k, strings.Join(rest, " "))
+		return runAskSessionCommand(ctx, stdout, stderr, opts, a, reader, k, strings.Join(rest, " "))
 	case "cleanup":
 		return runCleanupCommand(ctx, stdout, stderr, opts)
 	case "ai-doctor":
@@ -651,6 +667,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.BoolVar(&opts.askContinue, "continue", false, "continue natural-language ask to guarded fix preview")
 	fs.StringVar(&opts.askSelect, "select", "", "choose a 1-based natural-language ask candidate")
+	fs.StringVar(&opts.askSession, "session", "", "resume a saved Ask incident session")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.helmChart, "helm-chart", "", "local chart relative to --repo")
 	fs.StringVar(&opts.helmRelease, "helm-release", "", "exact Helm release")
