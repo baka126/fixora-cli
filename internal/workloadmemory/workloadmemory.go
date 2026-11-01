@@ -133,10 +133,14 @@ func (s Store) Load(fingerprint string) (Profile, bool, error) {
 		return Profile{}, false, nil
 	}
 	cutoff := time.Now().UTC().Add(-maxHistoryAge)
-	sessions := profile.Sessions[:0]
+	sessions := make([]Session, 0, len(profile.Sessions))
 	for _, session := range profile.Sessions {
-		if session.At.After(cutoff) {
-			sessions = append(sessions, session)
+		if session.At.IsZero() {
+			continue
+		}
+		normalized, normalizeErr := normalizeSession(session)
+		if normalizeErr == nil && normalized.At.After(cutoff) && !normalized.At.After(time.Now().UTC().Add(5*time.Minute)) {
+			sessions = append(sessions, normalized)
 		}
 	}
 	profile.Sessions = sessions

@@ -49,6 +49,7 @@ import (
 )
 
 type options struct {
+	workloadMemoryPath, workloadMemoryFingerprint, workloadMemoryNote       string
 	servicePolicy                                                           string
 	pvcPolicy                                                               string
 	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
@@ -1500,6 +1501,9 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 	if !plan.ApplyEligible && (finding.Status == "Healthy" || finding.Status == "OwnedPodsHealthy") {
 		fmt.Fprintf(stdout, "%s/%s (%s): healthy. No repair needed; no changes made.\n", finding.ResourceKind, finding.ResourceName, finding.Namespace)
 		return 0
+	}
+	if opts.workloadMemoryNote != "" {
+		fmt.Fprintf(stdout, "Seen before: %s\n", opts.workloadMemoryNote)
 	}
 
 	if interactiveFix(opts) {
