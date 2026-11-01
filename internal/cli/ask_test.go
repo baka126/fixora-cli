@@ -640,7 +640,7 @@ func TestAskConversationTextKeepsEvidenceCompactUnlessProofRequested(t *testing.
 			{Text: "The process started before exiting.", EvidenceIDs: []string{"ev-04"}},
 			{Text: "The current node has capacity.", EvidenceIDs: []string{"ev-05"}},
 		},
-		LikelyCause: ai.IncidentClaim{Text: "The process exits after startup.", EvidenceIDs: []string{"ev-01"}},
+		LikelyCause: ai.IncidentClaim{Text: "The process exits after startup.", EvidenceIDs: []string{"ev-12"}},
 		Unknowns:    []string{"The intended startup behavior is not known.", "The source change is not known.", "The restart duration is not known.", "The full application health is not known.", "The deployment history is not known."},
 	}
 	session := asksession.Session{ID: "a1b2c3d4e5f6"}
@@ -649,7 +649,7 @@ func TestAskConversationTextKeepsEvidenceCompactUnlessProofRequested(t *testing.
 	if code := writeAskConversation(&compact, options{output: "text"}, "why", session, target, response, refs, true); code != 0 {
 		t.Fatalf("compact text returned %d", code)
 	}
-	if got := strings.Count(compact.String(), "Evidence ev-"); got != 5 || !strings.Contains(compact.String(), "7 additional evidence references") || !strings.Contains(compact.String(), "2 additional observations") || !strings.Contains(compact.String(), "2 additional unknowns") || !strings.Contains(compact.String(), "--proof") {
+	if got := strings.Count(compact.String(), "Evidence ev-"); got != 5 || !strings.Contains(compact.String(), "7 additional evidence references") || !strings.Contains(compact.String(), "2 additional observations") || !strings.Contains(compact.String(), "2 additional unknowns") || !strings.Contains(compact.String(), "--proof") || !strings.Contains(compact.String(), "Evidence ev-12:") {
 		t.Fatalf("default output should compact evidence, observations, and unknowns: rows=%d output=%q", got, compact.String())
 	}
 	var proof bytes.Buffer

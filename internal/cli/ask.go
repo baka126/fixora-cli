@@ -648,13 +648,11 @@ func writeAskConversation(stdout io.Writer, opts options, request string, sessio
 			fmt.Fprintf(stdout, "  %d additional unknowns; use --proof for details.\n", omitted)
 		}
 	}
-	for i, ref := range refs {
-		if i >= evidenceLimit {
-			break
-		}
+	displayRefs := askEvidenceRefsForDisplay(response, refs, evidenceLimit)
+	for _, ref := range displayRefs {
 		fmt.Fprintf(stdout, "Evidence %s: %s · %s · %s\n", ref.ID, ref.Resource, ref.Signal, ref.At.Format(time.RFC3339))
 	}
-	if omitted := len(refs) - evidenceLimit; omitted > 0 {
+	if omitted := len(refs) - len(displayRefs); omitted > 0 {
 		fmt.Fprintf(stdout, "%d additional evidence references; use --proof for details.\n", omitted)
 	}
 	if response.FollowUp != "" {
@@ -663,6 +661,46 @@ func writeAskConversation(stdout io.Writer, opts options, request string, sessio
 	fmt.Fprintln(stdout, report.Next)
 	fmt.Fprintln(stdout, "No changes made.")
 	return 0
+}
+
+func askEvidenceRefsForDisplay(response ai.IncidentTurnResponse, refs []asksession.EvidenceRef, limit int) []asksession.EvidenceRef {
+	if limit <= 0 || len(refs) == 0 {
+		return nil
+	}
+	if len(refs) <= limit {
+		return refs
+	}
+	byID := make(map[string]asksession.EvidenceRef, len(refs))
+	for _, ref := range refs {
+		byID[ref.ID] = ref
+	}
+	selected := make([]asksession.EvidenceRef, 0, limit)
+	seen := make(map[string]bool, limit)
+	appendID := func(id string) {
+		if len(selected) >= limit || seen[id] {
+			return
+		}
+		if ref, ok := byID[id]; ok {
+			selected = append(selected, ref)
+			seen[id] = true
+		}
+	}
+	// Keep the causal claim's citations visible before other observations.
+	for _, id := range response.LikelyCause.EvidenceIDs {
+		appendID(id)
+	}
+	for _, claim := range response.Observed {
+		for _, id := range claim.EvidenceIDs {
+			appendID(id)
+		}
+	}
+	for _, ref := range refs {
+		if len(selected) >= limit {
+			break
+		}
+		appendID(ref.ID)
+	}
+	return selected
 }
 
 func guardedAskPreviewOptions(opts options) options {
