@@ -45,12 +45,12 @@ func runAskCommand(ctx context.Context, stdout, stderr io.Writer, opts options, 
 		return 2
 	}
 	report := a.ScanReport(ctx)
+	if err := askScanError(report); err != nil {
+		fmt.Fprintf(stderr, "error: could not resolve an ask target because the scan was incomplete: %s\n", err)
+		return 1
+	}
 	findings := report.Findings
 	if len(findings) == 0 {
-		if len(report.Skipped) > 0 {
-			fmt.Fprintf(stderr, "error: could not resolve an ask target because the scan was incomplete: %s\n", report.Skipped[0].Reason)
-			return 1
-		}
 		return runAskWithFindings(ctx, stdout, stderr, opts, request, findings, nil, nil)
 	}
 	resolver, err := ai.NewFromEnv()
@@ -72,6 +72,13 @@ func runAskCommand(ctx context.Context, stdout, stderr io.Writer, opts options, 
 		}
 		return runPreparedFix(ctx, stdout, stderr, prepared, reader, k, finding, plan, ref)
 	})
+}
+
+func askScanError(report analyzer.ScanReport) error {
+	if len(report.Skipped) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", report.Skipped[0].Reason)
 }
 
 func runAskWithFindings(ctx context.Context, stdout, stderr io.Writer, opts options, request string, findings []analyzer.Finding, resolver targetResolver, preview askPreviewer) int {

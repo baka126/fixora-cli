@@ -95,6 +95,20 @@ func TestAskDoesNotReportNoFindingsWhenScanWasBlocked(t *testing.T) {
 	}
 }
 
+func TestAskRejectsPartialScanEvenWhenFindingsExist(t *testing.T) {
+	report := analyzer.ScanReport{
+		Findings: []analyzer.Finding{askFinding("finding-1", "api")},
+		Skipped:  []analyzer.SkippedCheck{{Name: "services", Reason: "services are forbidden"}},
+	}
+	err := askScanError(report)
+	if err == nil || !strings.Contains(err.Error(), "services are forbidden") {
+		t.Fatalf("ask should fail closed when scan omitted part of the target scope, got %v", err)
+	}
+	if got := askScanError(analyzer.ScanReport{Findings: report.Findings}); got != nil {
+		t.Fatalf("complete scan with findings should proceed, got %v", got)
+	}
+}
+
 type askScanReader struct {
 	kube.Reader
 	err error
