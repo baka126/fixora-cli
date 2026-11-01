@@ -42,6 +42,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/termui"
 	"github.com/fixora/kubectl-fixora/internal/version"
+	"github.com/fixora/kubectl-fixora/internal/workloadmemory"
 	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -1261,10 +1262,21 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return code
 	}
 	result, verified, code := verifyInShadow(ctx, stdout, stderr, opts, k, finding, plan, true)
+	if err := recordWorkloadMemory(opts, finding, plan, result); err != nil {
+		fmt.Fprintln(stderr, "warning: local workload history could not be saved; shadow result is unchanged")
+	}
 	if !verified {
 		return code
 	}
 	return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode, true)
+}
+
+func recordWorkloadMemory(opts options, finding analyzer.Finding, plan fix.Plan, result shadow.Result) error {
+	if opts.workloadMemoryFingerprint == "" || opts.workloadMemoryPath == "" || result.Status == "" {
+		return nil
+	}
+	session := workloadMemorySession(finding, plan, result)
+	return (workloadmemory.Store{Path: opts.workloadMemoryPath}).Record(opts.workloadMemoryFingerprint, session)
 }
 
 func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {

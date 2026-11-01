@@ -20,6 +20,8 @@ Shadow verification additionally needs permission to create and delete temporary
 
 Cluster reads stay local unless you enable AI, use an external MCP client, or publish a report/bundle. With `--ai`, evidence is sent to the configured provider; redaction is a safeguard, not a guarantee for arbitrary content. Do not pass `--unsafe-ai-no-redact` during routine incidents. Never paste raw Secrets, unredacted logs, or credentials into issue reports.
 
+Fixora's optional per-workload history is local at `~/.fixora/<cluster-hash>/profiles.json`. The containing directory is mode `0700`, the file is mode `0600`, and updates replace the file atomically. It stores opaque cluster/workload fingerprints, bounded outcome/strategy/parity fields, and numeric readiness or memory measurements. A validated memory limit is retained only from a verified patch. It does not store API endpoints, resource names, image references, full patches, AI text, logs, Events, prompts, or Secret/ConfigMap values. Only a verified prior session can be summarized as historical evidence for a later AI analysis. It cannot authorize a repair or bypass current evidence, policy, shadow, or delivery checks. Missing, corrupt, or unwritable history is ignored; a save failure emits a warning and leaves the current shadow result unchanged.
+
 In **v0.8.0**, MCP `get-resource` and `get-logs` use the caller's Kubernetes permissions and can return sensitive content. Use narrow RBAC and a trusted assistant client. The development branch adds a tighter read allowlist and output redaction; see the [MCP guide]({{ '/guides/mcp/' | relative_url }}).
 
 ## What shadow verification does

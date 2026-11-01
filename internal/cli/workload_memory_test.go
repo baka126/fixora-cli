@@ -13,6 +13,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/workloadmemory"
 )
 
@@ -151,6 +152,101 @@ func TestWorkloadMemoryLookupDropsUnsafeStoredText(t *testing.T) {
 		t.Fatalf("unsafe session text was persisted: %s", stored)
 	}
 }
+
+func TestWorkloadMemorySessionSummarizesShadowOutcomesWithoutRawEvidence(t *testing.T) {
+	finding := workloadMemoryFinding("registry.example/team/api:v1")
+	plan := fix.Plan{Strategy: "resources"}
+	result := shadow.Result{
+		Status: shadow.VerificationFailed, Verified: false, Parity: 84,
+		VerifiedPatch:  "apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          limits:\n            memory: 768Mi\n",
+		FailureSummary: "private log password=top-secret", FailureClass: "OOMKilled",
+		Evidence: &shadow.FailureEvidence{
+			TimeToReadySeconds: int64Ptr(12),
+			MemoryAssessment:   &shadow.MemoryAssessment{PeakBytes: 500, LimitBytes: 600, HeadroomPercent: 16.7},
+		},
+	}
+	session := workloadMemorySession(finding, plan, result)
+	if session.Outcome != workloadmemory.OutcomeFailed || session.FailureClass != "OOMKilled" || session.Strategy != "resources" {
+		t.Fatalf("shadow outcome summary=%#v", session)
+	}
+	if session.TimeToReadySeconds != 12 || session.MemoryPeakBytes != 500 || session.MemoryLimitBytes != 600 || session.MemoryHeadroomPercent != 17 {
+		t.Fatalf("numeric shadow evidence not summarized: %#v", session)
+	}
+	if session.RepairMemoryLimitBytes != 0 {
+		t.Fatalf("unverified patch must not seed a repair value: %#v", session)
+	}
+	encoded := fmt.Sprintf("%+v", session)
+	for _, secret := range []string{"private log", "top-secret", "768Mi", "registry.example", "payments"} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("session retained sensitive/raw value %q: %s", secret, encoded)
+		}
+	}
+}
+
+func TestWorkloadMemorySessionKeepsVerifiedRepairMemoryOnly(t *testing.T) {
+	finding := workloadMemoryFinding("registry.example/team/api:v1")
+	plan := fix.Plan{Strategy: "resources"}
+	result := shadow.Result{Status: shadow.VerificationVerified, Verified: true, VerifiedPatch: "apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          limits:\n            memory: 768Mi\n"}
+	session := workloadMemorySession(finding, plan, result)
+	if session.Outcome != workloadmemory.OutcomeVerified || session.RepairMemoryLimitBytes != 768*1024*1024 {
+		t.Fatalf("verified memory limit not extracted: %#v", session)
+	}
+}
+
+func TestSafeRepairMemoryLimitIgnoresUnverifiedOrUnrelatedPatchFields(t *testing.T) {
+	unsafePatches := []string{
+		"apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        env:\n        - name: TOKEN\n          value: sensitive\n",
+		"apiVersion: v1\nkind: Secret\ndata:\n  token: c2Vuc2l0aXZl\n",
+		"apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          limits:\n            memory: not-a-quantity\n",
+	}
+	for _, patch := range unsafePatches {
+		if got := workloadmemory.SafeRepairMemoryLimit(patch); got != 0 {
+			t.Errorf("unsafe or unrelated patch yielded memory repair bytes %d", got)
+		}
+	}
+}
+
+func TestRecordWorkloadMemoryPersistsOutcomesButSeedsOnlyVerifiedHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	fingerprint := strings.Repeat("d", 64)
+	opts := options{workloadMemoryPath: path, workloadMemoryFingerprint: fingerprint}
+	finding := workloadMemoryFinding("registry.example/team/api:v1")
+	plan := fix.Plan{Strategy: "resources"}
+	failed := shadow.Result{Status: shadow.VerificationFailed, FailureSummary: "do not persist this"}
+	if err := recordWorkloadMemory(opts, finding, plan, failed); err != nil {
+		t.Fatal(err)
+	}
+	profile, found, err := (workloadmemory.Store{Path: path}).Load(fingerprint)
+	if err != nil || !found || len(profile.Sessions) != 1 || profile.Sessions[0].Outcome != workloadmemory.OutcomeFailed {
+		t.Fatalf("failed session not recorded: profile=%#v found=%t err=%v", profile, found, err)
+	}
+	if _, ok := profile.LatestVerified(); ok {
+		t.Fatal("failed session should not become historical verified context")
+	}
+	verified := shadow.Result{Status: shadow.VerificationVerified, Verified: true, VerifiedPatch: "apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      containers:\n      - name: api\n        resources:\n          limits:\n            memory: 768Mi\n"}
+	if err := recordWorkloadMemory(opts, finding, plan, verified); err != nil {
+		t.Fatal(err)
+	}
+	profile, found, err = (workloadmemory.Store{Path: path}).Load(fingerprint)
+	if err != nil || !found {
+		t.Fatalf("verified session not readable: found=%t err=%v", found, err)
+	}
+	latest, ok := profile.LatestVerified()
+	if !ok || latest.RepairMemoryLimitBytes != 768*1024*1024 {
+		t.Fatalf("verified session did not seed safe repair value: %#v", latest)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prohibited := range []string{"do not persist this", "registry.example", "api", "768Mi"} {
+		if strings.Contains(string(data), prohibited) {
+			t.Fatalf("profile persisted disallowed raw value %q: %s", prohibited, data)
+		}
+	}
+}
+
+func int64Ptr(value int64) *int64 { return &value }
 
 func workloadMemoryFinding(image string) analyzer.Finding {
 	return analyzer.Finding{
