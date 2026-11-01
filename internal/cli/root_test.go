@@ -150,7 +150,7 @@ func TestScriptedQuickFixSummarizesSavedPatch(t *testing.T) {
 }
 
 func TestReviewOnlyPRBodyDoesNotClaimShadowVerification(t *testing.T) {
-	body := prBody(shadow.Result{}, repo.SourcePatch{Path: "patch.yaml"}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, false)
+	body := prBody(shadow.Result{}, repo.SourcePatch{Path: "patch.yaml"}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, fix.Plan{}, false)
 	if strings.Contains(body, "verified this remediation") || strings.Contains(body, "Parity") {
 		t.Fatalf("unverified PR claims verification: %s", body)
 	}

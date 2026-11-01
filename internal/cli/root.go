@@ -993,7 +993,11 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 	}
 	if !result.Verified {
 		if opts.output == "text" {
-			writeShadowFailure(stdout, result, opts.outFile, finding, plan)
+			if opts.proof || opts.verbose {
+				writeShadowFailure(stdout, result, opts.outFile, finding, plan)
+			} else {
+				fmt.Fprintln(stdout, "\n"+evidenceCard(finding, plan, result, false))
+			}
 		} else {
 			_ = output.Write(stdout, opts.output, result)
 		}
@@ -1118,7 +1122,11 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 	switch mode {
 	case shadow.DeliveryPatch:
 		if opts.output == "text" {
-			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			} else {
+				fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			}
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stdout, "warning: %s\n", warning)
 			}
@@ -1203,7 +1211,10 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 				return code
 			}
 		} else {
-			fmt.Fprintf(stdout, "%s\napplied patch\n", deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			}
+			fmt.Fprintln(stdout, "applied patch")
 		}
 		return reportRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, outcome)
 	case shadow.DeliveryPR:
@@ -1221,7 +1232,7 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 			fmt.Fprintf(stderr, "error: repo workflow: %v\n", err)
 			return 1
 		}
-		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, title), prBody(result, sourcePatch, finding, verified), true)
+		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, title), prBody(result, sourcePatch, finding, plan, verified), true)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: open pull request: %v\n", err)
 			return 1
@@ -1230,7 +1241,11 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		result.PRURL = pr.URL
 		result.Warnings = append(result.Warnings, pr.Warnings...)
 		if opts.output == "text" {
-			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			} else {
+				fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			}
 			if pr.URL != "" {
 				fmt.Fprintf(stdout, "opened PR: %s\n", pr.URL)
 				fmt.Fprintf(stdout, "Outcome: PR opened at %s; cluster unchanged.\n", pr.URL)
@@ -3330,25 +3345,22 @@ func defaultPRBranch(finding analyzer.Finding, verified bool) string {
 	return strings.Replace(branch, "fixora/verified-", "fixora/review-", 1)
 }
 
-func prBody(result shadow.Result, sourcePatch repo.SourcePatch, finding analyzer.Finding, verified bool) string {
+func prBody(result shadow.Result, sourcePatch repo.SourcePatch, finding analyzer.Finding, plan fix.Plan, verified bool) string {
 	var b strings.Builder
-	if verified {
-		b.WriteString("Fixora verified this remediation in a shadow clone before delivery.\n\n")
-		fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
-		fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
-		fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
-	} else {
-		b.WriteString("Fixora prepared this source patch for review. Shadow verification was not run.\n\n")
-		fmt.Fprintf(&b, "- Resource: `%s/%s`\n", finding.ResourceKind, finding.ResourceName)
-		fmt.Fprintf(&b, "- Namespace: `%s`\n", finding.Namespace)
+	b.WriteString("## Fixora evidence\n\n")
+	card := evidenceCard(finding, plan, result, verified)
+	lines := strings.Split(card, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s\n", line)
 	}
 	fmt.Fprintf(&b, "- Source patch: `%s`\n", sourcePatch.Path)
-	for _, attempt := range result.Attempts {
-		fmt.Fprintf(&b, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)
-		if attempt.ExitReason != "" {
-			fmt.Fprintf(&b, ", reason `%s`", attempt.ExitReason)
-		}
-		b.WriteString("\n")
+	if verified {
+		b.WriteString("\nFixora verified this remediation in an isolated shadow before delivery.\n")
+	} else {
+		b.WriteString("\nFixora prepared this source patch for review. Shadow verification was not run.\n")
 	}
 	return b.String()
 }
