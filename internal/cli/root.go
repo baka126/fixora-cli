@@ -246,6 +246,8 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	})
 
 	switch cmd {
+	case "cleanup":
+		return runCleanupCommand(ctx, stdout, stderr, opts)
 	case "ai-doctor":
 		return runAIDoctor(rest, stdout, stderr)
 	case "status":
@@ -3079,6 +3081,7 @@ Fast incident workflow:
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
   doctor                       Validate access, RBAC, logs, events, Helm/GitOps CRDs
+  cleanup                      Preview/delete abandoned Fixora shadow run namespaces
 
 Specialist workflows:
   debug <tool>                 trace, graph, storage, rbac, dns, security, node-pressure, changes, readiness, rollback
@@ -3133,6 +3136,7 @@ Primary commands:
   scan                         Alias for incidents
   status                       Show cluster access and capability summary
   doctor                       Validate RBAC, logs, events, Helm/GitOps CRDs
+  cleanup                      Preview or delete Fixora shadow run namespaces
   filters                      List available analyzers and active filter selection
   integrations                 Detect local optional integrations and CRDs
   custom-analyzers list|add|run Manage explicit local custom analyzer executables

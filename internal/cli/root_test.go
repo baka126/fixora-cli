@@ -35,6 +35,18 @@ func TestHelpFixShowsFocusedUsage(t *testing.T) {
 	}
 }
 
+func TestCleanupCommandHelpExplainsPreviewAndExplicitDeletion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Execute([]string{"help", "cleanup"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("help cleanup exit %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{"kubectl fixora cleanup", "Preview", "NetworkPolicy witness", "--yes"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("cleanup help omitted %q: %s", want, stdout.String())
+		}
+	}
+}
+
 func TestUnknownCommandSuggestsLikelyCommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Execute([]string{"scna"}, &stdout, &stderr); code != 2 {
