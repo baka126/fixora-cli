@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -98,17 +99,163 @@ func TestAskDoesNotReportNoFindingsWhenScanWasBlocked(t *testing.T) {
 	}
 }
 
-func TestAskRejectsPartialScanEvenWhenFindingsExist(t *testing.T) {
+func TestAskAllowsPartialScanWhenFindingsExist(t *testing.T) {
 	report := analyzer.ScanReport{
 		Findings: []analyzer.Finding{askFinding("finding-1", "api")},
 		Skipped:  []analyzer.SkippedCheck{{Name: "services", Reason: "services are forbidden"}},
 	}
 	err := askScanError(report)
-	if err == nil || !strings.Contains(err.Error(), "services are forbidden") {
-		t.Fatalf("ask should fail closed when scan omitted part of the target scope, got %v", err)
+	if err != nil {
+		t.Fatalf("ask should use available findings when a check was skipped, got %v", err)
 	}
 	if got := askScanError(analyzer.ScanReport{Findings: report.Findings}); got != nil {
 		t.Fatalf("complete scan with findings should proceed, got %v", got)
+	}
+	if got := askScanError(analyzer.ScanReport{Skipped: report.Skipped}); got == nil || !strings.Contains(got.Error(), "services are forbidden") {
+		t.Fatalf("fully blocked scan with no findings should remain an error, got %v", got)
+	}
+}
+
+func TestAskBroadeningRunsOnceOnlyForInferredTargetedScans(t *testing.T) {
+	report := analyzer.ScanReport{Skipped: []analyzer.SkippedCheck{{Name: "services", Reason: "forbidden"}}}
+	if !askShouldBroaden(report, options{}, "why is service api unavailable?") {
+		t.Fatal("targeted partial scan should broaden")
+	}
+	if askShouldBroaden(report, options{quick: true}, "why is service api unavailable?") {
+		t.Fatal("quick mode must not broaden")
+	}
+	if askShouldBroaden(report, options{filters: "service"}, "why is service api unavailable?") {
+		t.Fatal("explicit filters must not broaden")
+	}
+	if askShouldBroaden(report, options{}, "what is unhealthy across the cluster?") {
+		t.Fatal("a request that started with the full catalog must not trigger a redundant broad pass")
+	}
+}
+
+func TestBroadenAskScanRunsOneCatalogPass(t *testing.T) {
+	initial := analyzer.ScanReport{Skipped: []analyzer.SkippedCheck{{Name: "services"}}}
+	opts := options{}
+	calls := 0
+	wantFindings := []analyzer.Finding{askFinding("finding-2", "db")}
+	got, broadened := broadenAskScan(initial, opts, "why is service unavailable?", func(filters []string) analyzer.ScanReport {
+		calls++
+		if !reflect.DeepEqual(filters, analyzer.AllDiagnosticFilters()) {
+			t.Fatalf("fallback filters=%#v want full catalog", filters)
+		}
+		return analyzer.ScanReport{Findings: wantFindings}
+	})
+	if !broadened || calls != 1 || len(got.Findings) != 1 || got.Findings[0].ID != wantFindings[0].ID {
+		t.Fatalf("fallback result=%#v broadened=%t calls=%d", got, broadened, calls)
+	}
+}
+
+func TestAskCoverageIsIncludedInJSONResponse(t *testing.T) {
+	var out bytes.Buffer
+	coverage := []string{"2 analyzer checks were unavailable; results may be incomplete"}
+	code := writeAskNoFinding(&out, options{output: "json", askCoverage: coverage}, askReport{Status: "no-findings"})
+	if code != 0 {
+		t.Fatalf("write ask report returned %d", code)
+	}
+	var report askReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if !reflect.DeepEqual(report.Coverage, coverage) {
+		t.Fatalf("coverage=%#v want %#v", report.Coverage, coverage)
+	}
+}
+
+func TestAskAnalyzerOptionsPreservesScanScope(t *testing.T) {
+	got := askAnalyzerOptions(options{allNS: true, labelSelector: "app=payments", includeLogs: true, redact: true, checkSecretKeys: true, checkCertExpiry: true}, "payments", []string{"service"})
+	if !got.AllNS || got.Namespace != "payments" || got.LabelSelector != "app=payments" || !got.IncludeLogs || !got.Redact || !got.CheckSecretKeys || !got.CheckCertExpiry || !reflect.DeepEqual(got.Filters, []string{"service"}) {
+		t.Fatalf("Ask fallback lost configured scope or analyzer options: %#v", got)
+	}
+}
+
+func TestAskClusterSessionNamespaceMapsToEmptyKubernetesNamespace(t *testing.T) {
+	if got := askReadNamespace("cluster"); got != "" {
+		t.Fatalf("cluster-scoped session namespace=%q, want empty namespace for Kubernetes reads", got)
+	}
+	if err := askSessionNamespaceError(options{visited: map[string]bool{"namespace": true}, namespace: "default"}, "cluster"); err == nil {
+		t.Fatal("explicit namespace must not be accepted for a cluster-scoped target")
+	}
+	if err := askSessionNamespaceError(options{visited: map[string]bool{"namespace": true}, namespace: ""}, "cluster"); err != nil {
+		t.Fatalf("explicit empty namespace should match cluster-scoped target: %v", err)
+	}
+}
+
+func TestAskSummaryCanSelectMultipleTargetsWithoutForcingARepairChoice(t *testing.T) {
+	first := ai.IntentCandidate{ID: "payments/Deployment/api", Namespace: "payments", ResourceKind: "Deployment", ResourceName: "api", Status: "CrashLoopBackOff"}
+	second := ai.IntentCandidate{ID: "payments/Service/api", Namespace: "payments", ResourceKind: "Service", ResourceName: "api", Status: "NoEndpoints"}
+	var out, errout bytes.Buffer
+	selected, code := chooseAskTarget(context.Background(), &out, &errout, options{output: "text"}, "summarize unhealthy resources in payments", ai.TargetIntent{Interpretation: "Two related findings are active."}, []ai.IntentCandidate{first, second}, nil)
+	if code != 0 || selected == nil || selected.ID != first.ID || strings.Contains(out.String(), "possible targets") {
+		t.Fatalf("summary should continue without a repair-target prompt: selected=%#v code=%d stdout=%q stderr=%q", selected, code, out.String(), errout.String())
+	}
+}
+
+func TestAskRelatedFindingsRespectNamespaceAndIncludeCorrelatedSignals(t *testing.T) {
+	primary := askFinding("finding-1", "api")
+	primary.Namespace = "payments"
+	primary.Category = "networking"
+	related := askFinding("finding-2", "api-service")
+	related.Namespace = "payments"
+	related.Category = "networking"
+	unrelated := askFinding("finding-3", "other")
+	unrelated.Namespace = "payments"
+	unrelated.Category = "storage"
+	otherNamespace := askFinding("finding-4", "api")
+	otherNamespace.Namespace = "production"
+	got := askRelatedFindings([]analyzer.Finding{primary, related, unrelated, otherNamespace}, primary, "summarize unhealthy resources in payments", false)
+	if len(got) != 3 || got[0].ID != primary.ID {
+		t.Fatalf("related findings=%#v; want primary plus two in-scope signals", got)
+	}
+	for _, finding := range got {
+		if finding.Namespace == "production" {
+			t.Fatal("Ask crossed namespace scope without --all-namespaces")
+		}
+	}
+	focused := askRelatedFindings([]analyzer.Finding{primary, unrelated}, primary, "why is api failing?", false)
+	if len(focused) != 1 {
+		t.Fatalf("focused incident included an unrelated finding only because its category matched: %#v", focused)
+	}
+}
+
+func TestAskIncidentEvidenceIncludesRelatedResourceProvenance(t *testing.T) {
+	primary := askFinding("finding-1", "api")
+	primary.Namespace = "payments"
+	primary.Evidence = []analyzer.Evidence{{Label: "Ready replicas", Value: "0"}}
+	related := askFinding("finding-2", "api-service")
+	related.Namespace = "payments"
+	related.ResourceKind = "Service"
+	related.Evidence = []analyzer.Evidence{{Label: "Endpoints", Value: "0 ready"}}
+	evidence, refs := askIncidentEvidence(primary, related)
+	if len(evidence) != 2 || len(refs) != 2 || refs[1].Resource != "Service/api-service" || evidence[1].Value != "0 ready" {
+		t.Fatalf("related evidence/provenance not preserved: evidence=%#v refs=%#v", evidence, refs)
+	}
+}
+
+func TestAskRanksAndCapsLargeCandidateSetsWithoutDroppingExactName(t *testing.T) {
+	findings := make([]analyzer.Finding, 0, aiIntentCandidateLimit+8)
+	for i := 0; i < aiIntentCandidateLimit+7; i++ {
+		name := fmt.Sprintf("workload-%02d", i)
+		if i == aiIntentCandidateLimit+6 {
+			name = "payments-api"
+		}
+		findings = append(findings, analyzer.Finding{ID: "payments/Deployment/" + name, Namespace: "payments", ResourceKind: "Deployment", ResourceName: name, Status: "Unhealthy", Summary: "unavailable"})
+	}
+	resolver := &askTestResolver{intent: ai.TargetIntent{CandidateIDs: []string{findings[len(findings)-1].ID}, Interpretation: "The requested workload is present."}}
+	var out, errout bytes.Buffer
+	code := runAskWithFindings(context.Background(), &out, &errout, options{output: "text"}, "why is payments-api failing?", findings, resolver, func(context.Context, options, analyzer.Finding, string) int { return 0 })
+	if code != 0 || len(resolver.items) != aiIntentCandidateLimit {
+		t.Fatalf("large candidate set was not bounded for target resolution: code=%d candidates=%d stderr=%q", code, len(resolver.items), errout.String())
+	}
+	found := false
+	for _, candidate := range resolver.items {
+		found = found || candidate.ID == findings[len(findings)-1].ID
+	}
+	if !found {
+		t.Fatal("request-matching candidate was dropped from the bounded set")
 	}
 }
 
@@ -285,23 +432,14 @@ func TestAskRejectsMutationFlagsBeforeCallingResolver(t *testing.T) {
 	}
 }
 
-func TestAskRejectsDuplicateAndOversizedFindingSets(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		findings []analyzer.Finding
-	}{
-		{name: "duplicate IDs", findings: []analyzer.Finding{askFinding("same", "api-a"), askFinding("same", "api-b")}},
-		{name: "more than 50", findings: askManyFindings(51)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resolver := &askTestResolver{}
-			var out, errout bytes.Buffer
-			previewCalls := 0
-			code := runAskWithFindings(context.Background(), &out, &errout, options{askContinue: true}, "fix API", tc.findings, resolver, func(context.Context, options, analyzer.Finding, string) int { previewCalls++; return 0 })
-			if code == 0 || resolver.calls != 0 || previewCalls != 0 {
-				t.Fatalf("invalid candidate set must fail before AI: code=%d resolver=%d preview=%d err=%q", code, resolver.calls, previewCalls, errout.String())
-			}
-		})
+func TestAskRejectsDuplicateFindingIDs(t *testing.T) {
+	findings := []analyzer.Finding{askFinding("same", "api-a"), askFinding("same", "api-b")}
+	resolver := &askTestResolver{}
+	var out, errout bytes.Buffer
+	previewCalls := 0
+	code := runAskWithFindings(context.Background(), &out, &errout, options{askContinue: true}, "fix API", findings, resolver, func(context.Context, options, analyzer.Finding, string) int { previewCalls++; return 0 })
+	if code == 0 || resolver.calls != 0 || previewCalls != 0 {
+		t.Fatalf("duplicate candidate IDs must fail before AI: code=%d resolver=%d preview=%d err=%q", code, resolver.calls, previewCalls, errout.String())
 	}
 }
 

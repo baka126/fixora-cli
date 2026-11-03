@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestAskCommandHelpExplainsPreviewOnlyFlow(t *testing.T) {
 	if code := Execute([]string{"help", "ask"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("help ask exit %d: %s", code, stderr.String())
 	}
-	for _, want := range []string{"natural language", "guarded fix preview", "never applies", "--continue", "--select", "--session", "--proof", "ask sessions list", "ask sessions delete", "redacted incident evidence"} {
+	for _, want := range []string{"natural language", "guarded fix preview", "never applies", "--continue", "--select", "--session", "--proof", "ask sessions list", "ask sessions delete", "redacted incident evidence", "live resource identities", "relevant analyzers"} {
 		if !strings.Contains(strings.ToLower(stdout.String()), strings.ToLower(want)) {
 			t.Fatalf("ask help omitted %q: %s", want, stdout.String())
 		}
@@ -472,6 +473,24 @@ func TestAnalyzerFilterSelectionForCommands(t *testing.T) {
 	defaultScan := analyzerFiltersForCommand("incidents", nil, options{})
 	if strings.Join(defaultScan, ",") != "pod" {
 		t.Fatalf("default incident scan should use pod only, got %#v", defaultScan)
+	}
+	askTargeted := analyzerFiltersForCommand("ask", []string{"Why is the service unreachable?"}, options{})
+	for _, want := range []string{"pod", "service", "networking"} {
+		if !hasString(askTargeted, want) {
+			t.Fatalf("targeted Ask filters missing %q: %#v", want, askTargeted)
+		}
+	}
+	askBroad := analyzerFiltersForCommand("ask", []string{"what is unhealthy across the cluster"}, options{})
+	if !reflect.DeepEqual(askBroad, analyzer.AllDiagnosticFilters()) {
+		t.Fatalf("broad Ask request should select the full catalog")
+	}
+	askExplicit := analyzerFiltersForCommand("ask", []string{"what is unhealthy across the cluster"}, options{filters: "service"})
+	if !reflect.DeepEqual(askExplicit, []string{"service"}) {
+		t.Fatalf("explicit Ask filters should win, got %#v", askExplicit)
+	}
+	askQuick := analyzerFiltersForCommand("ask", []string{"what is unhealthy across the cluster"}, options{quick: true})
+	if !reflect.DeepEqual(askQuick, []string{"pod"}) {
+		t.Fatalf("quick Ask request should remain pod-only, got %#v", askQuick)
 	}
 	health := analyzerFiltersForCommand("health", nil, options{})
 	for _, want := range []string{"pod", "deployment", "service", "pvc"} {

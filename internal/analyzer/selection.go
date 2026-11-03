@@ -10,6 +10,31 @@ func ComprehensiveDiagnosticFilters() []string {
 	return []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob", "service", "ingress", "hpa", "pdb", "pvc", "node", "networkpolicy", "configmap", "security"}
 }
 
+// AskFiltersForRequest selects a targeted analyzer group for known request
+// domains and returns the full supported catalog for broad or unclassified
+// requests. Quick mode intentionally remains Pod-only.
+func AskFiltersForRequest(request string, quick bool) []string {
+	if quick {
+		return DefaultIncidentFilters(true)
+	}
+	text := strings.ToLower(strings.TrimSpace(request))
+	if text == "" || containsAnyText(text,
+		"everything", "all analyzers", "all issues", "all problems", "all resources",
+		"across the cluster", "cluster-wide", "whole cluster", "entire cluster",
+		"what is unhealthy", "what's unhealthy", "cluster health", "overall health",
+	) {
+		return AllDiagnosticFilters()
+	}
+	if containsAnyText(text, "pod", "crashloop", "crash loop", "restarting", "restart", "probe", "oom", "oomkilled", "container") {
+		return []string{"pod"}
+	}
+	filters := SmartFiltersFor("", text)
+	if len(filters) == 1 && strings.EqualFold(filters[0], "pod") {
+		return AllDiagnosticFilters()
+	}
+	return filters
+}
+
 func SmartFiltersFor(resource, status string) []string {
 	kind, _ := splitResourceKindName(resource)
 	text := strings.ToLower(kind + " " + status + " " + resource)

@@ -127,6 +127,8 @@ type options struct {
 	askSelect                                                               string
 	askSession                                                              string
 	askConversation                                                         bool
+	askCoverage                                                             []string
+	askRelatedFindings                                                      []analyzer.Finding
 	interactive                                                             bool
 	visited                                                                 map[string]bool
 	promptInput                                                             *bufio.Reader
@@ -3280,7 +3282,10 @@ func analyzerFiltersForCommand(cmd string, rest []string, opts options) []string
 		return explicit
 	}
 	switch cmd {
-	case "incidents", "watch", "ask":
+	case "ask":
+		request := strings.Join(rest, " ")
+		return analyzer.AskFiltersForRequest(request, opts.quick)
+	case "incidents", "watch":
 		return analyzer.DefaultIncidentFilters(opts.quick)
 	case "fix":
 		if len(rest) > 0 {

@@ -39,10 +39,11 @@ Useful flags: --context, --ai, --proof, -o json
        kubectl fixora ask --session ID <follow-up>
        kubectl fixora ask sessions list | delete <ID>
 
-Describe an active Kubernetes issue in natural language. Fixora resolves the
-request to live analyzer findings, then answers with fresh, redacted incident
-evidence. Sessions can be resumed across commands. Any repair request only
-opens the existing guarded fix preview; Ask never applies or delivers a repair.
+Ask Kubernetes questions in natural language. Fixora selects relevant analyzers,
+then resolves the request to findings and live resource identities in scope. It
+answers with fresh, redacted incident evidence and broadens an inconclusive
+inferred scan once. Sessions can be resumed across commands. Repair requests only
+open the existing guarded fix preview; Ask never applies or delivers a repair.
 
 Examples:
   kubectl fixora ask "why is the API crashing?" -n payments
