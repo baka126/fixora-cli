@@ -87,6 +87,16 @@ Examples:
 
 Useful flags: --context, -o json
 `
+	case "cleanup":
+		help = `Usage: kubectl fixora cleanup [--context name] [--yes] [-o json]
+
+Preview isolated Fixora shadow run namespaces. NetworkPolicy witness namespaces
+and other user namespaces are excluded. Add --yes to request UID-guarded deletion.
+
+Examples:
+  kubectl fixora cleanup
+  kubectl fixora cleanup --context staging --yes
+`
 	case "ai":
 		help = `Usage: kubectl fixora ai doctor
 
@@ -138,7 +148,7 @@ var suggestedCommands = []string{
 	"filters", "integrations", "serve", "health", "watch", "report",
 	"bundle", "predict", "cost", "graph", "trace", "storage", "rbac",
 	"dns", "security", "node-pressure", "repo", "validate", "changes",
-	"preflight", "policy-check", "lint", "profiles", "cache", "memory",
+	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup",
 }
 
 func suggestCommand(input string) string {

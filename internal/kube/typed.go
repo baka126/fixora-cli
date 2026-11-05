@@ -222,6 +222,18 @@ func (c *TypedClient) DeleteNamespaceUID(ctx context.Context, name string, uid t
 	})
 }
 
+func (c *TypedClient) DeleteNamespaceUIDWithVersion(ctx context.Context, name string, uid types.UID, resourceVersion string) error {
+	if c == nil || c.Clientset == nil {
+		return fmt.Errorf("typed Kubernetes client is not configured")
+	}
+	if uid == "" || resourceVersion == "" {
+		return fmt.Errorf("namespace UID and resource version are required for guarded deletion")
+	}
+	return c.Clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion},
+	})
+}
+
 func (c *TypedClient) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
 	if c.Clientset == nil {
 		return nil, fmt.Errorf("typed Kubernetes client is not configured")
