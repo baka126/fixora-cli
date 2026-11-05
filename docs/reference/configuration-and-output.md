@@ -20,7 +20,7 @@ kubectl fixora config view
 kubectl fixora config validate
 ```
 
-`config set|unset|reset` writes local settings; `config export` emits a shareable redacted view. Do not include a provider key in issue reports. Environment variables include `FIXORA_AI_PROVIDER`, `FIXORA_AI_API_KEY`, `FIXORA_AI_MODEL`, `FIXORA_AI_BASE_URL`, `FIXORA_AI_PROFILE`, and `FIXORA_SERVE_TOKEN`. `auth set` is a local credential workflow. The current branch expands context/profile controls; consult that branch's help before using them.
+`config set|unset|reset` writes local settings; `config export` emits a shareable redacted view. Do not include a provider key in issue reports. AI settings include `FIXORA_AI_PROVIDER`, `FIXORA_AI_API_KEY`, `FIXORA_AI_MODEL`, `FIXORA_AI_BASE_URL`, `FIXORA_AI_PROTOCOL`, `FIXORA_AI_OUTPUT_MODE`, `FIXORA_AI_PROJECT`, `FIXORA_AI_LOCATION`, `FIXORA_AI_API_VERSION`, and `FIXORA_AI_PROFILE`. Vertex AI uses Google application-default credentials; Bedrock uses the AWS SDK credential chain plus `AWS_REGION` or `AWS_DEFAULT_REGION`. `auth set` is a local credential workflow. The current branch expands context/profile controls; consult that branch's help before using them.
 
 ## Output formats
 

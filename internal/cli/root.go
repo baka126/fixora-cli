@@ -1983,19 +1983,14 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 	}
 	client, err := ai.NewFromEnv()
 	if err != nil {
-		if opts.verbose {
-			fmt.Fprintf(stderr, "ai disabled: %v\n", err)
-		}
+		fmt.Fprintf(stderr, "warning: AI configuration unavailable (%v); using the deterministic plan.\n", err)
 		return
 	}
-	profile := cfg.Profile
-	if override := os.Getenv("FIXORA_AI_PROFILE"); override != "" {
-		profile = override
-	}
-	cacheKey := cache.Key(aiFinding, client.Provider, client.Model, client.BaseURL, config.ProfilePrompt(profile))
+	cacheKey := cache.AIKey(aiFinding, client.Provider, string(client.Protocol), client.Model, client.BaseURL, config.ProfilePrompt(client.Profile), string(client.OutputMode))
 	if cfg.CacheEnabled {
+		store := cache.New()
 		var cached analyzer.AIResult
-		if cache.New().Get(cacheKey, &cached) {
+		if store.Get(cacheKey, &cached) {
 			finding.AI = &cached
 			return
 		}
@@ -3135,7 +3130,7 @@ Common flags:
       --context string         Kube context
   -l, --selector string        Label selector, for example app=api,tier!=cache
   -o, --output string          text, json, yaml, markdown, sarif, junit, prometheus
-      --ai                     Use AI via FIXORA_AI_API_KEY and OpenAI-compatible API
+      --ai                     Use the configured AI provider adapter
       --no-ai                  Disable AI remediation for this command
       --repo string            Local manifest, Helm chart, or Kustomize overlay path
       --delivery string        patch, cluster, or pr (default "patch")

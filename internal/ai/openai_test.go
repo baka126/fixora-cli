@@ -51,18 +51,15 @@ func TestExplainGeminiParsesStructuredContent(t *testing.T) {
 	}
 }
 
-func TestExplainOpenAIMarksNonJSONUnstructured(t *testing.T) {
+func TestExplainOpenAIRejectsNonJSONWithContractError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"sorry, I cannot help"}}]}`)
 	}))
 	defer srv.Close()
 	c := Client{Provider: "openai", BaseURL: srv.URL, Model: "gpt-x", HTTP: srv.Client()}
-	res, err := c.explainOpenAI(context.Background(), "payload")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !res.Unstructured {
-		t.Fatalf("expected Unstructured=true for non-JSON content")
+	_, err := c.explainOpenAI(context.Background(), "payload")
+	if err == nil || !strings.Contains(FailureSummary(err), "response contract") {
+		t.Fatalf("expected safe contract failure, got %v", err)
 	}
 }
 
@@ -182,7 +179,11 @@ func TestExplainRejectsOversizedProviderResponse(t *testing.T) {
 	defer server.Close()
 	for _, provider := range []string{"openai", "azureopenai", "ollama", "anthropic", "gemini", "cohere", "huggingface"} {
 		t.Run(provider, func(t *testing.T) {
-			client := Client{Provider: provider, BaseURL: server.URL, APIKey: "test", Model: "test", HTTP: server.Client()}
+			baseURL := server.URL
+			if provider == "azureopenai" {
+				baseURL += "/openai/deployments/test"
+			}
+			client := Client{Provider: provider, BaseURL: baseURL, APIKey: "test", Model: "test", HTTP: server.Client()}
 			_, err := client.Explain(context.Background(), analyzer.Finding{Summary: "pod failed"})
 			if err == nil || !strings.Contains(err.Error(), "response exceeds") {
 				t.Fatalf("oversized %s response accepted or unclear error: %v", provider, err)
@@ -253,12 +254,10 @@ func TestGeminiRequestsTypedRemediationSchema(t *testing.T) {
 			t.Error(err)
 		}
 		gen, _ := body["generationConfig"].(map[string]any)
-		format, _ := gen["responseFormat"].(map[string]any)
-		text, _ := format["text"].(map[string]any)
-		schema, _ := text["schema"].(map[string]any)
+		schema, _ := gen["responseJsonSchema"].(map[string]any)
 		props, _ := schema["properties"].(map[string]any)
 		confidence, _ := props["confidence"].(map[string]any)
-		if text["mimeType"] != "APPLICATION_JSON" || confidence["type"] != "integer" {
+		if gen["responseMimeType"] != "application/json" || confidence["type"] != "integer" {
 			t.Errorf("missing typed JSON output: %#v", gen)
 		}
 		fmt.Fprint(w, `{"candidates":[{"content":{"parts":[{"text":"{\"summary\":\"s\",\"rootCause\":\"r\",\"recommendedFix\":\"f\",\"confidence\":90,\"patchYAML\":\"\"}"}]},"finishReason":"STOP"}]}`)
@@ -314,7 +313,7 @@ func TestJSONContractRequestsDynamicEvidenceGroundedFilesystemPatch(t *testing.T
 }
 
 func TestExplainOpenAIRequestsStrictRemediationJSON(t *testing.T) {
-	var got chatRequest
+	var got openAIChatRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("decode OpenAI request: %v", err)

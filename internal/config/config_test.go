@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+func TestValidateAcceptsEveryListedAIProvider(t *testing.T) {
+	for _, provider := range AIProviders() {
+		t.Run(provider, func(t *testing.T) {
+			cfg := Default()
+			cfg.AIProvider = provider
+			if result := Validate(cfg); !result.Valid {
+				t.Fatalf("provider %q rejected: %v", provider, result.Errors)
+			}
+		})
+	}
+}
+
 func TestPublicAndExportRedactSecrets(t *testing.T) {
 	cfg := Default()
 	cfg.AIAPIKey = "secret"
