@@ -82,7 +82,7 @@ func TestAskInventoryAddsBoundedSafeResourceContext(t *testing.T) {
 			joined += evidence.Label + ":" + evidence.Value + "\n"
 		}
 	}
-	for _, want := range []string{"Configured replicas:2", "Container image:api=example/api:v1", "Container ports:api=http:8080/TCP", "Configured readiness probe:api=httpGet", "Container resource requests:api={\"cpu\":\"100m\",\"memory\":\"64Mi\"}", "ConfigMap keys:APP_MODE,LOG_LEVEL"} {
+	for _, want := range []string{"Configured replicas:2", "Container image:api=example/api:v1", "Container ports:api=http:8080/TCP", "Configured readiness probe:api=httpGet", "Container resource requests:api=cpu=100m memory=64Mi", "ConfigMap keys:APP_MODE,LOG_LEVEL"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("resource context missing %q: %s", want, joined)
 		}
@@ -90,6 +90,35 @@ func TestAskInventoryAddsBoundedSafeResourceContext(t *testing.T) {
 	for _, secret := range []string{"do-not-send", "annotation-secret", "production-secret", "TOKEN", "hidden-command"} {
 		if strings.Contains(joined, secret) {
 			t.Errorf("resource context leaked excluded object field %q: %s", secret, joined)
+		}
+	}
+}
+
+func TestAskInventorySecretContextRequiresOptInAndContainsOnlyKeyNames(t *testing.T) {
+	secret := askInventoryObject("Secret", "credentials", "payments", "sec-1", map[string]any{"team": "payments"})
+	secret["type"] = "Opaque"
+	secret["data"] = map[string]any{"password": "secret-value-sentinel"}
+	secret["stringData"] = map[string]any{"token": "string-data-sentinel"}
+	reader := &askInventoryReader{items: map[string][]map[string]any{"secrets": {secret}}}
+	findings, skipped := askInventoryFindings(context.Background(), reader, options{namespace: "payments", labelSelector: "team=payments"}, []string{"secret"})
+	if len(skipped) != 0 || len(findings) != 0 || len(reader.calls) != 0 {
+		t.Fatalf("default Secret inventory should be skipped: findings=%#v skipped=%#v calls=%#v", findings, skipped, reader.calls)
+	}
+
+	findings, skipped = askInventoryFindings(context.Background(), reader, options{namespace: "payments", labelSelector: "team=payments", checkSecretKeys: true}, []string{"secret"})
+	if len(skipped) != 0 || len(findings) != 1 {
+		t.Fatalf("opt-in Secret inventory findings=%#v skipped=%#v", findings, skipped)
+	}
+	finding := findings[0]
+	if finding.Namespace != "payments" || finding.ResourceKind != "Secret" || finding.ResourceName != "credentials" || finding.ResourceUID != "sec-1" {
+		t.Fatalf("Secret context lost source identity: %#v", finding)
+	}
+	if got := askContextEvidenceValue(finding.Evidence, "Secret keys"); got != "password,token" {
+		t.Fatalf("Secret key names=%q, want password,token", got)
+	}
+	for _, item := range finding.Evidence {
+		if strings.Contains(item.Value, "secret-value-sentinel") || strings.Contains(item.Value, "string-data-sentinel") {
+			t.Fatalf("Secret value leaked into Ask inventory: %#v", finding.Evidence)
 		}
 	}
 }

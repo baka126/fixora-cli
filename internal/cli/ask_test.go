@@ -235,6 +235,36 @@ func TestAskIncidentEvidenceIncludesRelatedResourceProvenance(t *testing.T) {
 	}
 }
 
+func TestAskContextSerializesOnlyAllowListedFactsWithResourceProvenance(t *testing.T) {
+	object := map[string]any{"spec": map[string]any{"replicas": int64(2), "template": map[string]any{"spec": map[string]any{"containers": []any{map[string]any{
+		"name": "api", "image": "example/api:v1", "command": []any{"private-command-sentinel"},
+		"env":       []any{map[string]any{"name": "TOKEN", "value": "private-env-sentinel"}},
+		"resources": map[string]any{"requests": map[string]any{"cpu": "100m"}},
+	}}}}}}
+	finding := askFinding("payments/Deployment/api/Observed", "api")
+	finding.Namespace = "payments"
+	finding.ResourceKind = "Deployment"
+	finding.ResourceName = "api"
+	finding.Evidence = askObjectContextEvidence("Deployment", object, false)
+	evidence, refs := askIncidentEvidence(finding)
+	payload, err := json.Marshal(ai.IncidentTurnInput{Request: "why is api slow?", Evidence: evidence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(payload)
+	if !strings.Contains(serialized, `"resource":"Deployment/api"`) || !strings.Contains(serialized, `"signal":"Container image"`) || !strings.Contains(serialized, "example/api:v1") {
+		t.Fatalf("AI evidence lost allow-listed facts or provenance: %s", serialized)
+	}
+	for _, excluded := range []string{"private-command-sentinel", "private-env-sentinel", "TOKEN"} {
+		if strings.Contains(serialized, excluded) {
+			t.Fatalf("AI evidence serialized an excluded object field %q: %s", excluded, serialized)
+		}
+	}
+	if len(evidence) > 64 || len(refs) != len(evidence) {
+		t.Fatalf("incident evidence bounds/provenance mismatch: evidence=%d refs=%d", len(evidence), len(refs))
+	}
+}
+
 func TestAskRanksAndCapsLargeCandidateSetsWithoutDroppingExactName(t *testing.T) {
 	findings := make([]analyzer.Finding, 0, aiIntentCandidateLimit+8)
 	for i := 0; i < aiIntentCandidateLimit+7; i++ {

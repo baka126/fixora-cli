@@ -45,7 +45,7 @@ Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, 
 
 ## Ask a follow-up and resume an incident
 
-Use `ask` to investigate Kubernetes resources and analyzer findings in natural language. Fixora chooses relevant analyzers from the question, broadens once if the inferred scan is inconclusive, and includes related evidence in the answer while preserving resource provenance. A repair preview still requires one exact target. Ask sends bounded, redacted evidence to the configured AI provider and saves a short local session summary so you can continue in a later command:
+Use `ask` to investigate Kubernetes resources and analyzer findings in natural language. Fixora chooses relevant analyzers from the question, broadens once if the inferred scan is inconclusive, and adds registry-wide, allow-listed summaries for live resources while preserving their namespace and identity. The summaries include selected operational facts such as readiness, workload images and resource requests, Service and route references, storage state, scaling bounds, policy report counts, and operator progression. Unknown fields and unavailable optional CRDs remain unknown; Fixora does not send raw objects to fill gaps. A repair preview still requires one exact target. Ask sends bounded, redacted evidence to the configured AI provider and saves a short local session summary so you can continue in a later command:
 
 ```bash
 kubectl fixora ask "why is the API crashing?" -n payments
