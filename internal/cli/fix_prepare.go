@@ -26,7 +26,25 @@ func prepareFixPlan(ctx context.Context, reader kube.Reader, k kube.Kubectl, opt
 		return finding, fix.Plan{}, opts, err
 	}
 	finding = preferSmartFinding(ctx, a, finding)
+	if opts.hpaPolicy != "" {
+		finding = preferHPAPolicyFinding(finding, a.ScanReport(ctx).Findings)
+	}
 	return prepareAnalyzedFixPlan(ctx, reader, k, opts, resource, finding, stderr)
+}
+
+// An explicit HPA repair policy selects the precise missing-request finding
+// for that same HPA, even when a more severe generic metrics condition is also
+// present. The HPA runtime still rechecks all live evidence before mutation.
+func preferHPAPolicyFinding(base analyzer.Finding, candidates []analyzer.Finding) analyzer.Finding {
+	if !strings.EqualFold(base.ResourceKind, "HorizontalPodAutoscaler") || base.ResourceName == "" {
+		return base
+	}
+	for _, candidate := range candidates {
+		if strings.EqualFold(candidate.ResourceKind, "HorizontalPodAutoscaler") && candidate.ResourceName == base.ResourceName && candidate.Namespace == base.Namespace && candidate.Status == "MissingResourceRequests" {
+			return candidate
+		}
+	}
+	return base
 }
 func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kubectl, opts options, resource string, finding analyzer.Finding, stderr io.Writer) (analyzer.Finding, fix.Plan, options, error) {
 	var err error
@@ -40,6 +58,23 @@ func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kube
 		}
 	} else if opts.verbose {
 		fmt.Fprintln(stderr, "workload memory ignored because the local profile could not be read")
+	}
+	if finding.ResourceKind == "PodDisruptionBudget" || opts.pdbPolicy != "" {
+		if err = validatePDBOptions(opts, finding); err != nil {
+			return finding, fix.Plan{}, opts, err
+		}
+		if opts.useAI {
+			finding = enrichFindingForAI(ctx, reader, k, opts, resource, finding)
+			if opts.pdbPolicy != "" {
+				finding, err = withPDBProposalIntent(finding, opts.pdbPolicy)
+				if err != nil {
+					return finding, fix.Plan{}, opts, err
+				}
+				finding = withPDBWorkloadContext(ctx, reader, finding, opts.pdbPolicy)
+			}
+			augmentWithAI(ctx, &finding, opts, stderr)
+		}
+		return finding, fix.BuildPlan(finding), opts, nil
 	}
 	if opts.useAI {
 		finding = enrichFindingForAI(ctx, reader, k, opts, resource, finding)

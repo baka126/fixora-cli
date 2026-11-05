@@ -71,7 +71,7 @@ All entries below also have the registered status-summary fallback when enabled 
 | OLMInstallPlan | OLM precision | Review/diagnosis; see named findings below |
 | OLMOperatorGroup | OLM precision | Review/diagnosis; see named findings below |
 | OLMSubscription | OLM precision | Review/diagnosis; see named findings below |
-| PDB | Disruption availability | Review/diagnosis; see named findings below |
+| PDB | Disruption availability | Precise diagnosis; approved selector/budget corrections via --pdb-policy for stable Deployment/StatefulSet replicas; dedicated preflight, guarded apply, current-generation observation and explicit inverse |
 | PVC | PVC events/class/volume/consumer/PV/StorageClass/topology evidence | Exact-policy class assignment or monotonic expansion for eligible claims; other findings remain review/diagnosis |
 | Pod | Container states/events/logs/probes | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ReplicaSet | ReplicaSet creation + owned pods | Common profiles from failing owned/container evidence; controller-only findings require review |
@@ -109,7 +109,7 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | daemonset.go | `DaemonSetFleetHeterogeneous`, `DaemonSetUnderScheduled`, `NotReady` | review |
 | deployment.go | `ReplicasMismatch` | review |
 | gateway_api.go | `BackendPortMismatch`, `ConditionFalse`, `MissingBackendRef`, `MissingParentRef` | review |
-| hpa.go | `MissingResourceRequests`, `MissingScaleTarget`, `MissingScaleTargetRef`, `ScaleTargetUnreadable` | review |
+| hpa.go | `HPAStatusStale`, `InvalidHPASpec`, `MetricTargetInvalid`, `MetricsUnavailable`, `MissingResourceRequests`, `MissingScaleTarget`, `MissingScaleTargetRef`, `ScaleTargetUnreadable`, `UnsupportedScaleTarget` | review |
 | ingress.go | `IngressPortMismatch`, `MissingBackendService`, `MissingIngressClass`, `MissingTLSSecret`, `TLSCertUnreadable`, `TLSSecretUnreadable` | review |
 | job.go | `Failed`, `JobRetrying`, `Suspended` | review |
 | logsignals.go | `ApplicationPanic`, `AuthenticationFailed`, `ConfigParseError`, `DiskFull`, `DNSResolutionFailed`, `MissingEnvVar`, `TLSHandshakeError` | review |
@@ -119,7 +119,7 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | networkpolicy.go | `EmptyPodSelector`, `NoSelectedPods` | review |
 | networkpolicy.go | `PodListUnavailable` | diagnosis |
 | olm.go | `CatalogSourceConnectionUnhealthy`, `ClusterCatalogUnhealthy`, `ClusterExtensionUnhealthy`, `CSVNotSucceeded`, `InstallPlanIncomplete`, `MultipleOperatorGroups`, `SubscriptionNotCurrent` | review |
-| pdb.go | `DisruptionsBlocked` | review |
+| pdb.go | `DisruptionsBlocked`, `PDBNoSelectedPods`, `PDBStatusStale`, `PDBReconciliationFailed`, `PDBOverlap`, `PDBUnsupportedOwnership`, `PDBEvidenceUnavailable`; informational `DisruptionProtectionActive` | diagnosis/review; unhealthy budgets retain the legacy status, intentional zero allowance is protection rather than proof of misconfiguration |
 | pod_security.go | `DefaultServiceAccount`, `HostNamespaceEnabled`, `PrivilegedContainer/`, `RunAsNonRootMissing/` | review |
 | pod_terminating.go | `PodStuckTerminating` | review |
 | pvc.go | `MissingStorageClass`, `Pending`, `SmallStorageRequest`, `VolumeResizePending` | pvc-policy only with exact local intent and eligible live identity/capability evidence; status alone never authorizes delivery |
@@ -138,7 +138,9 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 
 The `resources` profile for Pending/Unschedulable applies only to proved requests exceeding node allocatable. Taints, affinity, quota, policy and PVC scheduling failures keep review/diagnosis outcomes. CrashLoopBackOff can become OOMKilled, PermissionDenied or another cause after evidence/log refinement. The `startup` profile does not make every CrashLoop a command problem.
 
-ServicePortMismatch, MissingResourceRequests, controller rollout/replica findings and similar detections currently lack dedicated automatic repair inference. In particular, the HPA planner's substring match on “HPA” does **not** select its template for the precision status MissingResourceRequests. This is a gap, not completed HPA remediation. A review-only template can contain placeholders and is not a concrete repair.
+The generic inference planner keeps HPA findings review-only. A separate `--hpa-policy` path can prepare an exact request-only candidate for `autoscaling/v2` CPU or memory utilization metrics on an unmanaged same-namespace Deployment or StatefulSet. The policy supplies every request value; Fixora and AI never infer or approve them. Delivery requires explicit cluster selection, a successful live evidence preflight and server-side dry-run. The controller and HPA are observed separately, and an operator may explicitly restore only the fields Fixora added if observation is incomplete. Unsupported targets, metric types, multiple HPAs, source-managed workloads, unstable rollouts, missing metrics or incomplete owner evidence remain review-only.
+
+This HPA candidate does not change limits, HPA metric targets, min/max replicas, scaling behavior, or workload images and commands. It does not forecast future demand, prove capacity for later scale-out, or verify application SLOs. See the [HPA repair guide](../guides/hpa-repairs.md).
 
 ## Dynamic findings and optional APIs
 
@@ -167,7 +169,9 @@ The 24 precision checks are: `service-endpoints`, `service-ports`, `ingress-back
 | Job | Pod template; batch-specific isolation restrictions apply | Completion condition | Restore source; no rollout undo |
 | CronJob | Job pod template; batch-specific isolation restrictions apply | Schedule/suspension/recent-run checks; next scheduled run is not awaited | Restore source; no rollout undo |
 | Standalone Pod | Pod spec | Unsupported rollout can be skipped/unknown; immutable fields can block apply | Restore known-good manifest |
-| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | Production PVCs are never mounted in a shadow | PVCs use exact UID/RV patch, server-side dry-run, and binding/capacity observation; no application semantics claim | Expansion has no automatic rollback; Lost/reclaim/rebind/data operations remain review-only |
+| Service, Ingress, PVC, Node, policies, operators | Production PVCs are never mounted in a shadow | PVCs use exact UID/RV patch, server-side dry-run, and binding/capacity observation; no application semantics claim | Expansion has no automatic rollback; Lost/reclaim/rebind/data operations remain review-only |
+| HPA (dedicated policy path) | No synthetic workload or HPA | Fresh owner/readiness/metrics snapshot and server-side dry-run; post-write rollout and HPA metrics observed separately | Explicit field-only inverse guarded by target UID and current request values |
+| PDB (dedicated policy path) | Non-disruptive admission/evidence preflight | Current-generation budget and healthy membership observation | Explicit field-only inverse with conflict guards |
 | Helm/GitOps source | Direct cluster delivery blocked | Render/review source; automatic Helm translation blocked | Revert source; Helm rollback advice may exist |
 
 These describe code paths, not equal live coverage across controllers. The existing eight-workload live baseline used Deployments. Expanding controller parity is point 2 and remains outstanding.
@@ -206,6 +210,14 @@ Validation on 2026-10-04: the full Go unit suite passed with a fresh run; the ne
 2. **Controller parity:** exercise common repairs, immutable fields, batch completion, owning-template resolution and rollback across supported targets.
 3. **Verification policies checkpoint:** proof-bound startup, approved placement, security strengthening and independently verified coordinated controller repairs; see [policy requirements and limits](controller-repairs.md).
 4. **Helm source delivery:** map changes to chart values/templates, render and compare, then validate.
-5. **Cross-resource/stateful coverage:** dependency wiring, scaling/disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
+5. **Cross-resource/stateful coverage:** dependency wiring beyond the HPA request-only slice, disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
 
 Keep the working Deployment fixtures as the baseline when implementing later points. A new “supported” finding requires positive repair tests, ambiguous/unsafe refusal tests, an explicit verification method and delivery/rollback evidence.
+
+## Step 5b: dedicated PDB repair gate
+
+PDB diagnosis distinguishes empty selections, unavailable replicas, stale/failed reconciliation, overlapping policies and intentional zero-disruption protection. A PDB finding alone never grants apply eligibility. The generic planner remains review-only; the dedicated `--pdb-policy` path requires exact independently approved selector/budget, an absolute positive healthy floor, and a disruption ceiling.
+
+Automatic delivery is limited to unmanaged existing policy/v1 budgets for stable fully healthy Deployment/StatefulSet replicas without active HPA or overlapping PDBs. Selector correction requires a currently empty selection. No evictions, drains, scaling, temporary PDBs or unhealthyPodEvictionPolicy changes occur. Preflight checks admission/current evidence; a subsequent verified policy status does not prove actual eviction behavior or future availability. JSON/YAML and preview remain read-only. PDB raw/Kustomize/Helm source integration is manual with no file/PR writes; generic source writers cannot preserve exact PDB selector/budget semantics.
+
+The disposable local-kind acceptance test is compiled, but its live execution requires Docker. See `docs/superpowers/reports/2026-10-16-pdb-repairs.md` for the final checks and limits. HPA, storage and node/admission/operator repair domains are still separate roadmap work.

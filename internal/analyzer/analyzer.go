@@ -200,6 +200,10 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 			}
 		}
 	}
+	pdbKind := strings.TrimSuffix(strings.TrimSuffix(kind, ".v1.policy"), ".policy")
+	if pdbKind == "pdb" || pdbKind == "poddisruptionbudget" || pdbKind == "poddisruptionbudgets" {
+		return a.pdbResourceFinding(ctx, name, ns)
+	}
 	if kind == "pod" || kind == "pods" {
 		pod, err := a.k.GetPod(ctx, ns, name)
 		if err != nil {
@@ -219,7 +223,11 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 	if isControllerKind(kind) {
 		return a.findingForController(ctx, obj, kind, name, ns)
 	}
-	finding := a.findingForObject(obj, kind, name, ns)
+	findingKind := kind
+	if strings.EqualFold(kind, "hpa") || strings.EqualFold(kind, "horizontalpodautoscaler") || strings.EqualFold(kind, "horizontalpodautoscalers") {
+		findingKind = "HorizontalPodAutoscaler"
+	}
+	finding := a.findingForObject(obj, findingKind, name, ns)
 	if a.opts.IncludeLogs {
 		finding.Logs = append(finding.Logs, LogSnippet{Source: "logs", Text: "logs are collected for Pods; analyze the owning pod for container logs"})
 	}
@@ -820,6 +828,10 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 	labels, annotations := objectLabelsAnnotations(obj)
 	meta, _ := obj["metadata"].(map[string]any)
 	uid, _ := meta["uid"].(string)
+	resourceKind := strValue(obj["kind"])
+	if resourceKind == "" {
+		resourceKind = toTitle(kind)
+	}
 	status := "Unknown"
 	if s, ok := obj["status"].(map[string]any); ok {
 		status = compactMap(s)
@@ -828,7 +840,7 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 		ID:           namespace + "/" + kind + "/" + name,
 		ResourceUID:  uid,
 		Namespace:    namespace,
-		ResourceKind: toTitle(kind),
+		ResourceKind: resourceKind,
 		ResourceName: name,
 		Status:       status,
 		Severity:     "info",

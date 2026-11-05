@@ -1,6 +1,6 @@
 {
-  "asOf": "2026-10-05",
-  "checkpoint": "fffb721",
+  "asOf": "2026-10-18",
+  "checkpoint": "codex/hpa-repairs",
   "analyzers": [
     "ConfigMap",
     "CronJob",
@@ -252,6 +252,31 @@
     {
       "source": "gateway_api.go",
       "status": "MissingParentRef",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "HPAStatusStale",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "InvalidHPASpec",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MetricTargetInvalid",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "MetricsUnavailable",
+      "profile": "review"
+    },
+    {
+      "source": "hpa.go",
+      "status": "UnsupportedScaleTarget",
       "profile": "review"
     },
     {
@@ -613,6 +638,46 @@
       "source": "webhook.go",
       "status": "WebhookServiceUnreadable/",
       "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBNoSelectedPods",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBStatusStale",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBReconciliationFailed",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBOverlap",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBUnsupportedOwnership",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "PDBEvidenceUnavailable",
+      "profile": "review"
+    },
+    {
+      "source": "pdb.go",
+      "status": "DisruptionProtectionActive",
+      "profile": "healthy"
+    },
+    {
+      "source": "pdb.go",
+      "status": "Healthy",
+      "profile": "healthy"
     }
   ],
   "dynamicFindings": [

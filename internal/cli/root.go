@@ -53,6 +53,8 @@ type options struct {
 	workloadMemoryPath, workloadMemoryFingerprint, workloadMemoryNote       string
 	servicePolicy                                                           string
 	pvcPolicy                                                               string
+	pdbPolicy                                                               string
+	hpaPolicy                                                               string
 	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
 	helmValues, helmAPIVersions, helmMappings                               listFlag
 	repairBaseline                                                          string
@@ -355,6 +357,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		opts = prepared
+		if opts.pdbPolicy != "" || finding.ResourceKind == "PodDisruptionBudget" {
+			return runPDBFix(analysisCtx, stdout, stderr, opts, finding)
+		}
+		if opts.hpaPolicy != "" || strings.EqualFold(finding.ResourceKind, "HorizontalPodAutoscaler") {
+			return runHPAFix(analysisCtx, stdout, stderr, opts, finding)
+		}
 		if opts.servicePolicy != "" {
 			return runServiceFix(ctx, stdout, stderr, opts, finding)
 		}
@@ -637,6 +645,8 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
 	fs.StringVar(&opts.pvcPolicy, "pvc-policy", "", "exact local PVC StorageClass assignment or bounded expansion policy")
+	fs.StringVar(&opts.pdbPolicy, "pdb-policy", "", "approved local PDB selector, budget and availability limits")
+	fs.StringVar(&opts.hpaPolicy, "hpa-policy", "", "approved local HPA target and exact container CPU/memory requests")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
@@ -2002,6 +2012,7 @@ func augmentWithAI(ctx context.Context, finding *analyzer.Finding, opts options,
 func enrichFindingForAI(ctx context.Context, reader kube.Reader, k kube.Kubectl, opts options, resourceArg string, finding analyzer.Finding) analyzer.Finding {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	finding = withHPAAnalysisContext(ctx, reader, finding)
 	filters := splitCSV(opts.filters)
 	if len(filters) == 0 {
 		filters = analyzer.SmartFiltersFor(resourceArg, finding.Status)
@@ -3218,6 +3229,8 @@ Global flags:
       --strategy string        Fix strategy such as rollback, right-size, repair-selector
       --service-policy string  Approved local Service routing intent and pinned verifier image
       --pvc-policy string      Exact local PVC StorageClass assignment or bounded expansion policy
+      --pdb-policy string      Approved local PDB selector, budget and availability limits
+      --hpa-policy string      Approved local HPA target and exact container CPU/memory requests
       --preview                Preview patch plan only
       --force-risky            Allow risky concrete fixes after review
       --typed-client           Use client-go/controller-runtime typed client for analyzer reads

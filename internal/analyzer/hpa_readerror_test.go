@@ -18,7 +18,7 @@ func (r hpaTargetErrorReader) GetResource(context.Context, string, string) (map[
 func TestHPATargetReadErrorIsNotReportedAsMissing(t *testing.T) {
 	hpa := map[string]any{
 		"metadata": map[string]any{"name": "api", "namespace": "prod"},
-		"spec":     map[string]any{"scaleTargetRef": map[string]any{"kind": "Deployment", "name": "api"}},
+		"spec":     map[string]any{"scaleTargetRef": map[string]any{"kind": "Deployment", "name": "api"}, "maxReplicas": int64(3)},
 	}
 	for _, tc := range []struct {
 		name string
