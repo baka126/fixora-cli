@@ -52,6 +52,7 @@ import (
 type options struct {
 	workloadMemoryPath, workloadMemoryFingerprint, workloadMemoryNote       string
 	servicePolicy                                                           string
+	networkPolicyPolicy                                                     string
 	pvcPolicy                                                               string
 	pdbPolicy                                                               string
 	hpaPolicy                                                               string
@@ -351,6 +352,9 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
+		if opts.networkPolicyPolicy != "" || strings.HasPrefix(strings.ToLower(rest[0]), "networkpolicy/") || strings.HasPrefix(strings.ToLower(rest[0]), "netpol/") {
+			return runNetworkPolicyFix(ctx, stdout, stderr, opts, rest[0])
+		}
 		finding, plan, prepared, err := prepareFixPlan(analysisCtx, reader, k, opts, rest[0], stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
@@ -644,6 +648,7 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
 	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
+	fs.StringVar(&opts.networkPolicyPolicy, "networkpolicy-policy", "", "exact local NetworkPolicy replacement authority file")
 	fs.StringVar(&opts.pvcPolicy, "pvc-policy", "", "exact local PVC StorageClass assignment or bounded expansion policy")
 	fs.StringVar(&opts.pdbPolicy, "pdb-policy", "", "approved local PDB selector, budget and availability limits")
 	fs.StringVar(&opts.hpaPolicy, "hpa-policy", "", "approved local HPA target and exact container CPU/memory requests")

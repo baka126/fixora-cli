@@ -10,10 +10,11 @@ type Target struct {
 }
 
 type Contract struct {
-	Method         string        `json:"method"`
-	Path           string        `json:"path,omitempty"`
-	ExpectedStatus int           `json:"expectedStatus,omitempty"`
-	Timeout        time.Duration `json:"timeout"`
+	Method                string        `json:"method"`
+	Path                  string        `json:"path,omitempty"`
+	ExpectedStatus        int           `json:"expectedStatus,omitempty"`
+	ExpectedResponseNonce string        `json:"expectedResponseNonce,omitempty"`
+	Timeout               time.Duration `json:"timeout"`
 }
 type Request struct {
 	Nonce    string   `json:"nonce"`

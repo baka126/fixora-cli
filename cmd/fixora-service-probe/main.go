@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"github.com/fixora/kubectl-fixora/internal/serviceprobe"
 	"io"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -19,13 +22,15 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 	flags.SetOutput(io.Discard)
 	rawArg := flags.String("request-json", "", "bound verifier request")
 	listen := flags.Bool("listen", false, "run the fixed TCP isolation-control responder")
+	tcpListenArg := flags.String("tcp-listen", "", "listen on a local TCP port as a fixed nonce responder")
+	responseNonceArg := flags.String("response-nonce", "", "fixed response nonce for --tcp-listen")
 	if flags.Parse(args) != nil || len(flags.Args()) != 0 {
 		fmt.Fprintln(errout, "invalid verifier arguments")
 		return 2
 	}
 	if *listen {
-		if *rawArg != "" {
-			fmt.Fprintln(errout, "listener mode cannot include a verifier request")
+		if *rawArg != "" || *tcpListenArg != "" || *responseNonceArg != "" {
+			fmt.Fprintln(errout, "isolation listener mode cannot include verifier or nonce arguments")
 			return 2
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -37,6 +42,24 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 		}
 		if listener.Wait() != nil {
 			fmt.Fprintln(errout, "isolation listener stopped unexpectedly")
+			return 1
+		}
+		return 0
+	}
+	if *tcpListenArg != "" || *responseNonceArg != "" {
+		if *tcpListenArg == "" || *rawArg != "" || !validListenAddress(*tcpListenArg) || !validResponseNonce(*responseNonceArg) {
+			fmt.Fprintln(errout, "invalid TCP responder arguments")
+			return 2
+		}
+		listener, err := net.Listen("tcp", *tcpListenArg)
+		if err != nil {
+			fmt.Fprintln(errout, "TCP responder could not bind requested port")
+			return 1
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		if err := serviceprobe.RunServer(ctx, *responseNonceArg, listener); err != nil {
+			fmt.Fprintln(errout, "TCP responder stopped")
 			return 1
 		}
 		return 0
@@ -80,4 +103,25 @@ func run(args []string, in io.Reader, out, errout io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func validListenAddress(address string) bool {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || (host != "" && host != "0.0.0.0" && host != "::") {
+		return false
+	}
+	port, err := strconv.Atoi(portText)
+	return err == nil && port > 0 && port <= 65535 && !strings.Contains(address, "%")
+}
+
+func validResponseNonce(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
 }

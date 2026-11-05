@@ -141,8 +141,8 @@ func TestNetworkPolicyExpressionOperators(t *testing.T) {
 			if !tc.want && tc.operator != "Unknown" && (len(got) != 1 || got[0].Status != "NoSelectedPods") {
 				t.Fatalf("expected unmatched selector, got %#v", got)
 			}
-			if tc.operator == "Unknown" && len(got) != 0 {
-				t.Fatalf("malformed selector should not create a false finding: %#v", got)
+			if tc.operator == "Unknown" && (len(got) != 1 || got[0].Status != "InvalidPodSelector") {
+				t.Fatalf("malformed selector should be diagnosed explicitly: %#v", got)
 			}
 		})
 	}

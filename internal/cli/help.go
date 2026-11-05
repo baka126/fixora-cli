@@ -62,6 +62,8 @@ repairs require shadow verification, including with --quick. Other quick repairs
 skip shadow verification. Use --yes for scripted delivery.
 PVC repairs require an exact local --pvc-policy. Expansion is non-rollbackable and remains
 pending until the provisioner reports capacity; Fixora never mounts a production PVC in a shadow.
+NetworkPolicy replacement requires an exact local --networkpolicy-policy. Preview is read-only;
+--apply runs isolated declared TCP tests and requires explicit consent. AI cannot change policy intent.
 `
 	case "coordinate", "fix-set":
 		help = `Usage: kubectl fixora coordinate <kind/name>... [-n namespace] [flags]

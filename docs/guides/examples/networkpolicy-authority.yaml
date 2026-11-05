@@ -1,0 +1,54 @@
+apiVersion: fixora.io/v1alpha1
+kind: NetworkPolicyRepairPolicy
+spec:
+  target: {namespace: application, name: api-policy}
+  workload: {kind: Deployment, name: api}
+  networkPolicySpec:
+    podSelector: {matchLabels: {app: api}}
+    policyTypes: [Ingress, Egress]
+    ingress:
+      - from:
+          - namespaceSelector: {matchLabels: {environment: production}}
+            podSelector: {matchLabels: {role: frontend}}
+        ports: [{protocol: TCP, port: 8080}]
+    egress:
+      - to:
+          - namespaceSelector: {matchLabels: {environment: production}}
+            podSelector: {matchLabels: {role: database}}
+        ports: [{protocol: TCP, port: 5432}]
+  verification:
+    probeImage: your-registry/fixora-service-probe@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    timeout: 5s
+    cases:
+      - name: ingress-frontend-allow
+        direction: ingress
+        sourcePodLabels: {role: frontend}
+        sourceNamespaceLabels: {environment: production}
+        destinationPodLabels: {app: api}
+        destinationNamespaceLabels: {environment: production}
+        port: 8080
+        expected: allow
+      - name: ingress-other-deny
+        direction: ingress
+        sourcePodLabels: {role: other}
+        sourceNamespaceLabels: {environment: production}
+        destinationPodLabels: {app: api}
+        destinationNamespaceLabels: {environment: production}
+        port: 8080
+        expected: deny
+      - name: egress-database-allow
+        direction: egress
+        sourcePodLabels: {app: api}
+        sourceNamespaceLabels: {environment: production}
+        destinationPodLabels: {role: database}
+        destinationNamespaceLabels: {environment: production}
+        port: 5432
+        expected: allow
+      - name: egress-other-deny
+        direction: egress
+        sourcePodLabels: {app: api}
+        sourceNamespaceLabels: {environment: production}
+        destinationPodLabels: {role: other}
+        destinationNamespaceLabels: {environment: production}
+        port: 5432
+        expected: deny

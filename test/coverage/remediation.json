@@ -406,7 +406,17 @@
     },
     {
       "source": "networkpolicy.go",
+      "status": "InvalidPodSelector",
+      "profile": "diagnosis"
+    },
+    {
+      "source": "networkpolicy.go",
       "status": "NoSelectedPods",
+      "profile": "review"
+    },
+    {
+      "source": "networkpolicy.go",
+      "status": "OverlappingPolicies",
       "profile": "review"
     },
     {

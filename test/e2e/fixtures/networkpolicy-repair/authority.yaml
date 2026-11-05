@@ -1,0 +1,54 @@
+apiVersion: fixora.io/v1alpha1
+kind: NetworkPolicyRepairPolicy
+spec:
+  target: {namespace: fixora-np-e2e, name: api-policy}
+  workload: {kind: Deployment, name: api}
+  networkPolicySpec:
+    podSelector: {matchLabels: {app: api}}
+    policyTypes: [Ingress, Egress]
+    ingress:
+      - from:
+          - namespaceSelector: {matchLabels: {environment: e2e}}
+            podSelector: {matchLabels: {role: frontend}}
+        ports: [{protocol: TCP, port: 8080}]
+    egress:
+      - to:
+          - namespaceSelector: {matchLabels: {environment: e2e}}
+            podSelector: {matchLabels: {role: database}}
+        ports: [{protocol: TCP, port: 5432}]
+  verification:
+    probeImage: probe.invalid/fixora-service-probe@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    timeout: 5s
+    cases:
+      - name: ingress-frontend-allow
+        direction: ingress
+        sourcePodLabels: {role: frontend}
+        sourceNamespaceLabels: {environment: e2e}
+        destinationPodLabels: {app: api}
+        destinationNamespaceLabels: {environment: e2e}
+        port: 8080
+        expected: allow
+      - name: ingress-other-deny
+        direction: ingress
+        sourcePodLabels: {role: other}
+        sourceNamespaceLabels: {environment: e2e}
+        destinationPodLabels: {app: api}
+        destinationNamespaceLabels: {environment: e2e}
+        port: 8080
+        expected: deny
+      - name: egress-database-allow
+        direction: egress
+        sourcePodLabels: {app: api}
+        sourceNamespaceLabels: {environment: e2e}
+        destinationPodLabels: {role: database}
+        destinationNamespaceLabels: {environment: e2e}
+        port: 5432
+        expected: allow
+      - name: egress-other-deny
+        direction: egress
+        sourcePodLabels: {app: api}
+        sourceNamespaceLabels: {environment: e2e}
+        destinationPodLabels: {role: other}
+        destinationNamespaceLabels: {environment: e2e}
+        port: 5432
+        expected: deny
