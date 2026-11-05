@@ -28,7 +28,7 @@ These commands read cluster evidence, including bounded container logs by defaul
 - **Incident evidence:** Pods, Events, owner relationships, bounded logs by default in incident workflows, and a Kubernetes analyzer catalog.
 - **Root-cause workflow:** `scan`, `why`, proof and confidence, optional AI explanation, and concrete patch planning.
 - **Controlled delivery:** optional shadow verification followed by a reviewed local patch, cluster apply, or source/PR workflow.
-- **Specialist investigations:** network routing, DNS, storage, RBAC, security policy, node pressure, Jobs, Helm/Kustomize source, and optional ecosystem CRDs.
+- **Specialist investigations:** network routing, DNS, storage, RBAC, security policy, node pressure, Jobs, Helm/Kustomize source, and optional ecosystem CRDs. ResourceClaim analysis can identify references to missing DeviceClasses and produce a review-only plan.
 - **Operator tools:** terminal views, structured reports and bundles, local cache, custom analyzers, local HTTP API, and MCP stdio server.
 
 Find a symptom in [Use cases](https://baka126.github.io/fixora-cli/use-cases/), browse the [command and analyzer reference](https://baka126.github.io/fixora-cli/reference/), or read the [safety model](https://baka126.github.io/fixora-cli/safety/).
@@ -54,4 +54,4 @@ The Jekyll website source is in [`docs/`](docs/). Documentation changes build an
 
 ## Safety in one paragraph
 
-Fixora uses your Kubernetes identity. A scan is a read workflow; shadow verification creates temporary resources; cluster delivery writes to the target workload; PR delivery changes source and can open a remote pull request. AI can send redacted evidence to your configured provider, and v0.8.0 MCP resource/log tools can return sensitive data under broad RBAC. Keep permissions narrow, review diffs and verification status, and treat AI and shadow results as evidence rather than guarantees. [Read the full safety guidance](https://baka126.github.io/fixora-cli/safety/).
+Fixora uses your Kubernetes identity. A scan is a read workflow; shadow verification creates temporary resources; cluster delivery writes to the target workload; PR delivery changes source and can open a remote pull request. AI can send redacted evidence to your configured provider, and v0.8.0 MCP resource/log tools can return sensitive data under broad RBAC. Keep permissions narrow, review diffs and verification status, and treat AI and shadow results as evidence rather than guarantees. Transient AI provider HTTP failures are retried up to twice before Fixora reports the deterministic fallback. [Read the full safety guidance](https://baka126.github.io/fixora-cli/safety/).

@@ -173,7 +173,6 @@ func TestExplainStopsRetriesOnContextCancel(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
-
 func TestExplainRejectsOversizedProviderResponse(t *testing.T) {
 	large := strings.Repeat("x", 2<<20)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

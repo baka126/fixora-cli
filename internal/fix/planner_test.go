@@ -208,7 +208,6 @@ func TestMissingDeviceClassGetsReviewPlan(t *testing.T) {
 		t.Fatalf("unexpected plan: %#v", plan)
 	}
 }
-
 func TestValidatedAIPatchRetainsModelUncertainty(t *testing.T) {
 	p := BuildPlan(analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "demo", Status: "OOMKilled"})
 	got := WithValidatedAIPatch(p, "spec: {}", 61)

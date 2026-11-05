@@ -1259,7 +1259,6 @@ func TestMCPShadowFlagRequiresMCPMode(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
-
 func TestAugmentWithAIReportsDeterministicFallback(t *testing.T) {
 	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1277,7 +1276,6 @@ func TestAugmentWithAIReportsDeterministicFallback(t *testing.T) {
 		t.Fatalf("AI=%#v warning=%q", finding.AI, stderr.String())
 	}
 }
-
 func TestRelatedFindingsRequireAnActualRelationship(t *testing.T) {
 	target := analyzer.Finding{Namespace: "prod", ResourceKind: "Deployment", ResourceName: "api", PodName: "api-abc", Category: "runtime", Evidence: []analyzer.Evidence{{Label: "Node", Value: "node-a"}}}
 	candidates := []analyzer.Finding{
