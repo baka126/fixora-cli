@@ -26,6 +26,7 @@ type clonePlan struct {
 	UnpatchedClone    *corev1.Pod
 	Clone             *corev1.Pod
 	Policy            *networkingv1.NetworkPolicy
+	Namespace         *corev1.Namespace
 	Warnings          []string
 	NamespaceMetadata namespaceMetadata
 }
@@ -35,7 +36,7 @@ type namespaceMetadata struct {
 	Annotations map[string]string
 }
 
-func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session string) (clonePlan, error) {
+func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session, shadowNamespace string) (clonePlan, error) {
 	original, err := podTemplateForResource(ctx, c, req.Namespace, req.Resource, req.Finding.PodName)
 	if err != nil {
 		return clonePlan{}, err
@@ -45,13 +46,14 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	}
 	clone := sanitizePod(original, session, req.Timeout)
 	clone.Name = cloneName(original.Name, session)
+	clone.Namespace = shadowNamespace
 	nsMetadata := namespaceLabels(ctx, c, req.Namespace)
-	warnings := cloneWarnings(req.Egress)
+	warnings := cloneWarnings()
 	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource, nsMetadata)...)
 	if strings.EqualFold(req.Plan.Strategy, "fix-architecture") {
 		platformSource := original
 		if platformSource.Spec.NodeName == "" && strings.TrimSpace(req.Finding.PodName) != "" {
-			platformSource, err = c.GetTypedPod(ctx, clone.Namespace, req.Finding.PodName)
+			platformSource, err = c.GetTypedPod(ctx, req.Namespace, req.Finding.PodName)
 			if err != nil {
 				return clonePlan{}, fmt.Errorf("read failing controller pod for architecture verification: %w", err)
 			}
@@ -72,7 +74,7 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	if err := validateCloneContainerIdentity(unpatchedClone, clone); err != nil {
 		return clonePlan{}, err
 	}
-	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
+	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session)
 	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceMetadata: nsMetadata}, nil
 }
 
@@ -483,7 +485,7 @@ func podStrategicPatch(obj map[string]any) ([]byte, error) {
 	return json.Marshal(map[string]any{"spec": spec})
 }
 
-func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1.NetworkPolicy {
+func sandboxNetworkPolicy(namespace, name, session string) *networkingv1.NetworkPolicy {
 	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}
 	np := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
@@ -502,21 +504,14 @@ func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1
 			Egress:      []networkingv1.NetworkPolicyEgressRule{},
 		},
 	}
-	if strings.EqualFold(egress, "allow") {
-		np.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{}}
-	}
 	return np
 }
 
-func cloneWarnings(egress string) []string {
+func cloneWarnings() []string {
 	warnings := []string{
 		"shadow pod labels are stripped so existing Services should not route traffic to the clone",
 		"shadow clone service account token access is disabled to avoid reusing workload credentials",
-	}
-	if strings.EqualFold(egress, "allow") || egress == "" {
-		warnings = append(warnings, "shadow NetworkPolicy blocks ingress but allows egress for parity; downstream systems may still see clone traffic")
-	} else {
-		warnings = append(warnings, "shadow egress is blocked; readiness may fail for workloads that need external dependencies")
+		"shadow egress is denied; readiness may be inconclusive when external dependencies are required",
 	}
 	return warnings
 }

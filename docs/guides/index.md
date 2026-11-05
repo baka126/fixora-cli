@@ -19,3 +19,4 @@ Choose a workflow after the [first scan]({{ '/get-started/' | relative_url }}). 
 | Connect an assistant | [MCP]({{ '/guides/mcp/' | relative_url }}) |
 | Inspect terminal views and integrations | [Dashboards and integrations]({{ '/guides/dashboards-and-integrations/' | relative_url }}) |
 | Work with reports, cache, or local API | [Reports, cache, and serve]({{ '/guides/reports-cache-serve/' | relative_url }}) |
+| Diagnose and prepare a policy-bound PVC change | [PVC repairs]({{ '/guides/pvc-repairs/' | relative_url }}) |

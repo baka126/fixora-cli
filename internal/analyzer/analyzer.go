@@ -189,6 +189,17 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		return Finding{}, fmt.Errorf("resource must look like kind/name")
 	}
 	ns := a.opts.Namespace
+	if isPersistentVolumeClaimKind(kind) {
+		findings, err := a.analyzePVCs(NewScanContext(ctx, a.k, a.opts))
+		if err != nil {
+			return Finding{}, err
+		}
+		for _, finding := range findings {
+			if finding.Namespace == ns && finding.ResourceName == name {
+				return finding, nil
+			}
+		}
+	}
 	if kind == "pod" || kind == "pods" {
 		pod, err := a.k.GetPod(ctx, ns, name)
 		if err != nil {
@@ -229,6 +240,17 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 		return finding, nil
 	}
 	events, _ := a.k.GetEvents(ctx, namespace, "")
+	if denied, err := kube.CurrentAdmissionFailure(ctx, a.k, obj, events); err == nil && denied != nil {
+		meta, _ := obj["metadata"].(map[string]any)
+		finding.ResourceUID, _ = meta["uid"].(string)
+		finding.Status = "FailedCreate"
+		finding.Severity = "critical"
+		finding.Category = "security"
+		finding.Summary = "Current owned revision is denied by Pod Security Admission: " + denied.Message
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Current admission failure", Value: denied.Message})
+		finding.Recommendations = []Recommendation{{Title: "Restore approved security settings", Description: "Review the enforced namespace policy and preserve the application's existing UID/GID; verify any approved strengthening in shadow.", PatchType: "security", SafeByDefault: false}}
+		return finding, nil
+	}
 	var related []kube.Pod
 	for _, pod := range pods.Items {
 		if pod.Metadata.Namespace != namespace {
@@ -796,12 +818,15 @@ func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanCont
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {
 	labels, annotations := objectLabelsAnnotations(obj)
+	meta, _ := obj["metadata"].(map[string]any)
+	uid, _ := meta["uid"].(string)
 	status := "Unknown"
 	if s, ok := obj["status"].(map[string]any); ok {
 		status = compactMap(s)
 	}
 	return Finding{
 		ID:           namespace + "/" + kind + "/" + name,
+		ResourceUID:  uid,
 		Namespace:    namespace,
 		ResourceKind: toTitle(kind),
 		ResourceName: name,
@@ -816,6 +841,15 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 			Description:   "Controller resources often need pod, event, service, and endpoint evidence before a safe fix can be suggested.",
 			SafeByDefault: true,
 		}},
+	}
+}
+
+func isPersistentVolumeClaimKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
+		return true
+	default:
+		return false
 	}
 }
 

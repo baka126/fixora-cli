@@ -150,7 +150,7 @@ func TestScriptedQuickFixSummarizesSavedPatch(t *testing.T) {
 }
 
 func TestReviewOnlyPRBodyDoesNotClaimShadowVerification(t *testing.T) {
-	body := prBody(shadow.Result{}, repo.SourcePatch{Path: "patch.yaml"}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, false)
+	body := prBody(shadow.Result{}, repo.SourcePatch{Path: "patch.yaml"}, analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, fix.Plan{}, false)
 	if strings.Contains(body, "verified this remediation") || strings.Contains(body, "Parity") {
 		t.Fatalf("unverified PR claims verification: %s", body)
 	}
@@ -800,6 +800,95 @@ func TestWriteShadowFailureDoesNotEmitRawJSON(t *testing.T) {
 	}
 	if strings.Contains(got, "\"verified\"") {
 		t.Fatalf("shadow failure should not render JSON:\n%s", got)
+	}
+}
+
+func TestWriteShadowFailureRendersBoundedEvidenceWithoutProbeHost(t *testing.T) {
+	ready := int64(8)
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status: shadow.VerificationFailed,
+		Evidence: &shadow.FailureEvidence{
+			Containers:           []shadow.ContainerEvidence{{Name: "api", RequestedImage: "registry/app:v2", ImageID: "containerd://sha256:abc", TerminationReason: "OOMKilled", WaitingReason: "CrashLoopBackOff", MemoryRequest: "64Mi", MemoryLimit: "128Mi"}},
+			Probes:               []shadow.ProbeEvidence{{Container: "api", Type: "readiness", Protocol: "http", Path: "/ready", Port: "8080"}},
+			ConfigMaps:           []shadow.ConfigMapReferenceEvidence{{Name: "api-config", Key: "DATABASE_URL", SourceStatus: "key-present", SandboxStatus: "omitted-by-isolation"}},
+			TimeToReadySeconds:   &ready,
+			ReadyTimingEstimated: true,
+			MemoryMetricsStatus:  "unavailable",
+			MemoryAssessment:     &shadow.MemoryAssessment{Status: "failed", Summary: "peak 100Mi of 128Mi; 21.9% headroom; climbing"},
+			ProbeFailureEvents:   []string{"Readiness probe failed: password=hunter2"},
+		},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"runtime ID: containerd://sha256:abc", "exit: OOMKilled", "waiting: CrashLoopBackOff", "Probe api/readiness (http GET /ready:8080)", "ConfigMap api-config (DATABASE_URL): source key-present; sandbox omitted-by-isolation", "Ready observed after approximately 8s", "OOM memory assessment: failed — peak 100Mi of 128Mi; 21.9% headroom; climbing", "metrics.k8s.io unavailable", "password=[REDACTED]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("shadow evidence output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "internal.example") || strings.Contains(got, "hunter2") {
+		t.Fatalf("shadow evidence output leaked probe host or secret:\n%s", got)
+	}
+}
+
+func TestWriteShadowEvidenceShowsConfigMapEnvironmentKeyWithoutValue(t *testing.T) {
+	const privateValue = "postgres://user:password@staging-db:5432/app"
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status:   shadow.VerificationFailed,
+		Warnings: []string{"candidate diagnostics were withheld because referenced ConfigMap values are present in the isolated environment"},
+		Evidence: &shadow.FailureEvidence{ConfigMaps: []shadow.ConfigMapReferenceEvidence{{
+			Container: "api", EnvironmentVariable: "DB_URL", Name: "api-config", Key: "DB_URL", SourceStatus: "key-present", SandboxStatus: "key-present",
+		}}},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"ConfigMap api-config key DB_URL -> api.DB_URL: source key-present; sandbox key-present", "candidate diagnostics were withheld"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ConfigMap key summary missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, privateValue) {
+		t.Fatalf("ConfigMap value reached CLI output:\n%s", got)
+	}
+}
+
+func TestWriteShadowFailureExplainsInconclusiveOOMMemoryEvidence(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{Status: shadow.VerificationInconclusive, Evidence: &shadow.FailureEvidence{
+		MemoryAssessment: &shadow.MemoryAssessment{Status: "inconclusive", Summary: "at least three distinct memory samples are required"},
+	}}, "", analyzer.Finding{}, fix.Plan{})
+	if got := output.String(); !strings.Contains(got, "OOM memory assessment: inconclusive — at least three distinct memory samples are required") {
+		t.Fatalf("missing concise explanation of inconclusive OOM evidence:\n%s", got)
+	}
+}
+
+func TestWriteShadowInconclusiveDoesNotCallCandidateRejected(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status:   shadow.VerificationInconclusive,
+		Attempts: []shadow.Attempt{{Number: 1, Phase: "Running", Inconclusive: true, Message: "verification ended before checks completed"}},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"Shadow verification inconclusive", "candidate was neither accepted nor rejected", "could not diagnose the candidate"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("inconclusive output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "candidate was rejected") {
+		t.Fatalf("inconclusive output must not say the candidate was rejected:\n%s", got)
+	}
+}
+
+func TestWriteShadowIsolationBlockExplainsNoCandidateWasCreated(t *testing.T) {
+	var output bytes.Buffer
+	writeShadowFailure(&output, shadow.Result{
+		Status:    shadow.VerificationBlocked,
+		Isolation: &shadow.IsolationReport{Status: "blocked", Summary: "cluster NetworkPolicy enforcement could not be proven"},
+	}, "", analyzer.Finding{}, fix.Plan{})
+	got := output.String()
+	for _, want := range []string{"Shadow verification blocked", "Network isolation: cluster NetworkPolicy enforcement could not be proven", "No candidate was created"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("isolation block output missing %q:\n%s", want, got)
+		}
 	}
 }
 

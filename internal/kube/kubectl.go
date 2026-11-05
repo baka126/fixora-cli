@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -525,6 +527,22 @@ func (k Kubectl) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// ClusterID returns an opaque stable identifier for the configured API server.
+// The endpoint is never included in the returned value or any error message.
+func (k Kubectl) ClusterID(ctx context.Context) (string, error) {
+	out, err := k.Run(ctx, "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}")
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes API endpoint: %w", err)
+	}
+	endpoint := strings.TrimSpace(string(out))
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("Kubernetes API endpoint is unavailable or invalid")
+	}
+	sum := sha256.Sum256([]byte(endpoint))
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func scopeArgs(namespace string, allNS bool) []string {

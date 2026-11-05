@@ -43,6 +43,38 @@ func TestRevisePatchAcceptsValidImageOnlyPatch(t *testing.T) {
 	}
 }
 
+func TestRevisePatchIncludesBoundedOOMMemorySummary(t *testing.T) {
+	mock := &mockAI{patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: repo/app:v2
+`}
+	attempt := Attempt{
+		ExitReason: "memory evidence failed",
+		Evidence: &FailureEvidence{MemoryAssessment: &MemoryAssessment{
+			Status: "failed", Summary: strings.Repeat("unsafe memory curve ", 100),
+		}},
+	}
+	_, ok, err := revisePatch(context.Background(), mock, originalImagePatch, "image", attempt, true)
+	if err != nil || !ok {
+		t.Fatalf("expected valid retry revision, ok=%t err=%v", ok, err)
+	}
+	found := false
+	for _, evidence := range mock.finding.Evidence {
+		if evidence.Label == "Memory assessment" {
+			found = true
+			if len(evidence.Value) > 300 || !strings.Contains(evidence.Value, "failed") {
+				t.Fatalf("retry memory summary should be bounded and useful: %q", evidence.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("retry prompt omitted OOM memory assessment")
+	}
+}
+
 func TestRevisePatchPrefersStructuredPatchYAML(t *testing.T) {
 	mock := &mockAIResult{result: &analyzer.AIResult{
 		RecommendedFix: "Use a compatible image.",

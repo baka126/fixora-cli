@@ -1,5 +1,5 @@
 // Package coordinate applies an ordered, user-vetted set of single-resource
-// fixes as a transaction, rolling back the applied prefix on failure.
+// fixes as an ordered saga, offering rollback of the applied prefix on failure.
 package coordinate
 
 import (
@@ -22,11 +22,14 @@ type Step struct {
 }
 
 type StepReport struct {
-	Ref        string
-	Applied    bool
-	Healthy    bool
-	RolledBack bool
-	Detail     string
+	ApplyAttempted bool
+	Verification   string `json:"verification,omitempty"`
+	RollbackStatus string `json:"rollbackStatus,omitempty"`
+	Ref            string
+	Applied        bool
+	Healthy        bool
+	RolledBack     bool
+	Detail         string
 }
 
 type Report struct {

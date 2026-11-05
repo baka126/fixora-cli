@@ -28,7 +28,6 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/graph"
 	"github.com/fixora/kubectl-fixora/internal/image"
-	"github.com/fixora/kubectl-fixora/internal/infer"
 	"github.com/fixora/kubectl-fixora/internal/integration"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/mcp"
@@ -36,12 +35,14 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/ops"
 	"github.com/fixora/kubectl-fixora/internal/output"
 	"github.com/fixora/kubectl-fixora/internal/redact"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	"github.com/fixora/kubectl-fixora/internal/repo"
 	"github.com/fixora/kubectl-fixora/internal/report"
 	"github.com/fixora/kubectl-fixora/internal/server"
 	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"github.com/fixora/kubectl-fixora/internal/termui"
 	"github.com/fixora/kubectl-fixora/internal/version"
+	"github.com/fixora/kubectl-fixora/internal/workloadmemory"
 	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -49,73 +50,80 @@ import (
 )
 
 type options struct {
-	namespace       string
-	allNS           bool
-	context         string
-	output          string
-	includeLogs     bool
-	useAI           bool
-	noAI            bool
-	autoFix         bool
-	apply           bool
-	yes             bool
-	outFile         string
-	editPatch       bool
-	verbose         bool
-	redact          bool
-	unsafeAI        bool
-	filters         string
-	labelSelector   string
-	wide            bool
-	noColor         bool
-	proof           bool
-	paranoid        bool
-	preview         bool
-	forceRisky      bool
-	typedClient     bool
-	checkSecretKeys bool
-	checkCertExpiry bool
-	tui             bool
-	repoPath        string
-	from            string
-	strategy        string
-	branch          string
-	commit          bool
-	mcp             bool
-	mcpShadow       bool
-	profile         string
-	aiBudget        int
-	container       string
-	image           string
-	memRequest      string
-	memLimit        string
-	cpuRequest      string
-	envName         string
-	configMap       string
-	configKey       string
-	timeout         time.Duration
-	logTail         int
-	maxLogBytes     int
-	applyDryRun     bool
-	sourcePatch     bool
-	startupBaseline string
-	shadowVerify    bool
-	shadowTimeout   time.Duration
-	rolloutTimeout  time.Duration
-	shadowRetries   int
-	keepShadow      bool
-	shadowEgress    string
-	delivery        string
-	prBase          string
-	prTitle         string
-	watchInterval   time.Duration
-	lintFiles       listFlag
-	maxFindings     int
-	quick           bool
-	safe            bool
-	gitops          bool
-	visited         map[string]bool
-	promptInput     *bufio.Reader
+	workloadMemoryPath, workloadMemoryFingerprint, workloadMemoryNote       string
+	servicePolicy                                                           string
+	pvcPolicy                                                               string
+	helmChart, helmRelease, helmEditValues, helmRenderMode, helmKubeVersion string
+	helmValues, helmAPIVersions, helmMappings                               listFlag
+	repairBaseline                                                          string
+	repairPolicy                                                            string
+	namespace                                                               string
+	allNS                                                                   bool
+	context                                                                 string
+	output                                                                  string
+	includeLogs                                                             bool
+	useAI                                                                   bool
+	noAI                                                                    bool
+	autoFix                                                                 bool
+	apply                                                                   bool
+	yes                                                                     bool
+	outFile                                                                 string
+	editPatch                                                               bool
+	verbose                                                                 bool
+	redact                                                                  bool
+	unsafeAI                                                                bool
+	filters                                                                 string
+	labelSelector                                                           string
+	wide                                                                    bool
+	noColor                                                                 bool
+	proof                                                                   bool
+	paranoid                                                                bool
+	preview                                                                 bool
+	forceRisky                                                              bool
+	typedClient                                                             bool
+	checkSecretKeys                                                         bool
+	checkCertExpiry                                                         bool
+	tui                                                                     bool
+	repoPath                                                                string
+	from                                                                    string
+	strategy                                                                string
+	branch                                                                  string
+	commit                                                                  bool
+	mcp                                                                     bool
+	mcpShadow                                                               bool
+	profile                                                                 string
+	aiBudget                                                                int
+	container                                                               string
+	image                                                                   string
+	memRequest                                                              string
+	memLimit                                                                string
+	cpuRequest                                                              string
+	envName                                                                 string
+	configMap                                                               string
+	configKey                                                               string
+	timeout                                                                 time.Duration
+	logTail                                                                 int
+	maxLogBytes                                                             int
+	applyDryRun                                                             bool
+	sourcePatch                                                             bool
+	startupBaseline                                                         string
+	shadowVerify                                                            bool
+	shadowTimeout                                                           time.Duration
+	rolloutTimeout                                                          time.Duration
+	shadowRetries                                                           int
+	keepShadow                                                              bool
+	shadowEgress                                                            string
+	delivery                                                                string
+	prBase                                                                  string
+	prTitle                                                                 string
+	watchInterval                                                           time.Duration
+	lintFiles                                                               listFlag
+	maxFindings                                                             int
+	quick                                                                   bool
+	safe                                                                    bool
+	gitops                                                                  bool
+	visited                                                                 map[string]bool
+	promptInput                                                             *bufio.Reader
 }
 
 type listFlag []string
@@ -341,69 +349,20 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		if opts.output == "text" {
 			fmt.Fprintf(stderr, "Analyzing %s...\n", rest[0])
 		}
-		finding, err := a.AnalyzeResource(analysisCtx, rest[0])
+		finding, plan, prepared, err := prepareFixPlan(analysisCtx, reader, k, opts, rest[0], stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		finding = preferSmartFinding(analysisCtx, a, finding)
-		if opts.useAI {
-			finding = enrichFindingForAI(analysisCtx, reader, k, opts, rest[0], finding)
-			augmentWithAI(analysisCtx, &finding, opts, stderr)
-		} else {
-			// The infer package fills patch placeholders from `kubectl top` and
-			// registry evidence. That evidence used to be gathered only inside
-			// enrichFindingForAI, so under --no-ai the image and OOMKilled-metrics
-			// inferrers always declined. Collect it here regardless of --ai.
-			finding = collectDeliveryEvidence(analysisCtx, k, opts, finding)
+		opts = prepared
+		if opts.servicePolicy != "" {
+			return runServiceFix(ctx, stdout, stderr, opts, finding)
 		}
-		plan := fix.BuildPlan(finding)
-		plan = fix.Concretize(plan, concreteOptions(opts))
-		inferred := false
-		if !plan.ApplyEligible {
-			plan, inferred = infer.Concrete(analysisCtx, reader, finding, plan)
+		if opts.pvcPolicy != "" || isPVCResourceKind(finding.ResourceKind) {
+			return runPVCFix(ctx, stdout, stderr, opts, finding)
 		}
-		if opts.startupBaseline != "" {
-			plan, err = withStartupBaseline(analysisCtx, reader, opts.startupBaseline, finding, plan)
-			if err != nil {
-				fmt.Fprintf(stderr, "error: startup baseline: %v\n", err)
-				return 1
-			}
-			opts.shadowVerify = true
-			opts.shadowRetries = 0 // AI must not revise an explicit operator command.
-		}
-		if opts.useAI {
-			plan = selectAIRepair(analysisCtx, reader, plan, finding, stderr, opts.verbose)
-			if slices.Contains(plan.Guardrails, "ai-patch-safety-validated") {
-				opts.shadowVerify = true
-			}
-		}
-		if plan.ApplyEligible && !strings.HasPrefix(plan.Resource, "Deployment/") {
-			if uid, preflightErr := ops.PreflightController(analysisCtx, reader, finding, plan); preflightErr != nil {
-				plan = fix.WithControllerReview(plan, "Live target requires source review: "+preflightErr.Error())
-			} else {
-				plan.TargetUID = uid
-			}
-		}
-		if slices.Contains(plan.Guardrails, "controller-preflight-required") && plan.ApplyEligible {
-			opts.shadowVerify = true
-		}
-		if inferred {
-			opts.shadowVerify = true
-		}
-		if opts.repoPath != "" {
-			mode, repoErr := repo.Plan(analysisCtx, opts.repoPath, finding, plan)
-			if repoErr == nil {
-				plan.Steps = append(plan.Steps, "Repo mode detected "+mode.Type+" source at "+mode.Path+". "+mode.ValidationNote)
-			} else {
-				plan.BlockedReasons = append(plan.BlockedReasons, repoErr.Error())
-			}
-		}
-		if opts.autoFix {
-			plan.AutoFixRequested = true
-			if opts.repoPath != "" && cmd == "fix" {
-				opts.sourcePatch = true
-			}
+		if hasHelmSourceContext(opts) {
+			return runHelmSourceDelivery(ctx, stdout, stderr, opts, reader, k, finding, plan)
 		}
 		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
 	case "coordinate":
@@ -414,7 +373,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			}
 			analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
 			defer analysisCancel()
-			return runCoordinateFrom(analysisCtx, stdout, stderr, opts, a, k, opts.from)
+			return runCoordinateFrom(analysisCtx, ctx, stdout, stderr, opts, reader, a, k, opts.from)
 		}
 		if len(rest) < 2 {
 			fmt.Fprintln(stderr, "error: coordinate requires two or more resources (kind/name ...) to apply together")
@@ -422,15 +381,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		}
 		analysisCtx, analysisCancel := fixAnalysisContext(ctx, opts.timeout)
 		defer analysisCancel()
-		steps, err := buildCoordinateSteps(analysisCtx, a, opts, rest)
+		steps, err := buildPreparedCoordinateSteps(analysisCtx, reader, k, opts, rest, stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
-		in := inputFor(opts)
-		confirmApply, confirmRollback := coordinateConfirmers(opts.yes, len(steps), in, stderr)
-		deps := coordinateDeps{k: k, timeout: opts.rolloutTimeout}
-		return runCoordinateSteps(analysisCtx, stdout, stderr, steps, deps, confirmApply, confirmRollback)
+		return runPreparedCoordinateSteps(ctx, stdout, stderr, opts, reader, k, steps)
 	case "graph":
 		if len(rest) == 0 {
 			fmt.Fprintln(stderr, "error: graph requires a resource")
@@ -679,6 +635,8 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.noColor, "no-color", false, "disable terminal color")
 	fs.BoolVar(&opts.proof, "proof", false, "show evidence proof")
 	fs.BoolVar(&opts.paranoid, "paranoid", opts.paranoid, "avoid secret-sensitive evidence and force redaction")
+	fs.StringVar(&opts.servicePolicy, "service-policy", "", "approved local Service routing policy and pinned verifier image")
+	fs.StringVar(&opts.pvcPolicy, "pvc-policy", "", "exact local PVC StorageClass assignment or bounded expansion policy")
 	fs.BoolVar(&opts.preview, "preview", false, "preview patch plan without writing")
 	fs.BoolVar(&opts.forceRisky, "force-risky", false, "allow risky concrete fixes to pass apply eligibility after review")
 	fs.BoolVar(&opts.typedClient, "typed-client", false, "use client-go/controller-runtime typed client for analyzer reads")
@@ -689,6 +647,14 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
+	fs.StringVar(&opts.helmChart, "helm-chart", "", "local chart relative to --repo")
+	fs.StringVar(&opts.helmRelease, "helm-release", "", "exact Helm release")
+	fs.StringVar(&opts.helmEditValues, "helm-edit-values", "", "last writable values file relative to --repo")
+	fs.StringVar(&opts.helmRenderMode, "helm-render-mode", "", "explicit install or upgrade render mode")
+	fs.StringVar(&opts.helmKubeVersion, "helm-kube-version", "", "render Kubernetes version")
+	fs.Var(&opts.helmValues, "helm-values", "ordered values file relative to --repo (repeatable)")
+	fs.Var(&opts.helmAPIVersions, "helm-api-version", "render API capability (repeatable)")
+	fs.Var(&opts.helmMappings, "helm-map", "rendered JSON pointer=values JSON pointer (repeatable)")
 	fs.StringVar(&opts.from, "from", "", "coordinate: auto-derive the related resource set from this root <kind/name>")
 	fs.StringVar(&opts.strategy, "strategy", "", "fix strategy such as rollback, right-size, repair-selector, add-requests")
 	fs.StringVar(&opts.branch, "branch", "", "local git branch to create for PR-ready output")
@@ -710,13 +676,15 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.IntVar(&opts.maxLogBytes, "max-logs-bytes", opts.maxLogBytes, "maximum bytes to collect per pod log stream")
 	fs.BoolVar(&opts.applyDryRun, "apply-dry-run", opts.applyDryRun, "run server-side dry-run before --apply")
 	fs.BoolVar(&opts.sourcePatch, "source-patch", false, "write patch into --repo for GitOps source review")
-	fs.StringVar(&opts.startupBaseline, "startup-baseline", "", "restore command/args from an explicit matching Deployment manifest; requires shadow verification")
+	fs.StringVar(&opts.repairBaseline, "repair-baseline", "", "operator-approved placement or security manifest; requires proof and shadow verification")
+	fs.StringVar(&opts.repairPolicy, "repair-policy", "", "baseline policy: placement or security (required if ambiguous)")
+	fs.StringVar(&opts.startupBaseline, "startup-baseline", "", "restore command/args from an explicit matching workload manifest; requires shadow verification")
 	fs.BoolVar(&opts.shadowVerify, "shadow", false, "deploy an isolated shadow clone and verify the patch before delivery")
 	fs.DurationVar(&opts.shadowTimeout, "shadow-timeout", 10*time.Minute, "shadow clone verification timeout")
 	fs.DurationVar(&opts.rolloutTimeout, "rollout-timeout", 2*time.Minute, "post-apply rollout verification timeout")
 	fs.IntVar(&opts.shadowRetries, "shadow-retries", 0, "number of shadow re-clone attempts after failure")
-	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep shadow Pod and NetworkPolicy after verification")
-	fs.StringVar(&opts.shadowEgress, "shadow-egress", "allow", "shadow egress policy: allow or deny")
+	fs.BoolVar(&opts.keepShadow, "keep-shadow", false, "keep the isolated shadow namespace for inspection")
+	fs.StringVar(&opts.shadowEgress, "shadow-egress", "deny", "shadow egress policy (only deny is supported)")
 	fs.StringVar(&opts.delivery, "delivery", "patch", "verified shadow delivery: patch, cluster, or pr")
 	fs.StringVar(&opts.prBase, "pr-base", "", "base branch for --delivery=pr")
 	fs.StringVar(&opts.prTitle, "pr-title", "", "pull request title for --delivery=pr")
@@ -1017,7 +985,7 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 		Redact:      opts.redact || opts.paranoid,
 		AI:          retryProvider,
 	}
-	fmt.Fprintln(stdout, "Creating isolated shadow Pod and NetworkPolicy...")
+	fmt.Fprintln(stdout, "Creating per-run isolated namespace and proving NetworkPolicy enforcement...")
 	result, err := shadow.Run(ctx, typed, req)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: shadow verification: %v\n", err)
@@ -1025,7 +993,11 @@ func verifyInShadow(ctx context.Context, stdout, stderr io.Writer, opts options,
 	}
 	if !result.Verified {
 		if opts.output == "text" {
-			writeShadowFailure(stdout, result, opts.outFile, finding, plan)
+			if opts.proof || opts.verbose {
+				writeShadowFailure(stdout, result, opts.outFile, finding, plan)
+			} else {
+				fmt.Fprintln(stdout, "\n"+evidenceCard(finding, plan, result, false))
+			}
 		} else {
 			_ = output.Write(stdout, opts.output, result)
 		}
@@ -1059,6 +1031,27 @@ func liveOutcome(ctx context.Context, k rolloutGate, finding analyzer.Finding, p
 		outcome = ops.VerifyCompletion(ctx, k, finding, plan, timeout)
 	default:
 		outcome = ops.VerifyRollout(ctx, k, finding, plan, timeout)
+	}
+	if outcome.Class == ops.RolloutHealthy && repairpolicy.Dedicated(plan.Strategy) {
+		reader, ok := k.(kube.Reader)
+		if !ok {
+			return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: "policy runtime reader unavailable"}
+		}
+		if plan.Strategy == "restore-placement" {
+			verified, err := ops.VerifyPlacementRollout(ctx, reader, finding, plan)
+			if err != nil {
+				return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: err.Error()}
+			}
+			return verified
+		}
+		if plan.Strategy == "security-strengthen" {
+			verified, err := ops.VerifySecurityRollout(ctx, reader, finding, plan)
+			if err != nil {
+				return ops.RolloutOutcome{Class: ops.RolloutUnknown, Summary: err.Error()}
+			}
+			return verified
+		}
+
 	}
 	return outcome
 }
@@ -1129,9 +1122,16 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 	switch mode {
 	case shadow.DeliveryPatch:
 		if opts.output == "text" {
-			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			} else {
+				fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			}
 			for _, warning := range result.Warnings {
 				fmt.Fprintf(stdout, "warning: %s\n", warning)
+			}
+			if opts.keepShadow && result.IsolationNamespace != "" {
+				fmt.Fprintf(stdout, "Kept isolated namespace: %s (default-deny ingress and egress)\n", result.IsolationNamespace)
 			}
 			status := "Unverified"
 			if verified {
@@ -1142,6 +1142,37 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		}
 		return output.Write(stdout, opts.output, result)
 	case shadow.DeliveryCluster:
+		if repairpolicy.Dedicated(plan.Strategy) {
+			if err := result.PolicyReceipt.Check(plan.PolicyProof, plan.PatchYAML()); err != nil {
+				fmt.Fprintf(stderr, "error: policy delivery: %v\n", err)
+				return 1
+			}
+			if err := repairpolicy.Revalidate(ctx, k, plan.PolicyProof, plan.PatchYAML()); err != nil {
+				fmt.Fprintf(stderr, "error: policy preflight: %v\n", err)
+				return 1
+			}
+			content, err := os.ReadFile(opts.outFile)
+			if err != nil || string(content) != plan.PatchYAML() {
+				fmt.Fprintln(stderr, "error: outgoing patch differs from verified policy candidate")
+				return 1
+			}
+			pinned, err := os.CreateTemp("", "fixora-verified-*.yaml")
+			if err != nil {
+				fmt.Fprintf(stderr, "error: pin verified candidate: %v\n", err)
+				return 1
+			}
+			defer os.Remove(pinned.Name())
+			if _, err = pinned.WriteString(plan.PatchYAML()); err != nil {
+				pinned.Close()
+				fmt.Fprintln(stderr, "error: pin verified candidate")
+				return 1
+			}
+			if err = pinned.Close(); err != nil {
+				fmt.Fprintln(stderr, "error: close verified candidate")
+				return 1
+			}
+			opts.outFile = pinned.Name()
+		}
 		applyFile := opts.outFile
 		if !strings.HasPrefix(plan.Resource, "Deployment/") || plan.TargetUID != "" {
 			snapshot, err := ops.PreflightControllerSnapshot(ctx, k, finding, plan)
@@ -1180,7 +1211,10 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 				return code
 			}
 		} else {
-			fmt.Fprintf(stdout, "%s\napplied patch\n", deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			}
+			fmt.Fprintln(stdout, "applied patch")
 		}
 		return reportRollout(ctx, stdout, stderr, inputFor(opts), opts.yes, k, outcome)
 	case shadow.DeliveryPR:
@@ -1198,7 +1232,7 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 			fmt.Fprintf(stderr, "error: repo workflow: %v\n", err)
 			return 1
 		}
-		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, title), prBody(result, sourcePatch, finding, verified), true)
+		pr, err := repo.OpenPullRequest(ctx, opts.repoPath, branch, opts.prBase, firstArg([]string{opts.prTitle}, title), prBody(result, sourcePatch, finding, plan, verified), true)
 		if err != nil {
 			fmt.Fprintf(stderr, "error: open pull request: %v\n", err)
 			return 1
@@ -1207,7 +1241,11 @@ func deliverVerifiedFix(ctx context.Context, stdout, stderr io.Writer, opts opti
 		result.PRURL = pr.URL
 		result.Warnings = append(result.Warnings, pr.Warnings...)
 		if opts.output == "text" {
-			fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			if result.Status != "" {
+				fmt.Fprintln(stdout, evidenceCard(finding, plan, result, verified))
+			} else {
+				fmt.Fprintln(stdout, deliveryHeadline(verified, result.Parity))
+			}
 			if pr.URL != "" {
 				fmt.Fprintf(stdout, "opened PR: %s\n", pr.URL)
 				fmt.Fprintf(stdout, "Outcome: PR opened at %s; cluster unchanged.\n", pr.URL)
@@ -1239,10 +1277,21 @@ func runShadowWorkflow(ctx context.Context, stdout, stderr io.Writer, opts optio
 		return code
 	}
 	result, verified, code := verifyInShadow(ctx, stdout, stderr, opts, k, finding, plan, true)
+	if err := recordWorkloadMemory(opts, finding, plan, result); err != nil {
+		fmt.Fprintln(stderr, "warning: local workload history could not be saved; shadow result is unchanged")
+	}
 	if !verified {
 		return code
 	}
 	return deliverVerifiedFix(ctx, stdout, stderr, opts, k, finding, plan, result, mode, true)
+}
+
+func recordWorkloadMemory(opts options, finding analyzer.Finding, plan fix.Plan, result shadow.Result) error {
+	if opts.workloadMemoryFingerprint == "" || opts.workloadMemoryPath == "" || result.Status == "" {
+		return nil
+	}
+	session := workloadMemorySession(finding, plan, result)
+	return (workloadmemory.Store{Path: opts.workloadMemoryPath}).Record(opts.workloadMemoryFingerprint, session)
 }
 
 func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
@@ -1260,7 +1309,27 @@ func shadowRetryProvider(opts options, stderr io.Writer) (ai.Provider, int) {
 }
 
 func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, finding analyzer.Finding, plan fix.Plan) {
-	fmt.Fprintln(w, "\nShadow verification failed")
+	title := "Shadow verification failed"
+	if result.Status == shadow.VerificationBlocked || result.Status == shadow.VerificationInconclusive {
+		title = "Shadow verification " + string(result.Status)
+	}
+	fmt.Fprintln(w, "\n"+title)
+	if result.Isolation != nil && result.Isolation.Summary != "" {
+		fmt.Fprintf(w, "  Network isolation: %s\n", trimEvidence(result.Isolation.Summary, 240))
+	}
+	if result.IsolationNamespace != "" && len(result.Cleanup) == 0 {
+		fmt.Fprintf(w, "  Sandbox namespace: %s\n", result.IsolationNamespace)
+	}
+	evidence := result.Evidence
+	if evidence == nil && len(result.Attempts) > 0 {
+		evidence = result.Attempts[len(result.Attempts)-1].Evidence
+	}
+	writeShadowEvidence(w, evidence)
+	for _, warning := range result.Warnings {
+		if strings.HasPrefix(warning, "candidate diagnostics were withheld") {
+			fmt.Fprintf(w, "Note: %s\n", trimEvidence(warning, 220))
+		}
+	}
 	fmt.Fprintln(w, "No production mutation, PR/MR, or source delivery was performed.")
 	for _, attempt := range result.Attempts {
 		phase := attempt.Phase
@@ -1272,6 +1341,9 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 			fmt.Fprintf(w, " reason=%s", attempt.ExitReason)
 		}
 		fmt.Fprintln(w)
+		if attempt.Message != "" {
+			fmt.Fprintf(w, "  Verdict: %s\n", trimEvidence(attempt.Message, 220))
+		}
 		if len(attempt.Logs) > 0 {
 			lastLog := redact.KubernetesText(attempt.Logs[len(attempt.Logs)-1])
 			fmt.Fprintf(w, "  Last log: %s\n", trimEvidence(lastLog, 220))
@@ -1281,10 +1353,127 @@ func writeShadowFailure(w io.Writer, result shadow.Result, patchFile string, fin
 	if patchFile != "" {
 		fmt.Fprintf(w, "\nReviewed patch retained at %s\n", patchFile)
 	}
-	fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+	if len(result.Attempts) == 0 {
+		fmt.Fprintln(w, "No candidate was created. Resolve the isolation or dependency prerequisite before retrying.")
+	} else {
+		if result.Status == shadow.VerificationInconclusive {
+			fmt.Fprintln(w, "Verification did not finish, so the candidate was neither accepted nor rejected. Increase --shadow-timeout or resolve the verification interruption before retrying.")
+		} else {
+			fmt.Fprintln(w, "The candidate was rejected by shadow verification. Review the evidence and choose another patch before retrying.")
+		}
+	}
+}
+
+func writeShadowEvidence(w io.Writer, evidence *shadow.FailureEvidence) {
+	if evidence == nil {
+		return
+	}
+	hasEvidence := len(evidence.Containers)+len(evidence.Probes)+len(evidence.ConfigMaps)+len(evidence.MemoryCurve)+len(evidence.ProbeFailureEvents) > 0 || evidence.MemoryMetricsStatus != "" || evidence.MemoryAssessment != nil
+	if !hasEvidence {
+		return
+	}
+	fmt.Fprintln(w, "Evidence")
+	for _, container := range evidence.Containers {
+		fmt.Fprintf(w, "  Container %s", container.Name)
+		if container.RequestedImage != "" {
+			fmt.Fprintf(w, "; image: %s", container.RequestedImage)
+		}
+		if container.ImageID != "" {
+			fmt.Fprintf(w, "; runtime ID: %s", container.ImageID)
+		}
+		if container.TerminationReason != "" {
+			fmt.Fprintf(w, "; exit: %s", container.TerminationReason)
+		}
+		if container.WaitingReason != "" {
+			fmt.Fprintf(w, "; waiting: %s", container.WaitingReason)
+		}
+		if container.MemoryLimit != "" || container.MemoryRequest != "" {
+			request, limit := container.MemoryRequest, container.MemoryLimit
+			if request == "" {
+				request = "-"
+			}
+			if limit == "" {
+				limit = "-"
+			}
+			fmt.Fprintf(w, "; memory request/limit: %s/%s", request, limit)
+		}
+		fmt.Fprintln(w)
+	}
+	if evidence.TimeToReadySeconds != nil {
+		if evidence.ReadyTimingEstimated {
+			fmt.Fprintf(w, "  Ready observed after approximately %ds\n", *evidence.TimeToReadySeconds)
+		} else {
+			fmt.Fprintf(w, "  Ready after %ds\n", *evidence.TimeToReadySeconds)
+		}
+	}
+	for _, probe := range evidence.Probes {
+		endpoint := probe.Protocol
+		if probe.Path != "" {
+			endpoint += " GET " + probe.Path
+		}
+		if probe.Port != "" {
+			endpoint += ":" + probe.Port
+		}
+		if endpoint != "" {
+			fmt.Fprintf(w, "  Probe %s/%s (%s)\n", probe.Container, probe.Type, endpoint)
+		}
+	}
+	for _, event := range evidence.ProbeFailureEvents {
+		fmt.Fprintf(w, "  Probe event: %s\n", trimEvidence(redact.KubernetesText(event), 180))
+	}
+	for _, ref := range evidence.ConfigMaps {
+		key := ref.Key
+		if key == "*" || key == "" {
+			key = "all keys"
+		}
+		if ref.EnvironmentVariable != "" {
+			fmt.Fprintf(w, "  ConfigMap %s key %s -> %s.%s: source %s; sandbox %s\n", ref.Name, key, ref.Container, ref.EnvironmentVariable, ref.SourceStatus, ref.SandboxStatus)
+		} else {
+			fmt.Fprintf(w, "  ConfigMap %s (%s): source %s; sandbox %s\n", ref.Name, key, ref.SourceStatus, ref.SandboxStatus)
+		}
+	}
+	if assessment := evidence.MemoryAssessment; assessment != nil {
+		fmt.Fprintf(w, "  OOM memory assessment: %s", assessment.Status)
+		if assessment.Summary != "" {
+			fmt.Fprintf(w, " — %s", trimEvidence(assessment.Summary, 220))
+		}
+		fmt.Fprintln(w)
+	}
+	if len(evidence.MemoryCurve) > 0 {
+		for _, container := range evidence.Containers {
+			var samples []string
+			var maximum int64
+			for _, sample := range evidence.MemoryCurve {
+				for _, usage := range sample.Containers {
+					if usage.Name != container.Name {
+						continue
+					}
+					samples = append(samples, usage.Memory)
+					if usage.MemoryBytes > maximum {
+						maximum = usage.MemoryBytes
+					}
+				}
+			}
+			if len(samples) > 0 {
+				shown := samples
+				if len(shown) > 5 {
+					shown = append(append([]string{}, shown[:4]...), "…", shown[len(shown)-1])
+				}
+				fmt.Fprintf(w, "  Memory curve %s: %s (%d samples, peak %s)\n", container.Name, strings.Join(shown, " → "), len(samples), resource.NewQuantity(maximum, resource.BinarySI).String())
+			}
+		}
+	} else if evidence.MemoryMetricsStatus == "unavailable" {
+		fmt.Fprintln(w, "  Memory curve: metrics.k8s.io unavailable; memory limit and OOM status are still shown when observed")
+	} else if evidence.MemoryMetricsStatus == "not-observed" {
+		fmt.Fprintln(w, "  Memory curve: no metrics sample completed before verification ended")
+	}
 }
 
 func writeShadowFailureGuidance(w io.Writer, result shadow.Result, finding analyzer.Finding, plan fix.Plan) {
+	if result.Status == shadow.VerificationInconclusive {
+		fmt.Fprintln(w, "  Fixora could not diagnose the candidate because observation ended before a verdict was available.")
+		return
+	}
 	diagnosis := shadow.DiagnoseFailure(result, finding, plan)
 	if diagnosis.Summary != "" {
 		fmt.Fprintln(w, "\nFollow-up diagnosis")
@@ -1339,6 +1528,9 @@ func runGuidedFix(ctx context.Context, stdout, stderr io.Writer, opts options, k
 	if !plan.ApplyEligible && (finding.Status == "Healthy" || finding.Status == "OwnedPodsHealthy") {
 		fmt.Fprintf(stdout, "%s/%s (%s): healthy. No repair needed; no changes made.\n", finding.ResourceKind, finding.ResourceName, finding.Namespace)
 		return 0
+	}
+	if opts.workloadMemoryNote != "" {
+		fmt.Fprintf(stdout, "Seen before: %s\n", opts.workloadMemoryNote)
 	}
 
 	if interactiveFix(opts) {
@@ -1614,6 +1806,10 @@ func nextConcreteFixHint(resourceArg string, plan fix.Plan) string {
 		base += " -n " + plan.Namespace
 	}
 	switch strings.ToLower(plan.Strategy) {
+	case "repair-selector", "service":
+		return base + " --service-policy <approved-local-file> --preview"
+	case "pvc", "storage":
+		return base + " --pvc-policy <approved-local-file> --preview"
 	case "image":
 		return base + " --container <container> --image <pinned-image>"
 	case "resources":
@@ -2893,7 +3089,7 @@ Fast incident workflow:
     --delivery                 How to ship a proposed fix: patch, cluster, or pr (default: patch).
     --yes                      Confirm shadow verification and non-interactive delivery.
                                (--apply, --source-patch, --gitops are deprecated aliases.)
-  coordinate <kind/name>...    Apply an ordered set of fixes together; rolls back the applied prefix on failure.
+  coordinate <kind/name>...    Verify all repairs, then apply in order; offer field rollback on failure.
                                Interactive on a TTY; pass --yes for scripted/non-interactive runs.
   ui                           Compact incident dashboard
   cluster                      Full-screen cluster dashboard
@@ -2997,6 +3193,14 @@ Global flags:
       --no-ai                  Disable AI remediation for this command
       --auto-fix               Generate explicit local fix plan
       --apply                  Apply generated local patch
+      --helm-chart             Local chart relative to --repo
+      --helm-release           Exact release name for source validation
+      --helm-values            Ordered values file relative to --repo (repeatable)
+      --helm-edit-values       Last writable values file
+      --helm-render-mode       Explicit install or upgrade render mode
+      --helm-kube-version      Kubernetes render version (otherwise discovery)
+      --helm-api-version       Render API capability (repeatable)
+      --helm-map               Rendered JSON pointer=values JSON pointer
       --yes                    Confirm shadow verification and non-interactive delivery
       --edit-patch             Open generated patch in $VISUAL/$EDITOR before shadow/apply/source delivery
       --redact                 Redact sensitive values
@@ -3012,6 +3216,8 @@ Global flags:
       --paranoid               Force redaction and secret-safe mode
       --repo string            Local repo/chart/overlay path
       --strategy string        Fix strategy such as rollback, right-size, repair-selector
+      --service-policy string  Approved local Service routing intent and pinned verifier image
+      --pvc-policy string      Exact local PVC StorageClass assignment or bounded expansion policy
       --preview                Preview patch plan only
       --force-risky            Allow risky concrete fixes after review
       --typed-client           Use client-go/controller-runtime typed client for analyzer reads
@@ -3020,12 +3226,14 @@ Global flags:
       --max-logs-bytes int     Maximum bytes per pod log stream
       --apply-dry-run          Run server-side dry-run before --apply
       --source-patch           Write patch into --repo for GitOps source review
-      --startup-baseline file  Restore command/args from a matching operator Deployment baseline
+      --repair-baseline file   Operator-approved placement/security baseline
+      --repair-policy family   placement or security; required for ambiguous baselines
+      --startup-baseline file  Restore command/args from a matching operator workload baseline
       --shadow                 Verify patch in an isolated shadow clone before delivery
       --shadow-timeout duration Shadow clone verification timeout
       --shadow-retries int     Shadow re-clone attempts after failure
-      --keep-shadow            Keep shadow Pod and NetworkPolicy after verification
-      --shadow-egress string   Shadow egress policy: allow or deny
+      --keep-shadow            Keep the isolated shadow namespace for inspection
+      --shadow-egress string   Shadow egress policy (only deny is supported)
       --delivery string        Verified shadow delivery: patch, cluster, or pr
       --pr-base string         Base branch for --delivery=pr
       --pr-title string        Pull request title for --delivery=pr
@@ -3137,25 +3345,22 @@ func defaultPRBranch(finding analyzer.Finding, verified bool) string {
 	return strings.Replace(branch, "fixora/verified-", "fixora/review-", 1)
 }
 
-func prBody(result shadow.Result, sourcePatch repo.SourcePatch, finding analyzer.Finding, verified bool) string {
+func prBody(result shadow.Result, sourcePatch repo.SourcePatch, finding analyzer.Finding, plan fix.Plan, verified bool) string {
 	var b strings.Builder
-	if verified {
-		b.WriteString("Fixora verified this remediation in a shadow clone before delivery.\n\n")
-		fmt.Fprintf(&b, "- Resource: `%s`\n", result.Resource)
-		fmt.Fprintf(&b, "- Namespace: `%s`\n", result.Namespace)
-		fmt.Fprintf(&b, "- Parity: `%d%%`\n", result.Parity)
-	} else {
-		b.WriteString("Fixora prepared this source patch for review. Shadow verification was not run.\n\n")
-		fmt.Fprintf(&b, "- Resource: `%s/%s`\n", finding.ResourceKind, finding.ResourceName)
-		fmt.Fprintf(&b, "- Namespace: `%s`\n", finding.Namespace)
+	b.WriteString("## Fixora evidence\n\n")
+	card := evidenceCard(finding, plan, result, verified)
+	lines := strings.Split(card, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "- %s\n", line)
 	}
 	fmt.Fprintf(&b, "- Source patch: `%s`\n", sourcePatch.Path)
-	for _, attempt := range result.Attempts {
-		fmt.Fprintf(&b, "- Attempt %d: phase `%s`, ready `%t`, restarts `%d`", attempt.Number, attempt.Phase, attempt.Ready, attempt.Restarts)
-		if attempt.ExitReason != "" {
-			fmt.Fprintf(&b, ", reason `%s`", attempt.ExitReason)
-		}
-		b.WriteString("\n")
+	if verified {
+		b.WriteString("\nFixora verified this remediation in an isolated shadow before delivery.\n")
+	} else {
+		b.WriteString("\nFixora prepared this source patch for review. Shadow verification was not run.\n")
 	}
 	return b.String()
 }

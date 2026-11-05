@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings-old
+data:
+  HOST: old.example.invalid
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings-new
+data:
+  HOST: new.example.invalid

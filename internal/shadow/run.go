@@ -9,7 +9,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) {
@@ -22,6 +28,24 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 	if req.Resource == "" {
 		req.Resource = req.Finding.ResourceKind + "/" + req.Finding.ResourceName
 	}
+	if err := requirePolicyForFields(req); err != nil {
+		return Result{}, err
+	}
+	if repairpolicy.Dedicated(req.Plan.Strategy) {
+		if req.Plan.PolicyProof == nil || req.Plan.PolicyProof.Family() != req.Plan.Strategy {
+			return Result{}, fmt.Errorf("matching policy proof is required before shadow execution")
+		}
+		if req.Plan.Strategy == "restore-command" {
+			if err := ValidateCandidatePatch(req.Patch, req.Plan.Strategy, req.Resource, req.Namespace); err != nil {
+				return Result{}, err
+			}
+		}
+		if err := repairpolicy.Revalidate(ctx, c, req.Plan.PolicyProof, req.Patch); err != nil {
+			return Result{}, err
+		}
+		req.Retries = 0
+		req.AI = nil
+	}
 	if req.Timeout <= 0 {
 		req.Timeout = 10 * time.Minute
 	}
@@ -29,38 +53,197 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		req.Retries = 0
 	}
 	if req.Egress == "" {
-		req.Egress = "allow"
+		req.Egress = "deny"
+	}
+	if !strings.EqualFold(req.Egress, "deny") {
+		return Result{}, fmt.Errorf("shadow verification only supports deny egress; dependency access is not enabled")
 	}
 	result := Result{
 		Resource:      req.Resource,
 		Namespace:     req.Namespace,
 		Delivery:      string(req.Delivery),
 		VerifiedPatch: req.Patch,
+		Status:        VerificationBlocked,
+	}
+	if strings.TrimSpace(req.ProbeImage) == "" {
+		req.ProbeImage = os.Getenv("FIXORA_SHADOW_PROBE_IMAGE")
+	}
+	if err := validateProbeImage(req.ProbeImage); err != nil {
+		result.Isolation = &IsolationReport{Status: string(VerificationBlocked), Summary: err.Error()}
+		result.Warnings = appendUnique(result.Warnings, err.Error())
+		return result, nil
 	}
 	var lastPlan clonePlan
 	for attempt := 1; attempt <= req.Retries+1; attempt++ {
 		session := uuid.NewString()
-		plan, err := buildClonePlan(ctx, c, req, session)
+		shadowNSName := shadowNamespaceName(session)
+		shadowNS, err := c.CreateNamespace(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:        shadowNSName,
+			Labels:      map[string]string{labelSandbox: "true", labelSession: session},
+			Annotations: map[string]string{"fixora.io/source-namespace": req.Namespace},
+		}})
 		if err != nil {
+			result.IsolationNamespace = shadowNSName
+			recovered, getErr := c.GetNamespace(ctx, shadowNSName)
+			if getErr == nil && recovered.Name == shadowNSName && recovered.Labels[labelSandbox] == "true" && recovered.Labels[labelSession] == session {
+				if recovered.UID == "" {
+					cleanupWarning(&result, fmt.Sprintf("cleanup failed to confirm ownership for namespace/%s: API returned no UID after ambiguous create", shadowNSName))
+					return result, fmt.Errorf("create isolated shadow namespace response was ambiguous; cannot safely clean up without a UID")
+				}
+				cleanup(ctx, c, clonePlan{Namespace: recovered}, &result)
+				if len(result.cleanupFailures()) > 0 {
+					return result, fmt.Errorf("create isolated shadow namespace failed and cleanup failed: %s", result.cleanupFailures()[0])
+				}
+			} else if getErr != nil && !apierrors.IsNotFound(getErr) {
+				cleanupWarning(&result, fmt.Sprintf("cleanup failed to inspect namespace/%s after ambiguous create: %v", shadowNSName, getErr))
+			}
+			return result, fmt.Errorf("create isolated shadow namespace: %w", err)
+		}
+		result.IsolationNamespace = shadowNS.Name
+		plan, err := buildClonePlan(ctx, c, req, session, shadowNS.Name)
+		if err != nil {
+			cleanup(ctx, c, clonePlan{Namespace: shadowNS}, &result)
 			return result, err
 		}
+		plan.Namespace = shadowNS
 		lastPlan = plan
+		result.Evidence = collectFailureEvidence(ctx, c, req.Namespace, plan.Original, nil)
+		accountHasPullSecrets, accountErr := inspectSourceServiceAccount(ctx, c, req.Namespace, plan.Original)
+		if accountErr != nil {
+			result.Status = VerificationBlocked
+			result.Isolation = &IsolationReport{Status: string(VerificationBlocked), Summary: "source service-account image-pull dependencies could not be inspected"}
+			result.Warnings = appendUnique(result.Warnings, accountErr.Error())
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
+		}
+		limitations := sandboxDependencyLimitations(plan.Clone)
+		if accountHasPullSecrets {
+			limitations = appendUnique(limitations, "source ServiceAccount image-pull secret references are not copied into the isolated namespace")
+		}
+		if len(limitations) > 0 {
+			result.Status = VerificationInconclusive
+			result.Isolation = &IsolationReport{Status: string(VerificationInconclusive), Summary: strings.Join(limitations, "; ")}
+			result.Warnings = appendUnique(result.Warnings, limitations...)
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				result.Status = VerificationBlocked
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
+		}
+		if req.Plan.PolicyProof != nil {
+			if err := repairpolicy.Revalidate(ctx, c, req.Plan.PolicyProof, req.Patch); err != nil {
+				cleanup(ctx, c, plan, &result)
+				return result, err
+			}
+		}
+		if req.Plan.Strategy == "security-strengthen" {
+			if _, err := c.Clientset.CoreV1().Pods(plan.Clone.Namespace).Create(ctx, plan.Clone, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}); err != nil {
+				cleanup(ctx, c, plan, &result)
+				return result, fmt.Errorf("security shadow admission dry-run: %w", err)
+			}
+		}
 		result.Warnings = appendUnique(result.Warnings, plan.Warnings...)
 		result.CloneName = plan.Clone.Name
 		result.NetworkPolicyName = plan.Policy.Name
-		if _, err := c.CreateNetworkPolicy(ctx, plan.Policy); err != nil {
-			return result, fmt.Errorf("create shadow NetworkPolicy: %w", err)
+		isolation, isolationErr := proveNetworkPolicy(ctx, c, plan.Namespace, plan.Policy, session, req.ProbeImage)
+		result.Isolation = &isolation
+		if isolationErr != nil {
+			result.Status = VerificationInconclusive
+			if failure, ok := isolationErr.(gateFailure); ok {
+				result.Status = failure.status
+			}
+			result.Isolation.Status = string(result.Status)
+			result.Isolation.Summary = isolationErr.Error()
+			result.Warnings = appendUnique(result.Warnings, isolationErr.Error())
+			// Keep is only meaningful after isolation has been proven. Preserve
+			// no namespace containing probes from a failed or inconclusive gate.
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				result.Status = VerificationBlocked
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
+		}
+		if err := ensureSandboxNetworkPolicy(ctx, c, plan.Policy); err != nil {
+			result.Status = VerificationBlocked
+			result.Isolation.Status = string(VerificationBlocked)
+			result.Isolation.Summary = err.Error()
+			result.Warnings = appendUnique(result.Warnings, err.Error())
+			// A policy identity change invalidates the proof, so never retain
+			// this namespace even when the operator requested --keep-shadow.
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
+		}
+		configMaps, configMapErr := prepareShadowConfigMaps(ctx, c, req.Namespace, plan.Clone.Namespace, plan.Clone)
+		if result.Evidence != nil {
+			result.Evidence.ConfigMaps = configMaps.Evidence
+		}
+		if configMapErr != nil || len(configMaps.Limitations) > 0 {
+			result.Status = VerificationInconclusive
+			summary := strings.Join(configMaps.Limitations, "; ")
+			if configMapErr != nil {
+				summary = "ConfigMap key dependencies could not be prepared in the isolated namespace"
+			}
+			if summary == "" {
+				summary = "ConfigMap key dependencies could not be verified"
+			}
+			result.Isolation = &IsolationReport{Status: string(VerificationInconclusive), Summary: summary}
+			result.Warnings = appendUnique(result.Warnings, summary)
+			cleanup(ctx, c, plan, &result)
+			if len(result.cleanupFailures()) > 0 {
+				result.Status = VerificationBlocked
+				return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
+			}
+			return result, nil
 		}
 		if _, err := c.CreatePod(ctx, plan.Clone); err != nil {
-			cleanup(ctx, c, clonePlan{Policy: plan.Policy}, &result)
+			cleanup(ctx, c, plan, &result)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
-		verification := verifyClone(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource))
+		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
+		withholdCandidateDiagnostics(&verification, configMaps.Copied, &result)
+		gateOOMMemoryAssessment(req.Finding, &verification)
+		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
 		result.Verified = verification.Ready
+		result.Status = statusForAttempt(verification)
+		if result.Verified && req.Plan.PolicyProof != nil {
+			pod, err := c.GetPod(ctx, plan.Clone.Namespace, plan.Clone.Name)
+			if err == nil {
+				if req.Plan.Strategy == "restore-command" {
+					result.PolicyReceipt, err = repairpolicy.VerifyStartup(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else if req.Plan.Strategy == "restore-placement" {
+					result.PolicyReceipt, err = repairpolicy.VerifyPlacement(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else if req.Plan.Strategy == "security-strengthen" {
+					result.PolicyReceipt, err = repairpolicy.VerifySecurity(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				} else {
+					result.PolicyReceipt, err = repairpolicy.VerifyCommon(ctx, c, req.Plan.PolicyProof, &pod, req.Patch)
+				}
+			}
+			if err != nil {
+				result.Verified = false
+				result.Status = VerificationFailed
+				result.Warnings = appendUnique(result.Warnings, "policy verification failed: "+err.Error())
+				break
+			}
+			summary := result.PolicyReceipt.Summary()
+			result.PolicySummary = &summary
+		}
 		if result.Verified {
 			result.Caveats = appendUnique(result.Caveats, partialPassCaveats(plan.Original, plan.NamespaceMetadata)...)
+			break
+		}
+		if result.Status == VerificationInconclusive {
+			// An incomplete observation does not prove that the candidate is bad
+			// and cannot justify an automatic revision/retry.
 			break
 		}
 		if attempt <= req.Retries {
@@ -76,9 +259,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 				result.Warnings = appendUnique(result.Warnings, "shadow retry requested but no deterministic safe revision was available")
 				break
 			}
-			if !req.Keep {
-				cleanup(ctx, c, plan, &result)
-			}
+			cleanup(ctx, c, plan, &result)
 		}
 	}
 	if !req.Keep && lastPlan.Clone != nil {
@@ -90,9 +271,61 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		result.FailureSummary = diagnosis.Summary
 	}
 	if !req.Keep && len(result.cleanupFailures()) > 0 {
+		result.Verified = false
+		result.Status = VerificationBlocked
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
 	return result, nil
+}
+
+func withholdCandidateDiagnostics(attempt *Attempt, configMapsCopied bool, result *Result) {
+	if attempt == nil || !configMapsCopied {
+		return
+	}
+	attempt.Logs = nil
+	attempt.Events = nil
+	if attempt.Evidence != nil {
+		attempt.Evidence.ProbeFailureEvents = nil
+	}
+	if result != nil {
+		result.Warnings = appendUnique(result.Warnings, "candidate diagnostics were withheld because referenced ConfigMap values are present in the isolated environment")
+	}
+}
+
+// gateOOMMemoryAssessment applies the OOM-specific memory evidence gate after
+// the ordinary readiness soak. Other finding types retain their existing verdict.
+func gateOOMMemoryAssessment(finding analyzer.Finding, attempt *Attempt) *MemoryAssessment {
+	if attempt == nil || !strings.Contains(strings.ToLower(finding.Status), "oomkilled") {
+		return nil
+	}
+	failingContainer := ""
+	count := 0
+	for _, evidence := range finding.Evidence {
+		if evidence.Label == "Failing container" {
+			count++
+			failingContainer = strings.TrimSpace(evidence.Value)
+		}
+	}
+	if count != 1 {
+		failingContainer = ""
+	}
+	assessment := assessOOMMemory(attempt.Evidence, failingContainer)
+	if attempt.Evidence != nil {
+		attempt.Evidence.MemoryAssessment = &assessment
+	}
+	switch assessment.Status {
+	case "passed":
+		return &assessment
+	case "failed":
+		attempt.Ready = false
+		attempt.Inconclusive = false
+		attempt.Message = "OOM memory evidence failed: " + assessment.Summary
+	case "inconclusive":
+		attempt.Ready = false
+		attempt.Inconclusive = true
+		attempt.Message = "OOM memory evidence inconclusive: " + assessment.Summary
+	}
+	return &assessment
 }
 
 func resourceAllowsCompletion(resource string) bool {
@@ -108,6 +341,42 @@ func resourceAllowsCompletion(resource string) bool {
 func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *Result) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	if plan.Namespace != nil {
+		ns, err := c.GetNamespace(cleanupCtx, plan.Namespace.Name)
+		if apierrors.IsNotFound(err) {
+			result.Cleanup = appendUnique(result.Cleanup, "deleted namespace/"+plan.Namespace.Name)
+			return
+		}
+		if err != nil {
+			cleanupWarning(result, fmt.Sprintf("cleanup failed for namespace/%s: %v", plan.Namespace.Name, err))
+			return
+		}
+		if !isShadowObject(ns.Labels) || ns.UID == "" || ns.UID != plan.Namespace.UID {
+			cleanupWarning(result, fmt.Sprintf("cleanup failed to confirm ownership for namespace/%s: label or UID did not match", plan.Namespace.Name))
+			return
+		}
+		if err := c.DeleteNamespaceUID(cleanupCtx, ns.Name, types.UID(ns.UID)); err != nil && !apierrors.IsNotFound(err) {
+			cleanupWarning(result, fmt.Sprintf("cleanup failed for namespace/%s: %v", ns.Name, err))
+			return
+		}
+		for {
+			_, err := c.GetNamespace(cleanupCtx, ns.Name)
+			if apierrors.IsNotFound(err) {
+				result.Cleanup = appendUnique(result.Cleanup, "deleted namespace/"+ns.Name)
+				return
+			}
+			if err != nil {
+				cleanupWarning(result, fmt.Sprintf("cleanup failed for namespace/%s while waiting: %v", ns.Name, err))
+				return
+			}
+			select {
+			case <-cleanupCtx.Done():
+				cleanupWarning(result, fmt.Sprintf("cleanup failed for namespace/%s: deletion did not complete", ns.Name))
+				return
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
 	if plan.Clone != nil {
 		if !isShadowObject(plan.Clone.Labels) {
 			result.Warnings = appendUnique(result.Warnings, fmt.Sprintf("cleanup skipped for pod/%s in namespace %s: missing fixora shadow labels", plan.Clone.Name, plan.Clone.Namespace))
@@ -132,10 +401,23 @@ func cleanup(ctx context.Context, c *kube.TypedClient, plan clonePlan, result *R
 	}
 }
 
+func cleanupWarning(result *Result, message string) {
+	result.Warnings = appendUnique(result.Warnings, message)
+	fmt.Fprintf(os.Stderr, "ERROR: %s\n", message)
+}
+
+func shadowNamespaceName(session string) string {
+	compact := strings.ReplaceAll(session, "-", "")
+	if len(compact) > 16 {
+		compact = compact[:16]
+	}
+	return "fixora-shadow-" + compact
+}
+
 func (r Result) cleanupFailures() []string {
 	var failures []string
 	for _, warning := range r.Warnings {
-		if strings.HasPrefix(warning, "cleanup failed") {
+		if strings.HasPrefix(warning, "cleanup failed") || strings.HasPrefix(warning, "cleanup skipped") {
 			failures = append(failures, warning)
 		}
 	}

@@ -368,17 +368,23 @@ func validateProbeHandlers(revised map[string]any) []string {
 					continue
 				}
 				// A readiness probe cannot restart a container, so its timing is
-				// harmless. A liveness or startup probe whose first check is
-				// scheduled past the shadow soak window can pass verification and
-				// then restart-loop production once the delay elapses — a kill
-				// shadow structurally never sees.
+				// harmless. Bound the conservative first-failure time for liveness
+				// and startup probes so verification cannot pass before the probe
+				// reaches its restart threshold.
 				if probeKey == "livenessProbe" || probeKey == "startupProbe" {
-					if raw := quantityString(probe["initialDelaySeconds"]); raw != "" {
-						if v, err := strconv.ParseFloat(raw, 64); err == nil && v > maxSoakSeconds {
-							reasons = append(reasons, fmt.Sprintf(
-								"%s.%s.%s.initialDelaySeconds %s exceeds the %ds shadow soak window; a first restart scheduled that late is not observable in verification",
-								section, name, probeKey, raw, maxSoakSeconds))
-						}
+					limit := stableWindow.Seconds()
+					windowName := "shadow stability window"
+					if probeKey == "startupProbe" {
+						limit = startupWindow.Seconds()
+						windowName = "shadow startup allowance"
+					}
+					firstFailureSeconds := probeTimingSeconds(probe, "initialDelaySeconds", 0) +
+						probeTimingSeconds(probe, "periodSeconds", 10)*probeTimingSeconds(probe, "failureThreshold", 3) +
+						probeTimingSeconds(probe, "timeoutSeconds", 1)
+					if float64(firstFailureSeconds) > limit {
+						reasons = append(reasons, fmt.Sprintf(
+							"%s.%s.%s can take about %ds to fail, exceeding the %ds %s; shadow verification may pass before the probe acts",
+							section, name, probeKey, firstFailureSeconds, int(limit), windowName))
 					}
 				}
 				for handler := range probe {
@@ -400,6 +406,18 @@ func validateProbeHandlers(revised map[string]any) []string {
 		}
 	}
 	return reasons
+}
+
+func probeTimingSeconds(probe map[string]any, key string, fallback int) int {
+	raw := quantityString(probe[key])
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func containerNames(value any) map[string]bool {

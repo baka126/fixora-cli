@@ -37,3 +37,11 @@ kubectl fixora scan -n prod -o json
 ## Exit behavior
 
 `0` means the command completed; it does not mean the cluster is healthy or a finding was verified. Flag/argument errors commonly exit `2`; operational errors commonly exit `1`. For automation, test the command and inspect structured fields such as findings, blocked reasons, verification status, and skipped checks. Do not infer remediation success from a zero exit alone.
+
+## Verification policy output (branch checkpoint)
+
+Policy summaries expose the family, result, changed fields and caveats. Raw operator baselines and runtime proof/receipt authority are omitted from JSON/YAML; loading a saved plan cannot authorize delivery.
+
+Coordinated reports distinguish shadow verification, actual apply, live verification and rollback availability/refusal. Text uses `not-applied`, `apply-unconfirmed`, `applied-unverified`, `live-verified` and `fields-restored`. Structured steps include `Verification` and `RollbackStatus`. `fields-restored` confirms the original changed configuration was read back; it does not claim the original failing workload is healthy. An aborted set exits `2`; an apply or live-verification failure exits `1`.
+
+An apply command error can leave the server outcome uncertain (for example, after a lost response). `apply-unconfirmed` is not counted as a confirmed mutation or silently rolled back; inspect the live target before recovery.

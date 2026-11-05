@@ -37,6 +37,10 @@ Review the target, diff, strategy, blocked reasons, and rollback hint. A low-con
 
 An enabled shadow check creates isolated resources, applies the patch to a clone, waits for selected health signals, and reports what it observed. A `--quick` path can skip that check. A skipped, failed, or inconclusive check must be treated differently from a verified result. See [delivery and verification]({{ '/guides/delivery/' | relative_url }}).
 
+After shadow verification, Fixora prints a compact evidence card with the target, finding, verdict, attempt count, and available readiness, memory, and parity measurements. Failed runs show this concise card by default; `--proof` includes detailed failure evidence. A verified PR description reuses the same summary, while review-only PRs explicitly state that shadow verification was not run.
+
+Fixora also keeps a small local history for the same cluster and workload. After a shadow run it records the outcome and available numeric readiness or memory measurements. Only a verified session can appear as “Seen before” in a later analysis; this history is context, never approval to reuse a patch or bypass current checks. The profile is stored under `~/.fixora/<cluster-hash>/profiles.json` with private file permissions. If the profile cannot be read or written, the current fix continues without history.
+
 ## Interactive or scripted
 
 Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, name the target and provide explicit values; inspect structured output and require your own approval before a write. Bare `kubectl fixora` opens the older dashboard in v0.8.0; the new no-argument chooser is **Upcoming** on [the development branch](https://github.com/baka126/fixora-cli/tree/codex/production-hardening).

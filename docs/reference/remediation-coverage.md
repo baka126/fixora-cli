@@ -8,7 +8,7 @@ section: reference
 
 # Remediation coverage
 
-**Upcoming — reviewed 2026-10-04 against checkpoint `fffb721`.** This is a capability inventory, not a promise to repair every cluster failure. There are **34 registered analyzer definitions, 24 precision checks, and 109 named source/status entries**. The earlier audit's count of 36 registrations was incorrect. Dynamic API reasons and status summaries are listed separately.
+**Upcoming — reviewed 2026-10-04 against checkpoint `fffb721`.** This is a capability inventory, not a promise to repair every cluster failure. There are **34 registered analyzer definitions, 24 precision checks, and 110 named source/status entries**. The earlier audit's count of 36 registrations was incorrect. Dynamic API reasons and status summaries are listed separately.
 
 Without AI, Fixora supplies the observed cause/context and deterministic advice; some checks identify configuration risks rather than a proven incident root cause. With AI, it can explain evidence and uncertainty and propose a workload-specific patch. A model narrative or confidence score alone cannot authorize a repair.
 
@@ -18,17 +18,21 @@ Controller proposal and delivery semantics have since been extended in the [cont
 
 ## Outcome profiles
 
-An AI proposal is possible for every failing profile when enough evidence is available. Automatic candidate selection depends on the **actual changed fields**, not the analyzer name or original status. Non-template proposals, mixed change families, arbitrary startup commands, scheduling/security-policy changes, and unsupported fields remain review-only or are rejected.
+An AI proposal is possible for every failing profile when enough evidence is available. Automatic candidate selection depends on the **actual changed fields**, not the analyzer name or original status. Non-template proposals, mixed change families, arbitrary startup commands, unsupported scheduling/security-policy changes and unsupported fields remain review-only or are rejected. Explicit approved policies are described below.
 
 | Profile | Without AI / prerequisites | AI validation | Shadow | Delivery |
 | --- | --- | --- | --- | --- |
+| security | Exact operator baseline + current revision/UID-linked enforced PSA denial; existing positive UID for non-root strengthening | Narrative alone supplies no authority | Exact admitted settings, unchanged UID/GID and runtime success | Conditional controller delivery; unsupported policy versions and privilege/storage sources remain review |
 | image | Verified ranked digest/platform evidence → image candidate | Image patch; architecture/repository check | Yes, if source is cloneable | Conditional cluster or raw/Kustomize source delivery |
 | resources | OOM usage/declared demand or proven request > allocatable → sized candidate | Resource-only patch | Yes, if source is cloneable | Conditional; capacity/usage assumptions still need review |
 | config | Unique existing ConfigMap/key for a broken reference → env candidate; missing Secret → operator action | Env references; AI checks referenced ConfigMap keys | ConfigMap path only; Secret-bearing sources blocked | Conditional ConfigMap patch; no invented values/Secrets |
 | probe | Unambiguous numeric readiness port mismatch → port candidate | Readiness/liveness/startup probe fields | Yes, if source is cloneable | Conditional; AI may propose path/timing repairs using evidence |
 | filesystem | Narrow proved transient-cache write → emptyDir/fsGroup candidate for Deployment/StatefulSet/DaemonSet/ReplicaSet templates | Cache-only filesystem policy; preserve security and storage | Yes, if source is cloneable | Conditional; AI can choose workload-specific mount/name; live evidence is Deployment-only |
+| service-routing | Explicit local `--service-policy`, same-namespace Ready Deployment/StatefulSet/DaemonSet backend and operator-approved digest-pinned verifier | Exact policy selector/targetPort only; mixed changes rejected | Dedicated temporary Service and IP-only TCP/HTTP verifier | UID/RV guarded ClusterIP routing delivery; production contract gate and explicit field-only rollback; Helm values remain manual review |
+| pvc-policy | Exact local `--pvc-policy`; unbound class assignment or Bound claim expansion within explicit max | AI is explanatory only; exact PVC/class/size policy is mutation authority | No shadow mounts production storage; server-side dry-run plus live binding/capacity and original consumer readiness observation | UID/RV guarded PVC field patch; expansion cannot be rolled back; source-managed and data/reclaim operations remain review-only |
 | connection | Approved connection ConfigMap + ready TCP Service + proved client consumption → env candidate (Deployment only) | Env patch; source/key/endpoint checks | Yes, if source is cloneable | Conditional; no dependency creation or credential invention |
-| startup | CrashLoop is a symptom; command repair requires explicit matching --startup-baseline (Deployment only); other proved causes can use another family | restore-command baseline; arbitrary AI commands stay review-only | Yes for approved baseline | Conditional baseline restore; guessed startup never automatic |
+| placement | Explicit matching baseline + current placement predicate failure, safe compatible nodes and capacity | Approved fields only; narrative grants no authority | Required with admitted placement checks | Conditional controllers; unsupported scheduling constraints remain review |
+| startup | CrashLoop is a symptom; command repair requires explicit matching --startup-baseline (matching workload envelope); other proved causes can use another family | restore-command baseline; arbitrary AI commands stay review-only | Yes for approved baseline | Conditional baseline restore; guessed startup never automatic |
 | review | Finding/context + recommended investigation; some planner templates remain placeholders | AI source suggestion possible; no supported automatic family established by this finding alone | No dedicated verifier for this finding | Review source proposal/manual prerequisites; no automatic delivery claim |
 | diagnosis | Observation, missing evidence, generic/API status or report envelope | AI can explain or suggest investigation; generic status is not a repair | No verifier from status alone | Collect evidence; no mutation from status alone |
 | healthy | Healthy/owned pods healthy → no repair; OK is a report envelope | Healthy targets bypass AI repair selection | Not needed | No repair |
@@ -36,6 +40,8 @@ An AI proposal is possible for every failing profile when enough evidence is ava
 Every conditional delivery path also requires matching resource/container identity, no unresolved placeholders, sufficient confidence, source ownership checks, a supported target and successful verification. Inferred and AI repairs require shadow verification; `--quick` does not waive this. A shadow Pod becoming Ready checks the tested process/probes, not application semantics, production load, an entire controller fleet, storage migration, or dependency authentication.
 
 Shadow cloning rejects sources using Secrets, persistent storage and other restricted settings. A validator accepting a field does not imply the live workload can be cloned. GitOps/Helm ownership blocks direct cluster delivery; automatic Helm values/PR translation is also blocked. Validated raw manifests and Kustomize paths have source delivery support. Rollout and rollback support must be assessed independently of patch validation.
+
+Service routing support is described in [Service repairs](../guides/service-repairs.md). This is conditional capability for NoEndpoints/ServicePortMismatch; readiness failures, unsupported Service variants and absent intent remain review work. Unit/fake coverage is separate from local live E2E execution.
 
 ## Registered analyzers
 
@@ -66,7 +72,7 @@ All entries below also have the registered status-summary fallback when enabled 
 | OLMOperatorGroup | OLM precision | Review/diagnosis; see named findings below |
 | OLMSubscription | OLM precision | Review/diagnosis; see named findings below |
 | PDB | Disruption availability | Review/diagnosis; see named findings below |
-| PVC | PVC events/class/volume precision | Review/diagnosis; see named findings below |
+| PVC | PVC events/class/volume/consumer/PV/StorageClass/topology evidence | Exact-policy class assignment or monotonic expansion for eligible claims; other findings remain review/diagnosis |
 | Pod | Container states/events/logs/probes | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ReplicaSet | ReplicaSet creation + owned pods | Common profiles from failing owned/container evidence; controller-only findings require review |
 | ResourceClaim | DeviceClass reference (opt-in/optional API) | Review/diagnosis; see named findings below |
@@ -87,7 +93,8 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | Source in internal/analyzer | Finding status | Outcome profile |
 | --- | --- | --- |
 | analyzer.go | `ConnectionRefused` | connection |
-| analyzer.go | `CrashLoopBackOff` | startup |
+| analyzer.go | `CrashLoopBackOff` | placement | Explicit matching baseline + current placement predicate failure, safe compatible nodes and capacity | Approved fields only; narrative grants no authority | Required with admitted placement checks | Conditional controllers; unsupported scheduling constraints remain review |
+| startup |
 | analyzer.go | `CreateContainerConfigError` | config |
 | analyzer.go | `CreateContainerError`, `PodFailed`, `RunContainerError` | review |
 | analyzer.go | `ErrImagePull`, `ImagePullBackOff` | image |
@@ -115,9 +122,11 @@ Each row maps explicit emitted status names to an outcome profile above. A trail
 | pdb.go | `DisruptionsBlocked` | review |
 | pod_security.go | `DefaultServiceAccount`, `HostNamespaceEnabled`, `PrivilegedContainer/`, `RunAsNonRootMissing/` | review |
 | pod_terminating.go | `PodStuckTerminating` | review |
-| pvc.go | `Lost`, `MissingStorageClass`, `Pending`, `ProvisioningFailed`, `SmallStorageRequest`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer`, `VolumeResizePending` | review |
+| pvc.go | `MissingStorageClass`, `Pending`, `SmallStorageRequest`, `VolumeResizePending` | pvc-policy only with exact local intent and eligible live identity/capability evidence; status alone never authorizes delivery |
+| pvc.go | `Lost`, `ProvisioningFailed`, `StorageClassNotFound`, `VolumeAttachFailed`, `VolumeAwaitingConsumer` | review |
 | rbac.go | `ClusterAdminBinding`, `WildcardRBAC` | review |
 | registry.go | `Unhealthy` | diagnosis |
+| analyzer.go | `FailedCreate` (current revision-linked PSA denial) | security |
 | replicaset.go | `FailedCreate` | review |
 | resourceclaim.go | `DeviceClassNotFound` | review |
 | secret.go | `MissingPullSecret`, `SecretInvalidBase64`, `SecretMissingKey` | review |
@@ -158,7 +167,7 @@ The 24 precision checks are: `service-endpoints`, `service-ports`, `ingress-back
 | Job | Pod template; batch-specific isolation restrictions apply | Completion condition | Restore source; no rollout undo |
 | CronJob | Job pod template; batch-specific isolation restrictions apply | Schedule/suspension/recent-run checks; next scheduled run is not awaited | Restore source; no rollout undo |
 | Standalone Pod | Pod spec | Unsupported rollout can be skipped/unknown; immutable fields can block apply | Restore known-good manifest |
-| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | No dedicated shadow for these findings | No complete specialized delivery gate | Reviewed source/manual action |
+| Service, Ingress, HPA, PDB, PVC, Node, policies, operators | Production PVCs are never mounted in a shadow | PVCs use exact UID/RV patch, server-side dry-run, and binding/capacity observation; no application semantics claim | Expansion has no automatic rollback; Lost/reclaim/rebind/data operations remain review-only |
 | Helm/GitOps source | Direct cluster delivery blocked | Render/review source; automatic Helm translation blocked | Revert source; Helm rollback advice may exist |
 
 These describe code paths, not equal live coverage across controllers. The existing eight-workload live baseline used Deployments. Expanding controller parity is point 2 and remains outstanding.
@@ -195,7 +204,7 @@ Validation on 2026-10-04: the full Go unit suite passed with a fresh run; the ne
 
 1. **Completed inventory/regression protection:** this reference, the reviewed machine inventory and provider-independent scenarios. No repair-policy expansion.
 2. **Controller parity:** exercise common repairs, immutable fields, batch completion, owning-template resolution and rollback across supported targets.
-3. **New verification policies:** independently add trusted startup, scheduling, security and coordinated repairs with causal proof.
+3. **Verification policies checkpoint:** proof-bound startup, approved placement, security strengthening and independently verified coordinated controller repairs; see [policy requirements and limits](controller-repairs.md).
 4. **Helm source delivery:** map changes to chart values/templates, render and compare, then validate.
 5. **Cross-resource/stateful coverage:** dependency wiring, scaling/disruption, storage, networking, nodes/admission/operators; retain review gates until dedicated verification exists.
 

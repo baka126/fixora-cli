@@ -15,6 +15,9 @@ func WithTargetPolicy(p Plan) Plan {
 		if strings.EqualFold(kind, "Pod") && p.Strategy != "image" && p.Strategy != "fix-architecture" {
 			reason = "Existing Pod template changes require source review and explicit recreation; Fixora will not recreate the Pod."
 		}
+		if strings.EqualFold(kind, "DaemonSet") && p.Strategy == "restore-placement" {
+			reason = "DaemonSet placement changes require fleet verification and source review."
+		}
 		if strings.EqualFold(kind, "DaemonSet") && p.Strategy == "resources" {
 			reason = "DaemonSet resource changes require fleet-wide capacity review; a single node or shadow Pod cannot establish fleet safety."
 		}
