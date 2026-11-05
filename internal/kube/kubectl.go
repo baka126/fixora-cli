@@ -3,8 +3,10 @@ package kube
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -197,21 +199,39 @@ func (k Kubectl) Logs(ctx context.Context, namespace, pod string, previous bool)
 // --force-conflicts is needed because those fields are owned by the
 // kubectl-client-side-apply field manager; without it every apply to a
 // kubectl-managed workload fails with a conflict instead.
-func applyArgs(file string, dryRun bool) []string {
-	args := []string{"apply", "--server-side", "--force-conflicts"}
+func applyArgs(file string, dryRun bool) ([]string, error) {
+	proposal, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read repair proposal: %w", err)
+	}
+	// A distinct manager prevents kubectl's default ownership migration from
+	// claiming fields omitted by this partial manifest. Scope ownership to the
+	// proposal bytes so a later repair cannot delete fields from an earlier one.
+	// Repeated preflight/apply of the same bytes must use the same manager.
+	digest := sha256.Sum256(proposal)
+	manager := fmt.Sprintf("fixora-%x", digest[:8])
+	args := []string{"apply", "--server-side", "--force-conflicts", "--field-manager=" + manager}
 	if dryRun {
 		args = append(args, "--dry-run=server")
 	}
-	return append(args, "-f", file)
+	return append(args, "-f", file), nil
 }
 
 func (k Kubectl) Apply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, applyArgs(file, false)...)
+	args, err := applyArgs(file, false)
+	if err != nil {
+		return err
+	}
+	_, err = k.Run(ctx, args...)
 	return err
 }
 
 func (k Kubectl) DryRunApply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, applyArgs(file, true)...)
+	args, err := applyArgs(file, true)
+	if err != nil {
+		return err
+	}
+	_, err = k.Run(ctx, args...)
 	return err
 }
 

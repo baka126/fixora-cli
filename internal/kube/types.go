@@ -1,6 +1,9 @@
 package kube
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type Reader interface {
 	GetPods(ctx context.Context, namespace string, allNS bool) (PodList, error)
@@ -25,8 +28,11 @@ type ObjectMeta struct {
 }
 
 type OwnerReference struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	APIVersion string `json:"apiVersion"`
+	UID        string `json:"uid"`
+	Controller *bool  `json:"controller"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
 }
 
 type PodList struct {
@@ -42,15 +48,19 @@ type Pod struct {
 }
 
 type PodSpec struct {
-	NodeName       string            `json:"nodeName"`
-	NodeSelector   map[string]string `json:"nodeSelector"`
-	Containers     []Container       `json:"containers"`
-	InitContainers []Container       `json:"initContainers"`
-	Tolerations    []map[string]any  `json:"tolerations"`
-	ReadinessGates []ReadinessGate   `json:"readinessGates"`
+	SecurityContext map[string]any    `json:"securityContext"`
+	Volumes         []map[string]any  `json:"volumes"`
+	NodeName        string            `json:"nodeName"`
+	NodeSelector    map[string]string `json:"nodeSelector"`
+	Containers      []Container       `json:"containers"`
+	InitContainers  []Container       `json:"initContainers"`
+	Tolerations     []map[string]any  `json:"tolerations"`
+	ReadinessGates  []ReadinessGate   `json:"readinessGates"`
 }
 
 type Container struct {
+	Command         []string             `json:"command"`
+	Args            []string             `json:"args"`
 	Name            string               `json:"name"`
 	Image           string               `json:"image"`
 	ImagePullPolicy string               `json:"imagePullPolicy"`
@@ -95,6 +105,8 @@ type PodStatus struct {
 }
 
 type ContainerStatus struct {
+	Image        string                 `json:"image"`
+	ImageID      string                 `json:"imageID"`
 	Name         string                 `json:"name"`
 	Ready        bool                   `json:"ready"`
 	RestartCount int                    `json:"restartCount"`
@@ -103,10 +115,22 @@ type ContainerStatus struct {
 }
 
 type StatusState struct {
+	StartedAt  string `json:"startedAt"`
 	Reason     string `json:"reason"`
 	Message    string `json:"message"`
 	ExitCode   int    `json:"exitCode"`
 	FinishedAt string `json:"finishedAt"`
+}
+
+// IsOOMKilled recognizes Kubernetes' direct OOM reason and the containerd
+// startup error emitted when the runtime cannot launch a process under its
+// memory limit. The latter is reported as StartError rather than OOMKilled.
+func (s StatusState) IsOOMKilled() bool {
+	if strings.EqualFold(strings.TrimSpace(s.Reason), "OOMKilled") {
+		return true
+	}
+	message := strings.ToLower(s.Message)
+	return strings.Contains(message, "failed to create containerd task:") && strings.Contains(message, "container init was oom-killed")
 }
 
 type Condition struct {

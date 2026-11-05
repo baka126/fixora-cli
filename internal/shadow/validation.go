@@ -12,9 +12,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/fixora/kubectl-fixora/internal/image"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
+	if strings.EqualFold(strings.TrimSpace(planType), "restore-command") {
+		return PatchValidationError{Reasons: []string{"AI revisions cannot alter an operator startup baseline"}}
+	}
 	planType = strings.ToLower(strings.TrimSpace(planType))
 	if !allowedRevisionStrategy(planType) {
 		return PatchValidationError{Reasons: []string{fmt.Sprintf("unknown or unsafe strategy %q", planType)}}
@@ -27,7 +31,7 @@ func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
 	if err != nil {
 		return PatchValidationError{Reasons: []string{err.Error()}}
 	}
-	reasons := validatePatchObject(revised)
+	reasons := validatePatchObject(revised, planType)
 	reasons = append(reasons, validateProjectedDiff(original, revised, planType)...)
 	if len(reasons) > 0 {
 		return PatchValidationError{Reasons: reasons}
@@ -55,7 +59,7 @@ func ValidateReviewedPatch(originalPatch, reviewedPatch, planType string) error 
 	reasons := validateReviewIdentity(original, reviewed)
 	original = withoutIdentity(original)
 	reviewed = withoutIdentity(reviewed)
-	reasons = append(reasons, validatePatchObject(reviewed)...)
+	reasons = append(reasons, validatePatchObject(reviewed, planType)...)
 	reasons = append(reasons, validateProjectedDiff(original, reviewed, planType)...)
 	if len(reasons) > 0 {
 		sort.Strings(reasons)
@@ -139,18 +143,36 @@ func parseSinglePatch(patch string) (map[string]any, error) {
 
 func allowedRevisionStrategy(strategy string) bool {
 	switch strategy {
-	case "image", "fix-architecture", "resources", "env", "probe":
+	case "image", "fix-architecture", "resources", "env", "probe", "filesystem", "restore-command":
 		return true
 	default:
 		return false
 	}
 }
 
-func validatePatchObject(obj map[string]any) []string {
+func validatePatchObject(obj map[string]any, strategy ...string) []string {
 	var reasons []string
-	meta, _ := nestedMap(obj, "metadata")
-	for _, key := range []string{"name", "namespace", "labels", "annotations", "ownerReferences"} {
-		if _, ok := meta[key]; ok {
+	kind, _ := obj["kind"].(string)
+	if kind == "" {
+		spec, _ := obj["spec"].(map[string]any)
+		kind = "Pod"
+		if spec["template"] != nil {
+			kind = "Deployment"
+		}
+		if spec["jobTemplate"] != nil {
+			kind = "CronJob"
+		}
+	}
+	if err := kube.ValidateWorkloadPatchEnvelope(obj, kind); err != nil {
+		reasons = append(reasons, err.Error())
+	}
+	for key := range obj {
+		if key != "spec" && key != "metadata" && key != "kind" && key != "apiVersion" {
+			reasons = append(reasons, "top-level "+key+" changes are not allowed")
+		}
+	}
+	if metadata, ok := obj["metadata"].(map[string]any); ok {
+		for key := range metadata {
 			reasons = append(reasons, "metadata."+key+" changes are not allowed")
 		}
 	}
@@ -198,7 +220,7 @@ func validatePatchObject(obj map[string]any) []string {
 				reasons = append(reasons, "secret volumes are not allowed")
 			} else if _, ok := v["downwardAPI"]; ok {
 				reasons = append(reasons, "downwardAPI volumes are not allowed")
-			} else {
+			} else if len(strategy) == 0 || strategy[0] != "filesystem" {
 				reasons = append(reasons, "volume changes are not allowed")
 			}
 		}
@@ -242,6 +264,15 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		reasons = append(reasons, validateResourceCeiling(revSpec, activePatchPolicy())...)
 	case "env":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "env": true, "envFrom": true}, strategy)...)
+	case "restore-command":
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "command": true, "args": true}, strategy)...)
+		reasons = append(reasons, validateStartupSpec(revSpec)...)
+		if !reflect.DeepEqual(origSpec, revSpec) {
+			reasons = append(reasons, "startup patch must exactly match the operator baseline")
+		}
+	case "filesystem":
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "volumeMounts": true}, strategy)...)
+		reasons = append(reasons, validateFilesystemSpec(revSpec)...)
 	case "probe":
 		// Probe fields cannot change identity, escalate privilege, read
 		// secrets, alter scheduling, or override the container command. Their
@@ -255,7 +286,7 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		}, strategy)...)
 		reasons = append(reasons, validateProbeHandlers(revSpec)...)
 	}
-	if reflect.DeepEqual(origSpec, revSpec) {
+	if strategy != "restore-command" && reflect.DeepEqual(origSpec, revSpec) {
 		reasons = append(reasons, "revised patch does not change the original patch")
 	}
 	sort.Strings(reasons)
@@ -264,6 +295,10 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 
 func allowedSpecKeys(strategy string) map[string]bool {
 	switch strategy {
+	case "restore-command":
+		return map[string]bool{"containers": true}
+	case "filesystem":
+		return map[string]bool{"containers": true, "volumes": true, "securityContext": true}
 	case "image", "fix-architecture", "resources", "env", "probe":
 		return map[string]bool{"containers": true, "initContainers": true}
 	default:
@@ -381,23 +416,7 @@ func containerNames(value any) map[string]bool {
 }
 
 func patchPodSpec(obj map[string]any) (map[string]any, bool) {
-	if spec, ok := nestedMap(obj, "spec"); ok {
-		if template, ok := nestedMap(spec, "template"); ok {
-			if tplSpec, ok := nestedMap(template, "spec"); ok {
-				return tplSpec, true
-			}
-		}
-		if _, ok := spec["containers"]; ok {
-			return spec, true
-		}
-		if _, ok := spec["initContainers"]; ok {
-			return spec, true
-		}
-	}
-	if _, ok := obj["containers"]; ok {
-		return obj, true
-	}
-	return nil, false
+	return kube.WorkloadPodSpec(obj)
 }
 
 func sliceMaps(value any) []map[string]any {

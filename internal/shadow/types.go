@@ -39,6 +39,8 @@ type Request struct {
 }
 
 type Result struct {
+	LiveVerification  string    `json:"liveVerification,omitempty"`
+	LiveSummary       string    `json:"liveSummary,omitempty"`
 	Verified          bool      `json:"verified"`
 	Parity            int       `json:"parity"`
 	Resource          string    `json:"resource"`

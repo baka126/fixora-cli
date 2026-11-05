@@ -31,9 +31,13 @@ func New() Store {
 	return Store{Dir: dir}
 }
 
-func Key(f analyzer.Finding) string {
-	payload := f.ID + "|" + f.Summary + "|" + f.Status + "|" + f.Category
-	sum := sha256.Sum256([]byte(payload))
+func Key(f analyzer.Finding, requestContext ...string) string {
+	f.AI = nil
+	payload, _ := json.Marshal(struct {
+		Finding analyzer.Finding
+		Context []string
+	}{f, requestContext})
+	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
 

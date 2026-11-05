@@ -50,9 +50,11 @@ Examples:
   kubectl fixora fix deployment/api -n prod --container api --image ghcr.io/acme/api:v1.2.3
   kubectl fixora fix deployment/api -n prod --repo ./charts/api --delivery pr --yes
 
-Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, -o json
-Fix enables AI when configured; --no-ai disables it. --quick skips shadow
-verification. Use --yes for scripted delivery.
+Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, --startup-baseline, -o json
+Startup baselines must match the Deployment and image; restoration always runs shadow verification.
+Fix enables AI when configured; --no-ai disables it. AI candidates and startup/cache
+repairs require shadow verification, including with --quick. Other quick repairs
+skip shadow verification. Use --yes for scripted delivery.
 `
 	case "coordinate", "fix-set":
 		help = `Usage: kubectl fixora coordinate <kind/name>... [-n namespace] [flags]

@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -205,5 +206,40 @@ func TestMissingDeviceClassGetsReviewPlan(t *testing.T) {
 	plan := BuildPlan(analyzer.Finding{Namespace: "prod", ResourceKind: "ResourceClaim", ResourceName: "gpu", Status: "DeviceClassNotFound", Evidence: []analyzer.Evidence{{Label: "DeviceClass", Value: "nvidia.com"}}})
 	if plan.Strategy != "deviceclass" || plan.CanApply || plan.ApplyEligible || !strings.Contains(strings.Join(plan.Verification, "\n"), "deviceclasses.resource.k8s.io nvidia.com") {
 		t.Fatalf("unexpected plan: %#v", plan)
+	}
+}
+
+func TestValidatedAIPatchRetainsModelUncertainty(t *testing.T) {
+	p := BuildPlan(analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "demo", Status: "OOMKilled"})
+	got := WithValidatedAIPatch(p, "spec: {}", 61)
+	if got.Confidence != 61 || got.ApplyEligible {
+		t.Fatalf("schema validation must not manufacture confidence: %+v", got)
+	}
+}
+
+func TestPlanJSONPreservesEvidenceDiagnosisAndAIExplanation(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "demo", Status: "CrashLoopBackOff", Summary: "Container exited during initialization", Evidence: []analyzer.Evidence{{Label: "Exit code", Value: "1"}}}
+	for _, useAI := range []bool{false, true} {
+		if useAI {
+			f.AI = &analyzer.AIResult{RootCause: "Initialization cannot read the configured file.", RecommendedFix: "Restore the intended configuration mount."}
+		}
+		data, err := json.Marshal(BuildPlan(f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		diagnosis, ok := doc["diagnosis"].(map[string]any)
+		if !ok || diagnosis["summary"] != "Container exited during initialization" {
+			t.Fatalf("structured diagnosis lost: %s", data)
+		}
+		if useAI {
+			ai, _ := diagnosis["ai"].(map[string]any)
+			if ai["rootCause"] != "Initialization cannot read the configured file." {
+				t.Fatalf("AI explanation lost: %s", data)
+			}
+		}
 	}
 }
