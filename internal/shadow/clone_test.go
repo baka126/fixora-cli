@@ -184,3 +184,20 @@ func TestSandboxNetworkPolicyBlocksIngressAndAllowsEgressByDefault(t *testing.T)
 		t.Fatalf("policy selector = %#v", policy.Spec.PodSelector.MatchLabels)
 	}
 }
+
+func TestBuildClonePlanRejectsNewContainerFromPatch(t *testing.T) {
+	client := &kube.TypedClient{Clientset: fake.NewSimpleClientset(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Image: "ghcr.io/acme/api:v1"}}}}},
+	})}
+	req := Request{Namespace: "prod", Resource: "Deployment/api", Patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: helper
+        image: ghcr.io/acme/helper:v1
+`}
+	if _, err := buildClonePlan(context.Background(), client, req, "12345678-1234-1234-1234-123456789abc"); err == nil {
+		t.Fatal("patch-added container accepted")
+	}
+}

@@ -22,10 +22,25 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 		serviceByKey[objectKey(service)] = service
 	}
 	out := []Finding{}
+	classListLoaded, classListReadable, hasDefaultClass := false, false, false
 	for _, ingress := range ingresses {
 		namespace, name := objectNamespaceName(ingress)
 		spec := nestedMap(ingress, "spec")
-		if strValue(spec["ingressClassName"]) == "" {
+		annotations := nestedMap(nestedMap(ingress, "metadata"), "annotations")
+		if strValue(spec["ingressClassName"]) == "" && strValue(annotations["kubernetes.io/ingress.class"]) == "" {
+			if !classListLoaded {
+				classListLoaded = true
+				classes, err := ctx.Reader.GetResourceItems(ctx.Context, "", false, "ingressclasses")
+				classListReadable = err == nil
+				for _, class := range classes {
+					classAnnotations := nestedMap(nestedMap(class, "metadata"), "annotations")
+					if strValue(classAnnotations["ingressclass.kubernetes.io/is-default-class"]) == "true" {
+						hasDefaultClass = true
+					}
+				}
+			}
+		}
+		if strValue(spec["ingressClassName"]) == "" && strValue(annotations["kubernetes.io/ingress.class"]) == "" && classListReadable && !hasDefaultClass {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Ingress/"+name+"/MissingClass"),
 				Namespace:    namespace,
@@ -41,7 +56,7 @@ func (a Analyzer) analyzeIngressBackends(ctx *ScanContext) ([]Finding, error) {
 					Title:         "Pin the intended ingress controller",
 					Description:   "Set spec.ingressClassName in the GitOps source so routing ownership is explicit across clusters.",
 					PatchType:     "ingress",
-					SafeByDefault: true,
+					SafeByDefault: false,
 				}},
 			})
 		}

@@ -66,6 +66,12 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	if err := applyPatchToPod(clone, req.Patch); err != nil {
 		return clonePlan{}, err
 	}
+	if err := validateShadowSource(clone); err != nil {
+		return clonePlan{}, err
+	}
+	if err := validateCloneContainerIdentity(unpatchedClone, clone); err != nil {
+		return clonePlan{}, err
+	}
 	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
 	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceMetadata: nsMetadata}, nil
 }
@@ -622,4 +628,28 @@ func nestedMap(obj map[string]any, key string) (map[string]any, bool) {
 	}
 	m, ok := value.(map[string]any)
 	return m, ok
+}
+
+func validateCloneContainerIdentity(before, after *corev1.Pod) error {
+	for _, section := range []struct {
+		name              string
+		original, current []corev1.Container
+	}{
+		{"containers", before.Spec.Containers, after.Spec.Containers},
+		{"initContainers", before.Spec.InitContainers, after.Spec.InitContainers},
+	} {
+		if len(section.original) != len(section.current) {
+			return fmt.Errorf("shadow patch must not add or remove %s", section.name)
+		}
+		names := make(map[string]bool, len(section.original))
+		for _, container := range section.original {
+			names[container.Name] = true
+		}
+		for _, container := range section.current {
+			if !names[container.Name] {
+				return fmt.Errorf("shadow patch must not add %s entry %q", section.name, container.Name)
+			}
+		}
+	}
+	return nil
 }

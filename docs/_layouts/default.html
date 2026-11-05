@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102438">
+  <title>{% if page.title %}{{ page.title | escape }} · {% endif %}{{ site.title | escape }}</title>
+  <meta name="description" content="{{ page.description | default: site.description | escape }}">
+  <link rel="canonical" href="{{ page.url | absolute_url }}">
+  <meta property="og:title" content="{{ page.title | default: site.title | escape }}">
+  <meta property="og:description" content="{{ page.description | default: site.description | escape }}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ page.url | absolute_url }}">
+  <link rel="stylesheet" href="{{ '/assets/css/site.css' | relative_url }}">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header"><div class="header-inner">
+    <a class="brand" href="{{ '/' | relative_url }}" aria-label="Fixora CLI home"><span class="brand-mark" aria-hidden="true">F</span><span>fixora<span class="brand-soft">/cli</span></span></a>
+    <nav class="desktop-nav" aria-label="Primary">
+      <a href="{{ '/' | relative_url }}" {% if page.section == 'overview' %}aria-current="page"{% endif %}>Overview</a>
+      <a href="{{ '/get-started/' | relative_url }}" {% if page.section == 'get-started' %}aria-current="page"{% endif %}>Get started</a>
+      <a href="{{ '/use-cases/' | relative_url }}" {% if page.section == 'use-cases' %}aria-current="page"{% endif %}>Use cases</a>
+      <a href="{{ '/guides/' | relative_url }}" {% if page.section == 'guides' %}aria-current="page"{% endif %}>Guides</a>
+      <a href="{{ '/reference/' | relative_url }}" {% if page.section == 'reference' %}aria-current="page"{% endif %}>Reference</a>
+      <a href="{{ '/safety/' | relative_url }}" {% if page.section == 'safety' %}aria-current="page"{% endif %}>Safety</a>
+    </nav>
+    <a class="github-link" href="https://github.com/baka126/fixora-cli" aria-label="View Fixora on GitHub">GitHub ↗</a>
+    <details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile primary"><a href="{{ '/' | relative_url }}">Overview</a><a href="{{ '/get-started/' | relative_url }}">Get started</a><a href="{{ '/use-cases/' | relative_url }}">Use cases</a><a href="{{ '/guides/' | relative_url }}">Guides</a><a href="{{ '/reference/' | relative_url }}">Reference</a><a href="{{ '/safety/' | relative_url }}">Safety</a></nav></details>
+  </div></header>
+
+  {% if page.section == 'overview' %}
+  <main id="main" class="home-main">{{ content }}</main>
+  {% else %}
+  <div class="docs-shell">
+    <aside class="sidebar" aria-label="Documentation navigation"><div class="sidebar-inner">
+      <label for="site-search" class="search-label">Find a page</label><input id="site-search" class="search-input" type="search" placeholder="Search documentation" autocomplete="off">
+      <nav aria-label="All documentation" id="page-list">
+      {% assign current_section = '' %}{% for item in site.data.navigation %}
+        {% if item.section != current_section %}<p class="sidebar-heading">{{ item.section | replace: '-', ' ' | capitalize }}</p>{% assign current_section = item.section %}{% endif %}
+        <a href="{{ item.path | relative_url }}" data-search="{{ item.title | downcase | escape }} {{ item.summary | downcase | escape }}" {% if page.url == item.path %}aria-current="page"{% endif %}>{{ item.title }}</a>
+      {% endfor %}
+      </nav>
+    </div></aside>
+    <main id="main" class="docs-main"><div class="doc-meta"><a href="{{ '/' | relative_url }}">Documentation</a><span aria-hidden="true">/</span><span>{{ page.section | replace: '-', ' ' | capitalize }}</span></div>
+      {% if page.status == 'upcoming' %}<div class="notice upcoming"><strong>Upcoming</strong> · This page describes changes on <a href="https://github.com/baka126/fixora-cli/tree/codex/production-hardening">codex/production-hardening</a>, not v0.8.0.</div>{% endif %}
+      <article class="prose">{{ content }}</article>
+      <div class="doc-end"><a href="{{ '/reference/' | relative_url }}">Browse reference →</a><a href="https://github.com/baka126/fixora-cli/issues/new">Suggest an edit ↗</a></div>
+    </main>
+  </div>
+  {% endif %}
+  <footer class="site-footer"><div><span>Fixora CLI · Documentation for v0.8.0 with labeled upcoming features</span><span><a href="{{ '/safety/' | relative_url }}">Safety</a> · <a href="https://github.com/baka126/fixora-cli">Source</a></span></div></footer>
+  <script defer src="{{ '/assets/js/search.js' | relative_url }}"></script>
+</body>
+</html>

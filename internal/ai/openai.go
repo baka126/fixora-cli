@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,7 +74,75 @@ func NewFromEnv() (Client, error) {
 	}, nil
 }
 
+type providerHTTPError struct{ StatusCode int }
+
+const maxAIResponseBytes = 1 << 20
+
+func readProviderResponse(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, providerHTTPError{StatusCode: resp.StatusCode}
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAIResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxAIResponseBytes {
+		return nil, fmt.Errorf("AI provider response exceeds 1 MiB")
+	}
+	return data, nil
+}
+
+func (e providerHTTPError) Error() string {
+	return fmt.Sprintf("AI provider returned HTTP %d", e.StatusCode)
+}
+
+// FailureSummary keeps provider response details and request URLs out of CLI output.
+func FailureSummary(err error) string {
+	var httpErr providerHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Error()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "request deadline exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "request cancelled"
+	}
+	return "provider request failed"
+}
+
+func (e providerHTTPError) retryable() bool {
+	switch e.StatusCode {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 func (c Client) Explain(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
+	var result *analyzer.AIResult
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		result, err = c.explainOnce(ctx, finding)
+		var httpErr providerHTTPError
+		if err == nil || !errors.As(err, &httpErr) || !httpErr.retryable() || attempt == 2 {
+			return result, err
+		}
+		timer := time.NewTimer(time.Duration(200<<attempt) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return result, err
+}
+
+func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*analyzer.AIResult, error) {
 	if c.HTTP == nil {
 		c.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
@@ -137,12 +206,9 @@ func (c Client) explainCohere(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded struct {
 		Message struct {
@@ -187,12 +253,9 @@ func (c Client) explainHuggingFace(ctx context.Context, payload string) (*analyz
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded []struct {
 		GeneratedText string `json:"generated_text"`
@@ -255,15 +318,16 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
+	data, err := readProviderResponse(resp)
+	if err != nil {
+		return nil, err
+	}
 	var decoded chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, err
 	}
 	if decoded.Error != nil {
 		return nil, fmt.Errorf("%s", decoded.Error.Message)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d", resp.StatusCode)
 	}
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("AI provider returned no choices")
@@ -306,12 +370,9 @@ func (c Client) explainAzureOpenAI(ctx context.Context, payload string) (*analyz
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded chatResponse
 	if err := json.Unmarshal(data, &decoded); err != nil {
@@ -357,12 +418,9 @@ func (c Client) explainGemini(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded struct {
 		Candidates []struct {
@@ -410,11 +468,15 @@ func (c Client) explainOllama(ctx context.Context, payload string) (*analyzer.AI
 		return nil, err
 	}
 	defer resp.Body.Close()
+	data, err := readProviderResponse(resp)
+	if err != nil {
+		return nil, err
+	}
 	var decoded struct {
 		Message chatMessage `json:"message"`
 		Error   string      `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, err
 	}
 	if decoded.Error != "" {
@@ -447,12 +509,9 @@ func (c Client) explainAnthropic(ctx context.Context, payload string) (*analyzer
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := readProviderResponse(resp)
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("AI provider returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 	var decoded struct {
 		Content []struct {

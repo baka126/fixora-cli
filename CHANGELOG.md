@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1]
+
 ### Added
 - `coordinate` command (alias `fix-set`): apply an ordered set of single-resource fixes as one transaction, with fail-closed preflight over the whole set and consent-gated reverse-order rollback of the applied prefix on the first failure. `coordinate --from <root kind/name>` derives the related set from the root workload's referenced ConfigMaps, Secrets, mounted PVCs, and selector-matched Services.
 - Post-apply health gate: after a `--delivery cluster` apply, Fixora verifies rollout or Job/CronJob completion health, reports events and cause hints on failure, and offers a deterministic `kubectl`/`helm` rollback (never automatic under `--yes`).
