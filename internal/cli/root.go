@@ -20,6 +20,7 @@ import (
 
 	"github.com/fixora/kubectl-fixora/internal/ai"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/asksession"
 	"github.com/fixora/kubectl-fixora/internal/bundle"
 	"github.com/fixora/kubectl-fixora/internal/cache"
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -125,6 +126,13 @@ type options struct {
 	quick                                                                   bool
 	safe                                                                    bool
 	gitops                                                                  bool
+	askContinue                                                             bool
+	askSelect                                                               string
+	askSession                                                              string
+	askConversation                                                         bool
+	askCoverage                                                             []string
+	askRelatedFindings                                                      []analyzer.Finding
+	interactive                                                             bool
 	visited                                                                 map[string]bool
 	promptInput                                                             *bufio.Reader
 }
@@ -216,6 +224,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 		reconcileDeliveryFlags(&opts, stderr)
 	}
 	opts.promptInput = bufio.NewReader(os.Stdin)
+	opts.interactive = isTerminal(os.Stdin) && isTerminal(os.Stdout)
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -249,6 +258,25 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	})
 
 	switch cmd {
+	case "ask":
+		if len(rest) > 0 && rest[0] == "sessions" {
+			clusterID, err := k.ClusterID(ctx)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: cannot identify the current Kubernetes cluster for Ask sessions: %v\n", err)
+				return 1
+			}
+			path, err := asksession.DefaultPath(clusterID)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: cannot create Ask session storage path: %v\n", err)
+				return 1
+			}
+			return runAskSessionsCommand(stdout, stderr, clusterID, asksession.Store{Path: path}, rest[1:])
+		}
+		if len(rest) == 0 {
+			fmt.Fprintln(stderr, "error: ask requires a natural-language request")
+			return 2
+		}
+		return runAskSessionCommand(ctx, stdout, stderr, opts, a, reader, k, strings.Join(rest, " "))
 	case "cleanup":
 		return runCleanupCommand(ctx, stdout, stderr, opts)
 	case "ai-doctor":
@@ -363,22 +391,7 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		opts = prepared
-		if opts.pdbPolicy != "" || finding.ResourceKind == "PodDisruptionBudget" {
-			return runPDBFix(analysisCtx, stdout, stderr, opts, finding)
-		}
-		if opts.hpaPolicy != "" || strings.EqualFold(finding.ResourceKind, "HorizontalPodAutoscaler") {
-			return runHPAFix(analysisCtx, stdout, stderr, opts, finding)
-		}
-		if opts.servicePolicy != "" {
-			return runServiceFix(ctx, stdout, stderr, opts, finding)
-		}
-		if opts.pvcPolicy != "" || isPVCResourceKind(finding.ResourceKind) {
-			return runPVCFix(ctx, stdout, stderr, opts, finding)
-		}
-		if hasHelmSourceContext(opts) {
-			return runHelmSourceDelivery(ctx, stdout, stderr, opts, reader, k, finding, plan)
-		}
-		return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, rest[0])
+		return runPreparedFix(ctx, stdout, stderr, opts, reader, k, finding, plan, rest[0])
 	case "coordinate":
 		if opts.from != "" {
 			if len(rest) > 0 {
@@ -663,6 +676,9 @@ func parseFlags(args []string) (options, []string, error) {
 	fs.BoolVar(&opts.quick, "quick", false, "use fast incident defaults")
 	fs.BoolVar(&opts.safe, "safe", false, "use production-safe defaults")
 	fs.BoolVar(&opts.gitops, "gitops", false, "prefer GitOps source patch delivery")
+	fs.BoolVar(&opts.askContinue, "continue", false, "continue natural-language ask to guarded fix preview")
+	fs.StringVar(&opts.askSelect, "select", "", "choose a 1-based natural-language ask candidate")
+	fs.StringVar(&opts.askSession, "session", "", "resume a saved Ask incident session")
 	fs.StringVar(&opts.repoPath, "repo", "", "local manifest/chart/kustomize repo path")
 	fs.StringVar(&opts.helmChart, "helm-chart", "", "local chart relative to --repo")
 	fs.StringVar(&opts.helmRelease, "helm-release", "", "exact Helm release")
@@ -837,7 +853,7 @@ func applyWorkflowDefaults(cmd string, opts *options) {
 	if opts.visited == nil {
 		opts.visited = map[string]bool{}
 	}
-	incidentCmd := cmd == "incidents" || cmd == "why" || cmd == "fix" || cmd == "watch"
+	incidentCmd := cmd == "incidents" || cmd == "why" || cmd == "fix" || cmd == "watch" || cmd == "ask"
 	if incidentCmd || opts.quick || opts.safe || opts.gitops {
 		if !opts.visited["include-logs"] {
 			opts.includeLogs = true
@@ -3097,6 +3113,7 @@ Usage:
 Fast incident workflow:
   scan                         List failing workloads, with logs and typed reads by default
   why <kind/name>              Explain root cause, proof, rollback hint, and next step
+  ask <request>                Resolve natural-language intent to a guarded fix preview
   fix <kind/name>              Guided walkthrough: root cause -> fix -> shadow -> deliver.
                                Interactive on a TTY; pass -o json or --yes for scripted runs.
     --delivery                 How to ship a proposed fix: patch, cluster, or pr (default: patch).
@@ -3137,6 +3154,8 @@ Common flags:
       --no-ai                  Disable AI remediation for this command
       --repo string            Local manifest, Helm chart, or Kustomize overlay path
       --delivery string        patch, cluster, or pr (default "patch")
+      --continue                Continue ask to a guarded preview (ask only)
+      --select number           Select an ask candidate (ask only)
       --edit-patch             Open generated patch in $VISUAL/$EDITOR before delivery
       --quick                  Skip shadow verification for fixes
       --safe                   Force paranoid redaction and production-safe defaults
@@ -3185,6 +3204,7 @@ Primary commands:
   cluster                      Show an interactive full-screen cluster-wide dashboard
   incidents                    List current failing workloads
   fix [kind/name]              AI-assisted production remediation flow (interactive if no resource provided)
+  ask <request>                Resolve natural language to a guarded preview; never applies or delivers
   cost nodes|workloads         Estimate node/workload costs
   predict                      Show future-risk signals from local evidence
   lint -f path                 Lint manifests, Helm chart, or Kustomize overlay
@@ -3284,6 +3304,9 @@ func analyzerFiltersForCommand(cmd string, rest []string, opts options) []string
 		return explicit
 	}
 	switch cmd {
+	case "ask":
+		request := strings.Join(rest, " ")
+		return analyzer.AskFiltersForRequest(request, opts.quick)
 	case "incidents", "watch":
 		return analyzer.DefaultIncidentFilters(opts.quick)
 	case "fix":

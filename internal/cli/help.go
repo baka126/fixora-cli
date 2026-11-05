@@ -34,6 +34,31 @@ Examples:
 
 Useful flags: --context, --ai, --proof, -o json
 `
+	case "ask":
+		help = `Usage: kubectl fixora ask <request> [-n namespace] [--continue] [--select number]
+       kubectl fixora ask --session ID <follow-up>
+       kubectl fixora ask sessions list | delete <ID>
+
+Ask Kubernetes questions in natural language. Fixora selects relevant analyzers,
+then resolves the request to findings and live resource identities in scope. It
+answers with fresh, redacted incident evidence and broadens an inconclusive
+inferred scan once. Sessions can be resumed across commands. Repair requests only
+open the existing guarded fix preview; Ask never applies or delivers a repair.
+
+Examples:
+  kubectl fixora ask "why is the API crashing?" -n payments
+  kubectl fixora ask --session a1b2c3d4e5f6 "what changed since last time?"
+  kubectl fixora ask "preview a fix for the API" -n payments
+  kubectl fixora ask sessions list
+  kubectl fixora ask sessions delete a1b2c3d4e5f6
+
+Text output is compact by default; use --proof for all bounded claims and
+evidence references, or -o json for the complete structured result. Session
+summaries are stored locally with private file permissions, scoped to the
+current cluster, and expire after 30 days. Each AI-backed turn sends current
+redacted incident evidence and bounded conversation summaries to the
+configured provider. Session listing never prints conversation text.
+`
 	case "fix", "repair":
 		help = `Usage: kubectl fixora fix <kind/name> [-n namespace] [flags]
 
@@ -148,7 +173,7 @@ var suggestedCommands = []string{
 	"filters", "integrations", "serve", "health", "watch", "report",
 	"bundle", "predict", "cost", "graph", "trace", "storage", "rbac",
 	"dns", "security", "node-pressure", "repo", "validate", "changes",
-	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup",
+	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup", "ask",
 }
 
 func suggestCommand(input string) string {

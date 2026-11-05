@@ -31,6 +31,34 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+// chatRequest and chatResponse are retained for the AI intent resolver, which
+// shares the OpenAI compatible chat protocol but has its own response schema.
+type chatRequest struct {
+	Model          string         `json:"model"`
+	Messages       []chatMessage  `json:"messages"`
+	Temperature    *float64       `json:"temperature,omitempty"`
+	ResponseFormat map[string]any `json:"response_format,omitempty"`
+}
+
+type chatResponse struct {
+	Choices []struct {
+		Message chatMessage `json:"message"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+var errIncompleteResponse error = &ProviderError{Kind: ErrorIncomplete}
+
+func temperatureForModel(model string) *float64 {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "gpt-6") {
+		return nil
+	}
+	temperature := 0.1
+	return &temperature
+}
+
 func NewFromEnv() (Client, error) {
 	cfg, _ := config.Load()
 	provider := strings.ToLower(firstNonEmpty(os.Getenv("FIXORA_AI_PROVIDER"), cfg.AIProvider, "openai"))

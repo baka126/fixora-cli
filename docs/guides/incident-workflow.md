@@ -44,3 +44,20 @@ Fixora also keeps a small local history for the same cluster and workload. After
 ## Interactive or scripted
 
 Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, name the target and provide explicit values; inspect structured output and require your own approval before a write. Bare `kubectl fixora` opens the older dashboard in v0.8.0; the new no-argument chooser is **Upcoming** on [the development branch](https://github.com/baka126/fixora-cli/tree/codex/production-hardening).
+
+## Ask a follow-up and resume an incident
+
+Use `ask` to investigate Kubernetes resources and analyzer findings in natural language. Fixora chooses relevant analyzers from the question, broadens once if the inferred scan is inconclusive, and adds registry-wide, allow-listed summaries for live resources while preserving their namespace and identity. The summaries include selected operational facts such as readiness, workload images and resource requests, Service and route references, storage state, scaling bounds, policy report counts, and operator progression. Unknown fields and unavailable optional CRDs remain unknown; Fixora does not send raw objects to fill gaps. A repair preview still requires one exact target. Ask sends bounded, redacted evidence to the configured AI provider and saves a short local session summary so you can continue in a later command:
+
+```bash
+kubectl fixora ask "why is the API crashing?" -n payments
+kubectl fixora ask --session <id> "what changed since my last question?"
+kubectl fixora ask sessions list
+kubectl fixora ask sessions delete <id>
+```
+
+A resumed turn is bound to the current cluster and revalidates the original resource before collecting fresh evidence. Missing, recreated, or re-owned targets are rejected. Session files live under `~/.fixora/<cluster-hash>/ask-sessions.json`, use private local permissions, keep bounded summaries rather than raw logs or Kubernetes objects, and expire after 30 days. Every AI-backed turn sends current redacted incident evidence and bounded prior-turn summaries to the configured provider. Review provider and data handling settings before use.
+
+Text output shows a compact summary with a few cited signals; add `--proof` to display all bounded claims and evidence references, or use `-o json` for the complete structured result. A recovery is reported only when fresh analyzer evidence confirms a healthy target and its saved controller chain. If that identity evidence is missing, Fixora stops rather than claiming recovery.
+
+Ask is preview-only. A repair request may open Fixora's guarded repair preview, but the model cannot authorize apply or delivery.

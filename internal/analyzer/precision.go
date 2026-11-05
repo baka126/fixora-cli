@@ -7,14 +7,15 @@ import (
 	"sync"
 )
 
-func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
-	type precisionAnalyzer struct {
-		name     string
-		aliases  []string
-		run      func(*ScanContext) ([]Finding, error)
-		optional bool
-	}
-	analyzers := []precisionAnalyzer{
+type precisionAnalyzer struct {
+	name     string
+	aliases  []string
+	run      func(*ScanContext) ([]Finding, error)
+	optional bool
+}
+
+func (a Analyzer) precisionAnalyzers() []precisionAnalyzer {
+	return []precisionAnalyzer{
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
 		{name: "service-ports", aliases: []string{"service", "services", "networking"}, run: a.analyzeServicePortTargets},
 		{name: "ingress-backends", aliases: []string{"ingress", "ingresses", "networking"}, run: a.analyzeIngressBackends},
@@ -40,7 +41,26 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "secret", aliases: []string{"secret", "secrets", "configuration"}, run: a.analyzeSecrets},
 		{name: "pod-terminating", aliases: []string{"pod", "pods", "terminating"}, run: a.analyzePodsTerminating},
 	}
+}
+
+func allPrecisionAnalyzerAliases() []string {
+	seen := map[string]bool{}
+	for _, pa := range (Analyzer{}).precisionAnalyzers() {
+		for _, alias := range pa.aliases {
+			seen[strings.ToLower(alias)] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for alias := range seen {
+		out = append(out, alias)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	selected := filterSet(a.opts.Filters)
+	analyzers := a.precisionAnalyzers()
 
 	// Select the analyzers to run, preserving registration order.
 	var jobs []precisionAnalyzer

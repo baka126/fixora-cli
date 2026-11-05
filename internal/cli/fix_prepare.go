@@ -46,6 +46,27 @@ func preferHPAPolicyFinding(base analyzer.Finding, candidates []analyzer.Finding
 	}
 	return base
 }
+
+// runPreparedFix is the shared exact-target dispatch used by both `fix` and
+// `ask`, keeping their Service, PVC, Helm, and workload paths aligned.
+func runPreparedFix(ctx context.Context, stdout, stderr io.Writer, opts options, reader kube.Reader, k kube.Kubectl, finding analyzer.Finding, plan fix.Plan, resource string) int {
+	if opts.pdbPolicy != "" || finding.ResourceKind == "PodDisruptionBudget" {
+		return runPDBFix(ctx, stdout, stderr, opts, finding)
+	}
+	if opts.hpaPolicy != "" || strings.EqualFold(finding.ResourceKind, "HorizontalPodAutoscaler") {
+		return runHPAFix(ctx, stdout, stderr, opts, finding)
+	}
+	if opts.servicePolicy != "" {
+		return runServiceFix(ctx, stdout, stderr, opts, finding)
+	}
+	if opts.pvcPolicy != "" || isPVCResourceKind(finding.ResourceKind) {
+		return runPVCFix(ctx, stdout, stderr, opts, finding)
+	}
+	if hasHelmSourceContext(opts) {
+		return runHelmSourceDelivery(ctx, stdout, stderr, opts, reader, k, finding, plan)
+	}
+	return runGuidedFix(ctx, stdout, stderr, opts, k, finding, plan, resource)
+}
 func prepareAnalyzedFixPlan(ctx context.Context, reader kube.Reader, k kube.Kubectl, opts options, resource string, finding analyzer.Finding, stderr io.Writer) (analyzer.Finding, fix.Plan, options, error) {
 	var err error
 	memoryContext, memoryErr := lookupWorkloadMemory(ctx, k, finding, opts.workloadMemoryPath)

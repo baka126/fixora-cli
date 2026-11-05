@@ -8,7 +8,7 @@ section: reference
 
 # Command reference
 
-The following command families are available in **v0.8.0** unless marked Upcoming. Run `kubectl fixora help --advanced` on your installed binary for its exact syntax. Commands that perform a write still require the corresponding Kubernetes or repository permission; see [safety]({{ '/safety/' | relative_url }}).
+The following command families are available in **v0.8.0** unless marked Upcoming or branch-only. Run `kubectl fixora help --advanced` on your installed binary for its exact syntax. Commands that perform a write still require the corresponding Kubernetes or repository permission; see [safety]({{ '/safety/' | relative_url }}).
 
 [Diagnose](#diagnose) · [Subsystems](#inspect-a-particular-subsystem) · [Review and deliver](#review-and-deliver) · [Operate and extend](#operate-and-extend) · [Flags](#global-and-workflow-flags)
 
@@ -23,6 +23,7 @@ The following command families are available in **v0.8.0** unless marked Upcomin
 | `filters` / `analyzers` | Show analyzer catalog and active filter selection; local registry read. `analyzers` is an alias. |
 | `health` | Summarize namespace or cluster health; reads cluster state. |
 | `watch` | Poll incidents until interrupted; repeated cluster and bounded log reads by default. |
+| `ask <request>` (branch-only) | Resolve natural-language intent against active findings, show the exact target, then optionally continue to a guarded fix preview. Never applies or delivers a repair. Use `--select <number>` for ambiguity and `--continue` for scripted/structured preview. |
 | `predict` | Show future-risk signals from local evidence; reads cluster state. |
 | `cost` | Estimate node or workload costs from available metadata; reads cluster state and is not a billing quote. |
 
@@ -68,7 +69,7 @@ The following command families are available in **v0.8.0** unless marked Upcomin
 
 ## Upcoming commands and changed behavior
 
-The following require [codex/production-hardening](https://github.com/baka126/fixora-cli/tree/codex/production-hardening): the `ai` family adds `ai doctor`, separating AI setup from the cluster `doctor`; `coordinate` and alias `fix-set` plan and gate multi-resource changes. The branch also adds a no-argument terminal chooser, interactive `auth`/`profiles` improvements, and `--mcp-shadow`.
+The following require [codex/production-hardening](https://github.com/baka126/fixora-cli/tree/codex/production-hardening): the `ai` family adds `ai doctor`, separating AI setup from the cluster `doctor`; `coordinate` and alias `fix-set` plan and gate multi-resource changes. The branch also adds a no-argument terminal chooser, interactive `auth`/`profiles` improvements, and `--mcp-shadow`. The natural-language `ask` command is being developed on `codex/natural-language-ask` and is not part of v0.8.0.
 
 ## Global and workflow flags
 
