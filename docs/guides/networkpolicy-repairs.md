@@ -1,3 +1,11 @@
+---
+layout: default
+title: NetworkPolicy repair
+description: Prepare and verify exact NetworkPolicy replacements from operator authority.
+permalink: /guides/networkpolicy-repairs/
+section: guides
+---
+
 # NetworkPolicy repair
 
 Fixora can prepare an exact replacement for one standard, namespaced `networking.k8s.io/v1` NetworkPolicy from a local operator authority file. The policy file, not AI, is the source of every selector, rule, direction, and test case. Preview and diagnosis are read-only.

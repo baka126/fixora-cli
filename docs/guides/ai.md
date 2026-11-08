@@ -63,6 +63,8 @@ kubectl fixora why deployment/api -n prod --proof --ai
 
 `ask` selects analyzers from the request, then resolves it against current findings and scoped live resource identities. It can answer questions across related findings, but a repair preview remains bound to one selected resource and uses the existing guarded fix flow. Ask never applies changes or delivers a patch. In a terminal, Fixora asks before previewing; in scripts or structured output, add `--continue` to request the preview. If several resources match a repair request, choose one with `--select <number>`; summary and debugging questions can include correlated findings without forcing a repair-target choice.
 
+**Effect:** Reads scoped cluster evidence and may read bounded logs, sends bounded redacted context to the configured AI provider, and stores a local session summary. These questions do not apply cluster changes.
+
 ```bash
 kubectl fixora ask "why is the payments API crashing?" -n payments
 kubectl fixora ask "summarize unhealthy workloads in payments" -n payments

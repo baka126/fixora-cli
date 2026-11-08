@@ -1,3 +1,11 @@
+---
+layout: default
+title: NetworkPolicy repair validation
+description: Automated and real-CNI validation coverage for NetworkPolicy repair.
+permalink: /reports/networkpolicy-repairs-validation/
+section: reports
+---
+
 # NetworkPolicy repair validation
 
 This record covers the initial exact-spec NetworkPolicy replacement workflow. It is intentionally limited to

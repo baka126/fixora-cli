@@ -1,3 +1,11 @@
+---
+layout: default
+title: Validated Helm source delivery
+description: Prepare and validate reviewed Kubernetes repairs through Helm values files.
+permalink: /helm-source-delivery/
+section: guides
+---
+
 # Validated Helm source delivery
 
 Fixora can turn a reviewed image, resource, ConfigMap environment reference or probe patch into a values-file proposal. It uses the chart's actual render to check the effect rather than assuming chart key names. Arbitrary template changes and dedicated startup, placement and security policy source delivery remain manual review work.
