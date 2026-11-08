@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -43,6 +46,16 @@ func TestBedrockAdapterUsesConverseAndParsesValidatedText(t *testing.T) {
 	}
 	if fake.input == nil || fake.input.ModelId == nil || *fake.input.ModelId != "us.anthropic.claude-test" || len(fake.input.System) != 1 {
 		t.Fatalf("Bedrock request not populated: %#v", fake.input)
+	}
+}
+
+func TestBedrockProbeConfigDisablesSDKRetries(t *testing.T) {
+	cfg, err := bedrockAWSConfig(context.Background(), "us-east-1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Retryer().(interface{ MaxAttempts() int }).MaxAttempts(); got != 1 {
+		t.Fatalf("probe retry attempts = %d, want 1", got)
 	}
 }
 
@@ -84,5 +97,35 @@ func TestVertexAdapterUsesProjectLocationBearerAndGenerateContent(t *testing.T) 
 	result, err := adapter.Explain(context.Background(), Request{Provider: spec, Model: "gemini-test", BaseURL: server.URL})
 	if err != nil || result == nil || result.Summary != "summary" {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestVertexCredentialDiscoveryHonorsProbeContext(t *testing.T) {
+	started := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	credentials := `{"type":"external_account","audience":"//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://sts.googleapis.com/v1/token","credential_source":{"url":"` + server.URL + `"}}`
+	credentialFile := filepath.Join(t.TempDir(), "external-account.json")
+	if err := os.WriteFile(credentialFile, []byte(credentials), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", credentialFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	spec, _ := ResolveProvider("googlevertexai")
+	spec.EndpointOptions = map[string]string{"project": "project-a", "location": "us-central1"}
+	adapter := newVertexAdapter(ctx, http.DefaultClient, nil)
+	_, err := adapter.Explain(ctx, Request{Provider: spec, Model: "gemini-test", BaseURL: "https://example.test"})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("credential source request was not started")
+	}
+	if err == nil {
+		t.Fatal("expected credential request cancellation")
 	}
 }

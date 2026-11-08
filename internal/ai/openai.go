@@ -15,15 +15,16 @@ import (
 )
 
 type Client struct {
-	Provider   string
-	Protocol   Protocol
-	OutputMode OutputMode
-	Spec       ProviderSpec
-	Profile    string
-	BaseURL    string
-	APIKey     string
-	Model      string
-	HTTP       *http.Client
+	Provider      string
+	Protocol      Protocol
+	OutputMode    OutputMode
+	Spec          ProviderSpec
+	Profile       string
+	BaseURL       string
+	APIKey        string
+	Model         string
+	HTTP          *http.Client
+	singleAttempt bool
 }
 
 type chatMessage struct {
@@ -193,11 +194,11 @@ func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*ana
 	case "watsonxai", "ibmwatsonxai":
 		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
 	case "googlevertexai":
-		return c.explainWithAdapter(ctx, NewVertexAdapter(c.HTTP, nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newVertexAdapter(ctx, c.HTTP, nil), payloadWithProfile)
 	case "amazonbedrockconverse":
-		return c.explainWithAdapter(ctx, NewBedrockConverseAdapter(nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newBedrockConverseAdapter(nil, c.singleAttempt), payloadWithProfile)
 	case "amazonbedrock":
-		return c.explainWithAdapter(ctx, NewBedrockInvokeAdapter(nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newBedrockInvokeAdapter(nil, c.singleAttempt), payloadWithProfile)
 	case "amazonsagemaker", "oci":
 		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
 	case "azureopenai":

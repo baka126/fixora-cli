@@ -39,16 +39,17 @@ Validated adapters include OpenAI Chat and Responses, Azure OpenAI Chat, Anthrop
 
 Use an environment variable for a production key rather than storing a long-lived key in the local config file. Set the provider, model, and optional base URL for your chosen endpoint.
 
-**Effect:** Writes shell environment only. The subsequent doctor command checks local AI configuration and may contact the configured provider; it does not change Kubernetes resources.
+**Effect:** Writes shell environment only. `ai doctor` checks local configuration without contacting the provider. `ai doctor --live` sends a small synthetic generation request to the configured provider and does not change Kubernetes resources.
 
 ```bash
 export FIXORA_AI_PROVIDER=openai
 export FIXORA_AI_API_KEY='your-key-from-a-secret-manager'
 export FIXORA_AI_MODEL=gpt-4o-mini
 kubectl fixora ai doctor
+kubectl fixora ai doctor --live
 ```
 
-`ai doctor` reports the provider, model, selected protocol, and endpoint host without printing endpoint credentials or query values. OpenAI Responses can be selected with `export FIXORA_AI_PROTOCOL=openai-responses`; for broader compatibility use `export FIXORA_AI_OUTPUT_MODE=json`. Google Vertex requires `FIXORA_AI_PROJECT` and `FIXORA_AI_LOCATION`; Bedrock requires `AWS_REGION` (or `AWS_DEFAULT_REGION`) and the normal AWS SDK credential chain. `auth set` can store credentials locally, but review how that machine is protected. `config view` and `config export` are intended to avoid printing the API key.
+`ai doctor` reports status `configured` plus the provider, model, selected protocol, and endpoint host without printing endpoint credentials or query values. It makes no provider request. `ai doctor --live` runs the configured generation adapter with a synthetic prompt, validates the response contract, and reports `ok` only when that request succeeds. The live check can use billable tokens and stops after 30 seconds; a passing check only confirms that one small request worked at that moment. OpenAI Responses can be selected with `export FIXORA_AI_PROTOCOL=openai-responses`; for broader compatibility use `export FIXORA_AI_OUTPUT_MODE=json`. Google Vertex requires `FIXORA_AI_PROJECT` and `FIXORA_AI_LOCATION`; Bedrock requires `AWS_REGION` (or `AWS_DEFAULT_REGION`) and the normal AWS SDK credential chain. `auth set` can store credentials locally, but review how that machine is protected. `config view` and `config export` are intended to avoid printing the API key.
 
 ## Request an explanation
 

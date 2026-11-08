@@ -2,12 +2,16 @@ package ai
 
 import (
 	"context"
-	"fmt"
-	"net/http"
+	"encoding/json"
+	"errors"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
+
+const doctorLiveProbeTimeout = 30 * time.Second
 
 type DoctorResult struct {
 	Provider string `json:"provider"`
@@ -18,33 +22,83 @@ type DoctorResult struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-func Doctor(ctx context.Context) DoctorResult {
-	client, err := NewFromEnv()
+func Doctor(_ context.Context) DoctorResult {
+	result, _, err := doctorClient()
 	if err != nil {
-		return DoctorResult{Status: "error", Detail: err.Error()}
-	}
-	result := DoctorResult{Provider: client.Provider, Protocol: string(client.Protocol), Model: client.Model, BaseURL: safeEndpointIdentity(client.BaseURL), Status: "ok"}
-	if client.Provider == "ollama" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(client.BaseURL, "/")+"/api/tags", nil)
-		if err != nil {
-			result.Status = "error"
-			result.Detail = "ollama endpoint URL is invalid"
-			return result
-		}
-		httpClient := &http.Client{Timeout: 3 * time.Second}
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			result.Status = "error"
-			result.Detail = "ollama endpoint is unreachable"
-			return result
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode > 299 {
-			result.Status = "error"
-			result.Detail = fmt.Sprintf("ollama returned HTTP %d", resp.StatusCode)
-		}
+		return result
 	}
 	return result
+}
+
+// DoctorLive sends one synthetic generation request through the configured
+// provider adapter. It does not inspect or send Kubernetes data.
+func DoctorLive(ctx context.Context) DoctorResult {
+	result, client, err := doctorClient()
+	if err != nil {
+		return result
+	}
+	if strings.EqualFold(client.Provider, "noop") {
+		result.Status = "error"
+		result.Detail = "AI provider does not support live generation"
+		return result
+	}
+	client.singleAttempt = true
+	probeCtx, cancel := context.WithTimeout(ctx, doctorLiveProbeTimeout)
+	defer cancel()
+	probe := analyzer.Finding{
+		ID:           "fixora-ai-doctor-probe",
+		Namespace:    "fixora-doctor",
+		ResourceKind: "Provider",
+		ResourceName: "doctor-probe",
+		Status:       "ProviderProbe",
+		Severity:     "info",
+		Category:     "diagnostic",
+		Summary:      "Synthetic Fixora provider check. Confirm this small probe was received; do not invent Kubernetes observations.",
+	}
+	answer, err := client.explainOnce(probeCtx, probe)
+	if err != nil {
+		result.Status = "error"
+		result.Detail = doctorFailureSummary(err)
+		return result
+	}
+	if answer == nil || answer.Unstructured {
+		result.Status = "error"
+		result.Detail = doctorFailureSummary(&ProviderError{Kind: ErrorContract})
+		return result
+	}
+	encoded, err := json.Marshal(answer)
+	if err == nil {
+		_, err = ValidateAIResult(encoded)
+	}
+	if err != nil {
+		result.Status = "error"
+		result.Detail = doctorFailureSummary(err)
+		return result
+	}
+	result.Status = "ok"
+	return result
+}
+
+func doctorFailureSummary(err error) string {
+	var providerErr *ProviderError
+	if errors.As(err, &providerErr) {
+		// Provider code/param fields are untrusted and can contain API keys or
+		// other caller-controlled strings even when they match safeDetail's shape.
+		redacted := *providerErr
+		redacted.Code = ""
+		redacted.Param = ""
+		return FailureSummary(&redacted)
+	}
+	return FailureSummary(err)
+}
+
+func doctorClient() (DoctorResult, Client, error) {
+	client, err := NewFromEnv()
+	if err != nil {
+		return DoctorResult{Status: "error", Detail: err.Error()}, Client{}, err
+	}
+	result := DoctorResult{Provider: client.Provider, Protocol: string(client.Protocol), Model: client.Model, BaseURL: safeEndpointIdentity(client.BaseURL), Status: "configured"}
+	return result, client, nil
 }
 
 func safeEndpointIdentity(raw string) string {

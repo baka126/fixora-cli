@@ -156,6 +156,12 @@ func Execute(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		return executeNoArgs(isTerminal(os.Stdin) && isTerminal(os.Stdout), os.Stdin, stdout, stderr)
 	}
+	if args[0] == "ai-doctor" {
+		return runAIDoctor(args[1:], stdout, stderr)
+	}
+	if args[0] == "ai" && len(args) > 1 && args[1] == "doctor" {
+		return runAIDoctor(args[2:], stdout, stderr)
+	}
 	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		if hasArg(args[1:], "--advanced") || hasArg(args[1:], "-a") {
 			printAdvancedHelp(stdout)
@@ -2673,9 +2679,31 @@ func appendUniqueString(values []string, next string) []string {
 }
 
 func runAIDoctor(args []string, stdout, stderr io.Writer) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		fmt.Fprintln(stdout, "Usage: kubectl fixora ai doctor [--live]")
+		fmt.Fprintln(stdout, "Default: check local provider configuration only.")
+		fmt.Fprintln(stdout, "--live: send a small synthetic generation probe (may use billable tokens; 30s timeout).")
+		return 0
+	}
+	live := len(args) == 1 && args[0] == "--live"
+	if len(args) > 0 && !live {
+		fmt.Fprintln(stderr, "usage: kubectl fixora ai doctor [--live]")
+		return 2
+	}
+	if !live {
+		return output.Write(stdout, "json", ai.Doctor(context.Background()))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	return output.Write(stdout, "json", ai.Doctor(ctx))
+	result := ai.DoctorLive(ctx)
+	code := output.Write(stdout, "json", result)
+	if code != 0 {
+		return code
+	}
+	if result.Status != "ok" {
+		return 1
+	}
+	return 0
 }
 
 func runProfiles(args []string, stdout, stderr io.Writer) int {
