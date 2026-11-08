@@ -144,7 +144,7 @@ func hpaStatusFindings(hpa map[string]any, namespace, name string) []Finding {
 		}
 		conditionType := strValue(condition["type"])
 		reason := strValue(condition["reason"])
-		code, severity, summary := "", "medium", "HPA reports an unhealthy condition."
+		code, severity, summary := "", "medium", ""
 		switch {
 		case conditionType == "ScalingActive" && (strings.HasPrefix(reason, "FailedGet") || strings.HasPrefix(reason, "FailedCompute")):
 			code, summary = "MetricsUnavailable", "HPA could not read or calculate a configured metric."
