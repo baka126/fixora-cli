@@ -1,0 +1,16 @@
+# Arbitrary source keys; no well-known chart key mappings.
+choice: example/app:v1
+format: direct
+parts:
+  left: example/app
+  right: v1
+collateral: false
+helper:
+  choice: example/helper:v1
+memory: 64Mi
+health:
+  httpGet:
+    path: /health
+    port: 8080
+connector: settings-old
+global: {}

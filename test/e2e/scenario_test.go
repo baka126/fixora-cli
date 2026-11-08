@@ -59,6 +59,11 @@ func TestScenarioDiagnosis(t *testing.T) {
 		t.Run(strings.TrimSuffix(c.fixture, ".yaml"), func(t *testing.T) {
 			t.Parallel()
 			ns := newNamespace(t)
+			t.Cleanup(func() {
+				if t.Failed() {
+					dumpScenario(t, ns, c.deploy)
+				}
+			})
 			applyFixture(t, ns, "scenarios/"+c.fixture)
 
 			switch {
@@ -70,9 +75,10 @@ func TestScenarioDiagnosis(t *testing.T) {
 				// PermissionDenied. Wait for the CrashLoopBackOff reason.
 				waitForPodReason(t, ns, "security-demo", "CrashLoopBackOff")
 			case c.deploy == "crashloop-demo":
-				// The container runs 5s then exits 1. A single CrashLoopBackOff
-				// read races the container re-run window; gate on a couple of
-				// restarts so the backoff interval has grown before `why` scans.
+				// The container crashes on start. Wait for CrashLoopBackOff and
+				// a couple of restarts so the backoff window is comfortably
+				// wide before `why` scans — otherwise a scan can land in the
+				// brief moment the container is re-running and see a healthy pod.
 				waitForPodReason(t, ns, "crashloop-demo", "CrashLoopBackOff")
 				waitForRestarts(t, ns, "crashloop-demo", 2)
 			case c.deploy == "pending-demo":
@@ -85,7 +91,12 @@ func TestScenarioDiagnosis(t *testing.T) {
 				waitForPhase(t, ns, c.deploy, c.phase)
 			}
 
-			plan := planJSON(t, ns, "deployment/"+c.deploy, c.concrete...)
+			var plan planView
+			if c.wantStatus != "" {
+				plan = planJSONUntil(t, ns, "deployment/"+c.deploy, c.wantStatus, c.concrete...)
+			} else {
+				plan = planJSON(t, ns, "deployment/"+c.deploy, c.concrete...)
+			}
 
 			if c.deploy == "pending-demo" {
 				// pending has no single canonical status string across k8s

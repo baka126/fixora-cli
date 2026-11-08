@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Service
+metadata: {name: replica-headless}
+spec:
+  clusterIP: None
+  selector: {component: ledger}
+  ports: [{name: unused, port: 8080}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: replicas}
+spec:
+  replicas: 3
+  serviceName: replica-headless
+  updateStrategy: {type: RollingUpdate}
+  selector:
+    matchLabels: {component: ledger}
+  template:
+    metadata:
+      labels: {component: ledger}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: alive
+        image: FIXORA_TEST_IMAGE
+        command: [sleep, '86400']
+        resources:
+          requests: {cpu: 5m, memory: 4Mi}
+          limits: {cpu: 50m, memory: 16Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: protection}
+spec:
+  selector:
+    matchLabels: {obsolete: broken}
+  minAvailable: 3

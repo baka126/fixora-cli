@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -127,6 +128,38 @@ func TestWorkloadPatchTemplatesUseControllerPodTemplateShape(t *testing.T) {
 // TestTier3StatusesDefaultToBuildPlan verifies that the new tier-3 review-only
 // statuses (JobRetrying, CronJobOverlap) fall through to BuildPlan's default
 // branch and do not accidentally match an existing apply-eligible switch case.
+func TestPendingWithExcessiveRequestsUsesResourcesStrategy(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "pending-demo", Namespace: "ns",
+		Status: "Pending",
+		Evidence: []analyzer.Evidence{
+			{Label: "Requests exceed node allocatable", Value: "requested memory=102400Mi cpu=100000m; largest node allocatable memory=7936Mi cpu=8000m"},
+		},
+	})
+	if plan.Strategy != "resources" {
+		t.Fatalf("want resources strategy, got %q", plan.Strategy)
+	}
+	if !strings.Contains(plan.PatchTemplate, "TODO_OBSERVED_REQUEST") {
+		t.Fatalf("want a resources template, got:\n%s", plan.PatchTemplate)
+	}
+}
+
+func TestPendingWithoutAllocatableEvidenceStaysScheduling(t *testing.T) {
+	// Taints, affinity and PVC binding are also Pending causes and none of
+	// them are fixed by lowering requests, so they must stay review-only.
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "pending-demo", Namespace: "ns",
+		Status:          "Pending",
+		Recommendations: []analyzer.Recommendation{{PatchType: "scheduling"}},
+	})
+	if plan.Strategy == "resources" {
+		t.Fatal("scheduling failures without allocatable evidence must not claim the resources strategy")
+	}
+	if plan.ApplyEligible {
+		t.Fatal("must stay review-only")
+	}
+}
+
 func TestTier3StatusesDefaultToBuildPlan(t *testing.T) {
 	for _, status := range []string{"JobRetrying", "CronJobOverlap"} {
 		plan := BuildPlan(analyzer.Finding{Status: status, Namespace: "prod", ResourceKind: "Job", ResourceName: "batch"})
@@ -141,6 +174,71 @@ func TestTier3StatusesDefaultToBuildPlan(t *testing.T) {
 		}
 		if plan.ApplyEligible {
 			t.Fatalf("status %q must not be apply eligible from BuildPlan alone; got %#v", status, plan)
+		}
+	}
+}
+
+func TestProbeStrategyProducesProbeTemplate(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "probe-demo", Namespace: "ns",
+		Status: "ProbeFailure",
+	})
+	if plan.Strategy != "probe" {
+		t.Fatalf("want probe, got %q", plan.Strategy)
+	}
+	if !strings.Contains(plan.PatchTemplate, "TODO_PROBE_PORT") {
+		t.Fatalf("want a probe template, got:\n%s", plan.PatchTemplate)
+	}
+}
+
+func TestProbePlanBecomesApplyEligibleWhenConcretized(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{
+		ResourceKind: "Deployment", ResourceName: "probe-demo", Namespace: "ns",
+		Status: "ProbeFailure",
+	})
+	got := Concretize(plan, ConcreteOptions{Container: "web-app", ProbePort: "8080"})
+	if !got.ApplyEligible {
+		t.Fatalf("concretized probe plan must be apply-eligible; blocked: %v", got.BlockedReasons)
+	}
+}
+
+func TestMissingDeviceClassGetsReviewPlan(t *testing.T) {
+	plan := BuildPlan(analyzer.Finding{Namespace: "prod", ResourceKind: "ResourceClaim", ResourceName: "gpu", Status: "DeviceClassNotFound", Evidence: []analyzer.Evidence{{Label: "DeviceClass", Value: "nvidia.com"}}})
+	if plan.Strategy != "deviceclass" || plan.CanApply || plan.ApplyEligible || !strings.Contains(strings.Join(plan.Verification, "\n"), "deviceclasses.resource.k8s.io nvidia.com") {
+		t.Fatalf("unexpected plan: %#v", plan)
+	}
+}
+func TestValidatedAIPatchRetainsModelUncertainty(t *testing.T) {
+	p := BuildPlan(analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "demo", Status: "OOMKilled"})
+	got := WithValidatedAIPatch(p, "spec: {}", 61)
+	if got.Confidence != 61 || got.ApplyEligible {
+		t.Fatalf("schema validation must not manufacture confidence: %+v", got)
+	}
+}
+
+func TestPlanJSONPreservesEvidenceDiagnosisAndAIExplanation(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "demo", Status: "CrashLoopBackOff", Summary: "Container exited during initialization", Evidence: []analyzer.Evidence{{Label: "Exit code", Value: "1"}}}
+	for _, useAI := range []bool{false, true} {
+		if useAI {
+			f.AI = &analyzer.AIResult{RootCause: "Initialization cannot read the configured file.", RecommendedFix: "Restore the intended configuration mount."}
+		}
+		data, err := json.Marshal(BuildPlan(f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		diagnosis, ok := doc["diagnosis"].(map[string]any)
+		if !ok || diagnosis["summary"] != "Container exited during initialization" {
+			t.Fatalf("structured diagnosis lost: %s", data)
+		}
+		if useAI {
+			ai, _ := diagnosis["ai"].(map[string]any)
+			if ai["rootCause"] != "Initialization cannot read the configured file." {
+				t.Fatalf("AI explanation lost: %s", data)
+			}
 		}
 	}
 }

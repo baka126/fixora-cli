@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/kube"
@@ -14,23 +16,33 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 	}
 	events, _ := ctx.GetEvents()
 
-	// Build a set of known StorageClass names (fetched once, tolerate errors).
-	scNames := pvcStorageClassNames(ctx)
+	// Read related inventories once. Unavailable reads are carried into evidence
+	// rather than being reported as absent resources.
+	scItems, scErr := ctx.GetResourceItems("", true, "storageclasses")
+	scNames := pvcStorageClassNameSet(scItems, scErr)
+	pvItems, pvErr := ctx.GetResourceItems("", true, "pv")
 
 	// Build a map from PVC name (namespace/name) to every consuming pod/volume,
 	// so VolumeAttachFailed can match mount failures to the correct claim.
-	podsByPVC := pvcConsumingPods(ctx, a.opts.Namespace, a.opts.AllNS)
+	podItems, podErr := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
+	podsByPVC := pvcConsumersFromItems(podItems)
 
 	out := []Finding{}
 	for _, pvc := range pvcs {
+		findingStart := len(out)
 		namespace, name := objectNamespaceName(pvc)
 		phase := strValue(nestedMap(pvc, "status")["phase"])
 		spec := nestedMap(pvc, "spec")
+		className, hasClassField := spec["storageClassName"]
 
 		switch phase {
 		case "Pending":
 			event := latestObjectEvent(events, namespace, name)
-			if event.Reason == "ProvisioningFailed" && strings.TrimSpace(event.Message) != "" {
+			if hasClassField && strValue(className) == "" && strValue(spec["volumeName"]) == "" {
+				out = append(out, pvcFinding(pvc, "MissingStorageClass", "medium",
+					"PVC explicitly opts out of StorageClasses; this claim cannot be assigned a class in place.",
+					"storageClassName=\"\" is immutable; create a replacement claim with the intended StorageClass"))
+			} else if event.Reason == "ProvisioningFailed" && strings.TrimSpace(event.Message) != "" {
 				out = append(out, pvcFinding(pvc, "ProvisioningFailed", "high", "PVC provisioning failed.", event.Message))
 			} else if waitEvent, ok := objectEventWithReason(events, namespace, name, "WaitForFirstConsumer"); ok {
 				// WaitForFirstConsumer is a normal Pending sub-state; report it
@@ -72,17 +84,17 @@ func (a Analyzer) analyzePVCs(ctx *ScanContext) ([]Finding, error) {
 				"Volume attach or mount failed for a pod consuming this PVC.",
 				"pod="+podName+" reason="+reason+" message="+msg))
 		}
+		if len(out) > findingStart {
+			evidence := pvcDiagnosticEvidence(pvc, scItems, scErr, pvItems, pvErr, podsByPVC, podErr)
+			for i := findingStart; i < len(out); i++ {
+				out[i].Evidence = append(out[i].Evidence, evidence...)
+			}
+		}
 	}
 	return out, nil
 }
 
-// pvcStorageClassNames returns a set of known StorageClass names.
-// Returns nil if the list cannot be fetched (caller treats nil as
-// "data unavailable -- skip the check"). An empty list is a valid empty set.
-func pvcStorageClassNames(ctx *ScanContext) map[string]bool {
-	// StorageClass is cluster-scoped — fetch cluster-wide regardless of the
-	// scan namespace (matches node.go / storage.go).
-	items, err := ctx.GetResourceItems("", true, "storageclasses")
+func pvcStorageClassNameSet(items []map[string]any, err error) map[string]bool {
 	if err != nil {
 		return nil
 	}
@@ -98,16 +110,15 @@ func pvcStorageClassNames(ctx *ScanContext) map[string]bool {
 
 type pvcConsumer struct {
 	podName    string
+	podUID     string
 	volumeName string
+	phase      string
+	node       string
+	ready      string
+	owner      string
 }
 
-// pvcConsumingPods returns every pod/volume pair that mounts each PVC.
-// Tolerates missing pod items.
-func pvcConsumingPods(ctx *ScanContext, namespace string, allNS bool) map[string][]pvcConsumer {
-	pods, err := ctx.GetResourceItems(namespace, allNS, "pods")
-	if err != nil {
-		return nil
-	}
+func pvcConsumersFromItems(pods []map[string]any) map[string][]pvcConsumer {
 	result := make(map[string][]pvcConsumer)
 	for _, pod := range pods {
 		podNS, podName := objectNamespaceName(pod)
@@ -123,14 +134,157 @@ func pvcConsumingPods(ctx *ScanContext, namespace string, allNS bool) map[string
 			}
 			claim := strValue(pvcRef["claimName"])
 			if claim != "" {
+				meta := nestedMap(pod, "metadata")
+				status := nestedMap(pod, "status")
 				result[keyFor(podNS, claim)] = append(result[keyFor(podNS, claim)], pvcConsumer{
 					podName:    podName,
+					podUID:     strValue(meta["uid"]),
 					volumeName: strValue(vol["name"]),
+					phase:      strValue(status["phase"]),
+					node:       strValue(nestedMap(pod, "spec")["nodeName"]),
+					ready:      podReadyState(status),
+					owner:      podOwnerDescription(meta),
 				})
 			}
 		}
 	}
 	return result
+}
+
+func pvcDiagnosticEvidence(pvc map[string]any, scItems []map[string]any, scErr error, pvItems []map[string]any, pvErr error, podsByPVC map[string][]pvcConsumer, podErr error) []Evidence {
+	meta := nestedMap(pvc, "metadata")
+	spec := nestedMap(pvc, "spec")
+	status := nestedMap(pvc, "status")
+	phase := firstNonEmpty(strValue(status["phase"]), "unknown")
+	out := []Evidence{{Label: "PVC identity", Value: fmt.Sprintf("uid=%s resourceVersion=%s phase=%s", strValue(meta["uid"]), strValue(meta["resourceVersion"]), phase)}}
+	requested := pvcStorageRequest(spec)
+	observed := strValue(nestedMap(status, "capacity")["storage"])
+	out = append(out, Evidence{Label: "Requested and observed capacity", Value: fmt.Sprintf("requested=%s observed=%s", firstNonEmpty(requested, "unknown"), firstNonEmpty(observed, "unknown"))})
+	access := stringValues(spec["accessModes"])
+	volumeMode := firstNonEmpty(strValue(spec["volumeMode"]), "Filesystem (default)")
+	out = append(out, Evidence{Label: "Access and volume mode", Value: fmt.Sprintf("accessModes=%s volumeMode=%s", firstNonEmpty(access, "unknown"), volumeMode)})
+
+	className := strValue(spec["storageClassName"])
+	if scErr != nil {
+		out = append(out, Evidence{Label: "StorageClass inventory", Value: "unavailable; class absence is not established"})
+	} else if className == "" {
+		out = append(out, Evidence{Label: "StorageClass", Value: "unset"})
+	} else if class, ok := findNamedItem(scItems, className); ok {
+		cm := nestedMap(class, "metadata")
+		expansion := "unknown"
+		if value, ok := class["allowVolumeExpansion"].(bool); ok {
+			expansion = fmt.Sprint(value)
+		}
+		out = append(out, Evidence{Label: "StorageClass", Value: fmt.Sprintf("%s uid=%s resourceVersion=%s provisioner=%s bindingMode=%s expansion=%s", className, strValue(cm["uid"]), strValue(cm["resourceVersion"]), firstNonEmpty(strValue(class["provisioner"]), "unknown"), firstNonEmpty(strValue(class["volumeBindingMode"]), "Immediate (default)"), expansion)})
+	} else {
+		out = append(out, Evidence{Label: "StorageClass", Value: className + " not found in readable inventory"})
+	}
+
+	pvName := strValue(spec["volumeName"])
+	if pvErr != nil {
+		out = append(out, Evidence{Label: "PersistentVolume inventory unavailable", Value: "PV absence or claim binding cannot be established"})
+	} else if pvName == "" {
+		out = append(out, Evidence{Label: "PersistentVolume", Value: "claim has no bound PV name"})
+	} else if pv, ok := findNamedItem(pvItems, pvName); ok {
+		pm := nestedMap(pv, "metadata")
+		ps := nestedMap(pv, "spec")
+		claim := nestedMap(ps, "claimRef")
+		value := fmt.Sprintf("%s uid=%s resourceVersion=%s phase=%s storageClass=%s reclaimPolicy=%s claim=%s/%s uid=%s", pvName, strValue(pm["uid"]), strValue(pm["resourceVersion"]), firstNonEmpty(strValue(nestedMap(pv, "status")["phase"]), "unknown"), firstNonEmpty(strValue(ps["storageClassName"]), "none"), firstNonEmpty(strValue(ps["persistentVolumeReclaimPolicy"]), "unknown"), firstNonEmpty(strValue(claim["namespace"]), "?"), firstNonEmpty(strValue(claim["name"]), "?"), strValue(claim["uid"]))
+		if topology := pvTopology(ps); topology != "" {
+			value += " topology=" + topology
+		}
+		out = append(out, Evidence{Label: "PersistentVolume", Value: value})
+	} else {
+		out = append(out, Evidence{Label: "PersistentVolume", Value: pvName + " not found in readable inventory"})
+	}
+
+	if podErr != nil {
+		out = append(out, Evidence{Label: "Consumer inventory unavailable", Value: "consumer Pod absence is not established"})
+	} else {
+		consumers := podsByPVC[keyFor(strValue(meta["namespace"]), strValue(meta["name"]))]
+		if len(consumers) == 0 {
+			out = append(out, Evidence{Label: "Consumers", Value: "none found in readable Pod inventory"})
+		} else {
+			values := make([]string, 0, len(consumers))
+			for _, c := range consumers {
+				values = append(values, fmt.Sprintf("%s uid=%s phase=%s ready=%s node=%s owner=%s", c.podName, firstNonEmpty(c.podUID, "unknown"), firstNonEmpty(c.phase, "unknown"), c.ready, firstNonEmpty(c.node, "unassigned"), firstNonEmpty(c.owner, "unknown")))
+			}
+			sort.Strings(values)
+			out = append(out, Evidence{Label: "Consumers", Value: strings.Join(values, "; ")})
+		}
+	}
+	return out
+}
+
+func findNamedItem(items []map[string]any, name string) (map[string]any, bool) {
+	for _, item := range items {
+		_, itemName := objectNamespaceName(item)
+		if itemName == name {
+			return item, true
+		}
+	}
+	return nil, false
+}
+
+func stringValues(value any) string {
+	items, _ := value.([]any)
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			values = append(values, s)
+		}
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
+}
+
+func podReadyState(status map[string]any) string {
+	for _, raw := range nestedSlice(status, "conditions") {
+		condition, ok := raw.(map[string]any)
+		if ok && strValue(condition["type"]) == "Ready" {
+			return strings.ToLower(strValue(condition["status"]))
+		}
+	}
+	return "unknown"
+}
+
+func podOwnerDescription(meta map[string]any) string {
+	owners := nestedSlice(meta, "ownerReferences")
+	if len(owners) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(owners))
+	for _, raw := range owners {
+		owner, ok := raw.(map[string]any)
+		if ok {
+			parts = append(parts, strValue(owner["kind"])+"/"+strValue(owner["name"]))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func pvTopology(spec map[string]any) string {
+	terms := nestedSlice(nestedMap(nestedMap(spec, "nodeAffinity"), "required"), "nodeSelectorTerms")
+	values := []string{}
+	for _, raw := range terms {
+		term, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, exprRaw := range nestedSlice(term, "matchExpressions") {
+			expr, ok := exprRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			key := strValue(expr["key"])
+			if strings.Contains(key, "zone") || strings.Contains(key, "topology") {
+				values = append(values, key+"="+stringValues(expr["values"]))
+			}
+		}
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 // pvcResizeCondition returns the first active resize condition type on the PVC,
@@ -194,7 +348,9 @@ func eventReferencesAnyVolume(message string, volumeNames []string) bool {
 
 func pvcFinding(pvc map[string]any, status, severity, summary, evidence string) Finding {
 	namespace, name := objectNamespaceName(pvc)
+	metadata := nestedMap(pvc, "metadata")
 	return Finding{
+		ResourceUID:  strValue(metadata["uid"]),
 		ID:           keyFor(namespace, "PersistentVolumeClaim/"+name+"/"+status),
 		Namespace:    namespace,
 		ResourceKind: "PersistentVolumeClaim",

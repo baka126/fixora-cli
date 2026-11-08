@@ -17,4 +17,9 @@ spec:
       containers:
       - name: broken-app
         image: public.ecr.aws/docker/library/busybox:1.36
-        command: ["sh", "-c", "echo Starting application...; sleep 5; echo Unexpected error occurred!; exit 1"]
+        # Crash immediately and stay crashed. An earlier version slept 5s
+        # before exiting; the container was then Running for a third of every
+        # restart cycle and `why` raced into that window and saw a healthy
+        # pod. A fast crash makes the CrashLoopBackOff backoff dominate the
+        # cycle, the way the security scenario already does.
+        command: ["sh", "-c", "echo Starting application...; echo Unexpected error occurred!; exit 1"]

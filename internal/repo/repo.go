@@ -23,13 +23,17 @@ type Mode struct {
 }
 
 type SourcePatch struct {
-	Path             string              `json:"path"`
-	Mode             string              `json:"mode"`
-	Actions          []string            `json:"actions"`
-	Warnings         []string            `json:"warnings,omitempty"`
-	Preview          string              `json:"preview,omitempty"`
-	HelmSource       *HelmSourceLocation `json:"helmSource,omitempty"`
-	RenderValidation *RenderValidation   `json:"renderValidation,omitempty"`
+	SourceStatus        string              `json:"sourceStatus,omitempty"`
+	ServerValidation    string              `json:"serverValidation,omitempty"`
+	RuntimeVerification string              `json:"runtimeVerification,omitempty"`
+	Reconciliation      string              `json:"reconciliation,omitempty"`
+	Path                string              `json:"path"`
+	Mode                string              `json:"mode"`
+	Actions             []string            `json:"actions"`
+	Warnings            []string            `json:"warnings,omitempty"`
+	Preview             string              `json:"preview,omitempty"`
+	HelmSource          *HelmSourceLocation `json:"helmSource,omitempty"`
+	RenderValidation    *RenderValidation   `json:"renderValidation,omitempty"`
 }
 
 type PullRequest struct {

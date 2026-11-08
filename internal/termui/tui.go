@@ -1089,7 +1089,7 @@ func (m tuiModel) shadowVerifyCmd() (tea.Model, tea.Cmd) {
 			Timeout:   firstDuration(m.opts.ShadowTimeout, 10*time.Minute),
 			Retries:   m.opts.ShadowRetries,
 			Keep:      m.opts.KeepShadow,
-			Egress:    firstNonEmpty(m.opts.ShadowEgress, "allow"),
+			Egress:    firstNonEmpty(m.opts.ShadowEgress, "deny"),
 			Delivery:  shadow.DeliveryPatch,
 			Redact:    m.opts.Redact,
 		},

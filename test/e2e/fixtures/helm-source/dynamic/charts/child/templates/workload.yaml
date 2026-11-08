@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helper
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: helper}
+  template:
+    metadata:
+      labels: {app: helper}
+    spec:
+      containers:
+        - name: helper
+          image: {{ if .Values.global.reference }}{{ .Values.global.reference | quote }}{{ else }}{{ .Values.choice | quote }}{{ end }}

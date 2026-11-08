@@ -16,6 +16,7 @@ const (
 	CompletionPending   = "completion-pending"
 	CompletionUnknown   = "completion-unknown"
 
+	CronJobPending   = "cronjob-future-verification-pending"
 	CronJobHealthy   = "cronjob-healthy"
 	CronJobFailing   = "cronjob-failing"
 	CronJobSuspended = "cronjob-suspended"
@@ -43,6 +44,29 @@ func VerifyCompletion(ctx context.Context, checker CompletionChecker, finding an
 	case "job":
 		return verifyJob(ctx, checker, finding, name, ns, timeout)
 	case "cronjob":
+		if plan.TargetUID != "" {
+			reader, ok := checker.(TargetReader)
+			if !ok {
+				return RolloutOutcome{Class: CronJobUnknown, Summary: "live CronJob template reader unavailable"}
+			}
+			obj, readErr := reader.GetResource(ctx, ns, "cronjob/"+name)
+			if readErr != nil {
+				return RolloutOutcome{Class: CronJobUnknown, Summary: "could not read applied CronJob template: " + readErr.Error()}
+			}
+			meta, _ := obj["metadata"].(map[string]any)
+			if meta["uid"] != plan.TargetUID || !appliedTemplateMatches(obj, plan.PatchTemplate) {
+				return RolloutOutcome{Class: CronJobUnknown, Summary: "CronJob identity or applied template is unverified"}
+			}
+			state, err := checker.CronJobStatus(ctx, name, ns)
+			if err != nil {
+				return RolloutOutcome{Class: CronJobUnknown, Summary: "could not verify CronJob acceptance: " + err.Error()}
+			}
+			detail := ""
+			if state.Suspended {
+				detail = "; CronJob is suspended"
+			}
+			return RolloutOutcome{Class: CronJobPending, Summary: "CronJob/" + name + " template applied for future Jobs; next scheduled run is unverified" + detail}
+		}
 		return verifyCronJob(ctx, checker, finding, name, ns)
 	default:
 		return RolloutOutcome{Class: RolloutSkipped, Summary: "completion verification is not applicable to " + finding.ResourceKind}

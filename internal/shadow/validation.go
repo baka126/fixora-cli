@@ -12,9 +12,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/fixora/kubectl-fixora/internal/image"
+	"github.com/fixora/kubectl-fixora/internal/kube"
 )
 
 func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
+	if strings.EqualFold(strings.TrimSpace(planType), "restore-command") {
+		return PatchValidationError{Reasons: []string{"AI revisions cannot alter an operator startup baseline"}}
+	}
 	planType = strings.ToLower(strings.TrimSpace(planType))
 	if !allowedRevisionStrategy(planType) {
 		return PatchValidationError{Reasons: []string{fmt.Sprintf("unknown or unsafe strategy %q", planType)}}
@@ -27,7 +31,7 @@ func ValidateRevisedPatch(originalPatch, revisedPatch, planType string) error {
 	if err != nil {
 		return PatchValidationError{Reasons: []string{err.Error()}}
 	}
-	reasons := validatePatchObject(revised)
+	reasons := validatePatchObject(revised, planType)
 	reasons = append(reasons, validateProjectedDiff(original, revised, planType)...)
 	if len(reasons) > 0 {
 		return PatchValidationError{Reasons: reasons}
@@ -55,7 +59,7 @@ func ValidateReviewedPatch(originalPatch, reviewedPatch, planType string) error 
 	reasons := validateReviewIdentity(original, reviewed)
 	original = withoutIdentity(original)
 	reviewed = withoutIdentity(reviewed)
-	reasons = append(reasons, validatePatchObject(reviewed)...)
+	reasons = append(reasons, validatePatchObject(reviewed, planType)...)
 	reasons = append(reasons, validateProjectedDiff(original, reviewed, planType)...)
 	if len(reasons) > 0 {
 		sort.Strings(reasons)
@@ -139,18 +143,36 @@ func parseSinglePatch(patch string) (map[string]any, error) {
 
 func allowedRevisionStrategy(strategy string) bool {
 	switch strategy {
-	case "image", "fix-architecture", "resources", "env":
+	case "image", "fix-architecture", "resources", "env", "probe", "filesystem", "restore-command":
 		return true
 	default:
 		return false
 	}
 }
 
-func validatePatchObject(obj map[string]any) []string {
+func validatePatchObject(obj map[string]any, strategy ...string) []string {
 	var reasons []string
-	meta, _ := nestedMap(obj, "metadata")
-	for _, key := range []string{"name", "namespace", "labels", "annotations", "ownerReferences"} {
-		if _, ok := meta[key]; ok {
+	kind, _ := obj["kind"].(string)
+	if kind == "" {
+		spec, _ := obj["spec"].(map[string]any)
+		kind = "Pod"
+		if spec["template"] != nil {
+			kind = "Deployment"
+		}
+		if spec["jobTemplate"] != nil {
+			kind = "CronJob"
+		}
+	}
+	if err := kube.ValidateWorkloadPatchEnvelope(obj, kind); err != nil {
+		reasons = append(reasons, err.Error())
+	}
+	for key := range obj {
+		if key != "spec" && key != "metadata" && key != "kind" && key != "apiVersion" {
+			reasons = append(reasons, "top-level "+key+" changes are not allowed")
+		}
+	}
+	if metadata, ok := obj["metadata"].(map[string]any); ok {
+		for key := range metadata {
 			reasons = append(reasons, "metadata."+key+" changes are not allowed")
 		}
 	}
@@ -198,7 +220,7 @@ func validatePatchObject(obj map[string]any) []string {
 				reasons = append(reasons, "secret volumes are not allowed")
 			} else if _, ok := v["downwardAPI"]; ok {
 				reasons = append(reasons, "downwardAPI volumes are not allowed")
-			} else {
+			} else if len(strategy) == 0 || strategy[0] != "filesystem" {
 				reasons = append(reasons, "volume changes are not allowed")
 			}
 		}
@@ -242,8 +264,29 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 		reasons = append(reasons, validateResourceCeiling(revSpec, activePatchPolicy())...)
 	case "env":
 		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "env": true, "envFrom": true}, strategy)...)
+	case "restore-command":
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "command": true, "args": true}, strategy)...)
+		reasons = append(reasons, validateStartupSpec(revSpec)...)
+		if !reflect.DeepEqual(origSpec, revSpec) {
+			reasons = append(reasons, "startup patch must exactly match the operator baseline")
+		}
+	case "filesystem":
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{"name": true, "volumeMounts": true}, strategy)...)
+		reasons = append(reasons, validateFilesystemSpec(revSpec)...)
+	case "probe":
+		// Probe fields cannot change identity, escalate privilege, read
+		// secrets, alter scheduling, or override the container command. Their
+		// only effect is on readiness — exactly what shadow measures — so a
+		// wrong probe fails the clone directly. But that argument only holds
+		// for the network probes: an exec probe *adds* a periodically executed
+		// command that shadow cannot see (an exec probe that exits 0 still
+		// makes the clone Ready), so the handler must be allowlisted too.
+		reasons = append(reasons, validateContainerKeys(origSpec, revSpec, map[string]bool{
+			"name": true, "readinessProbe": true, "livenessProbe": true, "startupProbe": true,
+		}, strategy)...)
+		reasons = append(reasons, validateProbeHandlers(revSpec)...)
 	}
-	if reflect.DeepEqual(origSpec, revSpec) {
+	if strategy != "restore-command" && reflect.DeepEqual(origSpec, revSpec) {
 		reasons = append(reasons, "revised patch does not change the original patch")
 	}
 	sort.Strings(reasons)
@@ -252,7 +295,11 @@ func validateProjectedDiff(original, revised map[string]any, strategy string) []
 
 func allowedSpecKeys(strategy string) map[string]bool {
 	switch strategy {
-	case "image", "fix-architecture", "resources", "env":
+	case "restore-command":
+		return map[string]bool{"containers": true}
+	case "filesystem":
+		return map[string]bool{"containers": true, "volumes": true, "securityContext": true}
+	case "image", "fix-architecture", "resources", "env", "probe":
 		return map[string]bool{"containers": true, "initContainers": true}
 	default:
 		return map[string]bool{}
@@ -301,6 +348,78 @@ func validateContainerKeys(original, spec map[string]any, allowed map[string]boo
 	return reasons
 }
 
+// validateProbeHandlers restricts probe handlers under the probe strategy to the
+// two the kubelet issues without executing anything in the container. exec and
+// grpc (and any unknown handler) are rejected; `host` is rejected inside either
+// permitted handler because it points the kubelet's request at an arbitrary
+// destination rather than the pod itself.
+func validateProbeHandlers(revised map[string]any) []string {
+	timingKeys := map[string]bool{
+		"initialDelaySeconds": true, "timeoutSeconds": true, "periodSeconds": true,
+		"successThreshold": true, "failureThreshold": true, "terminationGracePeriodSeconds": true,
+	}
+	var reasons []string
+	for _, section := range []string{"containers", "initContainers"} {
+		for _, c := range sliceMaps(revised[section]) {
+			name := stringValue(c["name"])
+			for _, probeKey := range []string{"readinessProbe", "livenessProbe", "startupProbe"} {
+				probe, ok := nestedMap(c, probeKey)
+				if !ok {
+					continue
+				}
+				// A readiness probe cannot restart a container, so its timing is
+				// harmless. Bound the conservative first-failure time for liveness
+				// and startup probes so verification cannot pass before the probe
+				// reaches its restart threshold.
+				if probeKey == "livenessProbe" || probeKey == "startupProbe" {
+					limit := stableWindow.Seconds()
+					windowName := "shadow stability window"
+					if probeKey == "startupProbe" {
+						limit = startupWindow.Seconds()
+						windowName = "shadow startup allowance"
+					}
+					firstFailureSeconds := probeTimingSeconds(probe, "initialDelaySeconds", 0) +
+						probeTimingSeconds(probe, "periodSeconds", 10)*probeTimingSeconds(probe, "failureThreshold", 3) +
+						probeTimingSeconds(probe, "timeoutSeconds", 1)
+					if float64(firstFailureSeconds) > limit {
+						reasons = append(reasons, fmt.Sprintf(
+							"%s.%s.%s can take about %ds to fail, exceeding the %ds %s; shadow verification may pass before the probe acts",
+							section, name, probeKey, firstFailureSeconds, int(limit), windowName))
+					}
+				}
+				for handler := range probe {
+					prefix := section + "." + name + "." + probeKey + "." + handler
+					switch {
+					case handler == "httpGet" || handler == "tcpSocket":
+						if h, ok := nestedMap(probe, handler); ok {
+							if _, hasHost := h["host"]; hasHost {
+								reasons = append(reasons, prefix+".host is not allowed for strategy probe")
+							}
+						}
+					case timingKeys[handler]:
+						// probe timing field, allowed
+					default:
+						reasons = append(reasons, prefix+" probe handler is not allowed for strategy probe; only httpGet and tcpSocket are permitted")
+					}
+				}
+			}
+		}
+	}
+	return reasons
+}
+
+func probeTimingSeconds(probe map[string]any, key string, fallback int) int {
+	raw := quantityString(probe[key])
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
 func containerNames(value any) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range sliceMaps(value) {
@@ -315,23 +434,7 @@ func containerNames(value any) map[string]bool {
 }
 
 func patchPodSpec(obj map[string]any) (map[string]any, bool) {
-	if spec, ok := nestedMap(obj, "spec"); ok {
-		if template, ok := nestedMap(spec, "template"); ok {
-			if tplSpec, ok := nestedMap(template, "spec"); ok {
-				return tplSpec, true
-			}
-		}
-		if _, ok := spec["containers"]; ok {
-			return spec, true
-		}
-		if _, ok := spec["initContainers"]; ok {
-			return spec, true
-		}
-	}
-	if _, ok := obj["containers"]; ok {
-		return obj, true
-	}
-	return nil, false
+	return kube.WorkloadPodSpec(obj)
 }
 
 func sliceMaps(value any) []map[string]any {

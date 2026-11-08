@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,10 +32,39 @@ func New() Store {
 	return Store{Dir: dir}
 }
 
-func Key(f analyzer.Finding) string {
-	payload := f.ID + "|" + f.Summary + "|" + f.Status + "|" + f.Category
-	sum := sha256.Sum256([]byte(payload))
+func Key(f analyzer.Finding, requestContext ...string) string {
+	f.AI = nil
+	payload, _ := json.Marshal(struct {
+		Finding analyzer.Finding
+		Context []string
+	}{f, requestContext})
+	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+// AIKey separates explanations by their non-secret request identity. API keys
+// are intentionally never accepted as an input to cache-key construction.
+func AIKey(f analyzer.Finding, provider, protocol, model, endpoint, profile, outputMode string) string {
+	identity := struct {
+		Finding    analyzer.Finding `json:"finding"`
+		Provider   string           `json:"provider"`
+		Protocol   string           `json:"protocol"`
+		Model      string           `json:"model"`
+		Endpoint   string           `json:"endpoint"`
+		Profile    string           `json:"profile"`
+		OutputMode string           `json:"outputMode"`
+	}{f, provider, protocol, model, endpointHost(endpoint), profile, outputMode}
+	payload, _ := json.Marshal(identity)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func endpointHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func (s Store) Get(key string, target any) bool {

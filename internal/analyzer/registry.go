@@ -39,6 +39,7 @@ var registry = []Definition{
 	{Name: "OLMOperatorGroup", Kind: "OperatorGroup", Resource: "operatorgroups.operators.coreos.com", Scope: "namespaced", Description: "OLM OperatorGroup count and CSV resolution health", Enabled: true},
 	{Name: "OLMClusterCatalog", Kind: "ClusterCatalog", Resource: "clustercatalogs.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster catalog source and serving health", Enabled: true},
 	{Name: "OLMClusterExtension", Kind: "ClusterExtension", Resource: "clusterextensions.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster extension install and progression health", Enabled: true},
+	{Name: "ResourceClaim", Kind: "ResourceClaim", Resource: "resourceclaims.resource.k8s.io", Scope: "namespaced", Description: "Missing DeviceClass references in ResourceClaim requests", Enabled: false},
 	{Name: "Secret", Kind: "Secret", Resource: "secrets", Scope: "namespaced", Description: "Secret key presence, base64 validity, and imagePullSecret resolution (key names only, never values)", Enabled: false},
 }
 
@@ -57,12 +58,68 @@ func ListAnalyzers(filters []string) []Definition {
 	return out
 }
 
+// AskInventoryDefinitions returns metadata inventory resources relevant to
+// the selected Ask checks. A full filter selection covers every registered
+// resource; targeted aliases expand to their related inventory kinds.
+func AskInventoryDefinitions(filters []string) []Definition {
+	selected := filterSet(filters)
+	if len(selected) == 0 {
+		selected = filterSet(AllDiagnosticFilters())
+	}
+	groups := map[string][]string{
+		"Pod": {"workload"}, "ReplicaSet": {"workload"}, "Deployment": {"workload"},
+		"StatefulSet": {"workload", "storage"}, "DaemonSet": {"workload"}, "Job": {"workload"}, "CronJob": {"workload"},
+		"Service": {"networking"}, "Ingress": {"networking"}, "GatewayClass": {"networking"}, "Gateway": {"networking"}, "HTTPRoute": {"networking"}, "NetworkPolicy": {"networking"},
+		"HPA": {"autoscaling"}, "PodDisruptionBudget": {"policy"}, "PVC": {"storage"}, "StorageClass": {"storage"}, "Node": {"scheduling"},
+		"MutatingWebhook": {"policy"}, "ValidatingWebhook": {"policy"}, "KyvernoPolicyReport": {"policy", "security"},
+		"KedaScaledObject": {"autoscaling"}, "TrivyVulnerabilityReport": {"security"}, "TrivyConfigAuditReport": {"security"},
+		"OLMClusterServiceVersion": {"operator"}, "OLMSubscription": {"operator"}, "OLMInstallPlan": {"operator"}, "OLMCatalogSource": {"operator"}, "OLMOperatorGroup": {"operator"}, "OLMClusterCatalog": {"operator"}, "OLMClusterExtension": {"operator"},
+		"ResourceClaim": {"scheduling"}, "Secret": {"configuration", "security"},
+	}
+	definitions := make([]Definition, 0, len(registry))
+	for _, def := range registry {
+		matched := selected[strings.ToLower(def.Name)] || selected[strings.ToLower(def.Kind)] || selected[strings.ToLower(def.Resource)]
+		for _, group := range groups[def.Name] {
+			matched = matched || selected[group]
+		}
+		if matched {
+			definitions = append(definitions, def)
+		}
+	}
+	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
+	return definitions
+}
+
+// AllDiagnosticFilters returns the complete supported selection across both
+// registry and precision analyzers. Secret and certificate reads remain
+// controlled by their existing analyzer options.
+func AllDiagnosticFilters() []string {
+	seen := map[string]bool{}
+	for _, def := range registry {
+		for _, alias := range []string{def.Name, def.Kind, def.Resource} {
+			alias = strings.ToLower(strings.TrimSpace(alias))
+			if alias != "" {
+				seen[alias] = true
+			}
+		}
+	}
+	for _, alias := range allPrecisionAnalyzerAliases() {
+		seen[alias] = true
+	}
+	out := make([]string, 0, len(seen))
+	for alias := range seen {
+		out = append(out, alias)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (a Analyzer) runRegistry(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	findings := []Finding{}
 	skipped := []SkippedCheck{}
 	selected := filterSet(a.opts.Filters)
 	for _, def := range registry {
-		if def.Name == "Pod" || def.Name == "Secret" {
+		if def.Name == "Pod" || def.Name == "Secret" || def.Name == "ResourceClaim" {
 			continue
 		}
 		if len(selected) == 0 && !def.Enabled {
