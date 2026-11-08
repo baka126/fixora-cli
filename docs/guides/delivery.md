@@ -30,6 +30,8 @@ Shadow verification requires cluster-scope permission to create, read, list, and
 
 Build and publish the fixed probe image with your approved registry workflow, then configure its immutable digest:
 
+**Effect:** Builds a local image, publishes it to the configured registry, inspects the published manifest, and writes an environment variable in the current shell. It does not modify Kubernetes resources.
+
 ```bash
 docker buildx build --platform linux/amd64 \
   -f build/service-probe.Dockerfile \
