@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -17,12 +18,29 @@ type BedrockConverseAPI interface {
 	Converse(context.Context, *bedrockruntime.ConverseInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.ConverseOutput, error)
 }
 
-type bedrockConverseAdapter struct{ client BedrockConverseAPI }
+type bedrockConverseAdapter struct {
+	client        BedrockConverseAPI
+	singleAttempt bool
+}
 
 // NewBedrockConverseAdapter accepts a service client for tests. Pass nil to use
 // the AWS SDK's normal credential chain and AWS_REGION configuration.
 func NewBedrockConverseAdapter(client BedrockConverseAPI) Adapter {
-	return bedrockConverseAdapter{client: client}
+	return newBedrockConverseAdapter(client, false)
+}
+
+func newBedrockConverseAdapter(client BedrockConverseAPI, singleAttempt bool) Adapter {
+	return bedrockConverseAdapter{client: client, singleAttempt: singleAttempt}
+}
+
+func bedrockAWSConfig(ctx context.Context, region string, singleAttempt bool) (aws.Config, error) {
+	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	if singleAttempt {
+		options = append(options, awsconfig.WithRetryer(func() aws.Retryer {
+			return retry.NewStandard(func(o *retry.StandardOptions) { o.MaxAttempts = 1 })
+		}))
+	}
+	return awsconfig.LoadDefaultConfig(ctx, options...)
 }
 
 func (a bedrockConverseAdapter) Explain(ctx context.Context, request Request) (*analyzer.AIResult, error) {
@@ -35,7 +53,7 @@ func (a bedrockConverseAdapter) Explain(ctx context.Context, request Request) (*
 		if region == "" {
 			return nil, &ProviderError{Kind: ErrorConfiguration}
 		}
-		cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+		cfg, err := bedrockAWSConfig(ctx, region, a.singleAttempt)
 		if err != nil {
 			return nil, &ProviderError{Kind: ErrorConfiguration}
 		}

@@ -67,6 +67,10 @@ func TestInspectSourceServiceAccountFindsPullSecretReferences(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("expected source service-account pull secret limitation, found=%t err=%v", found, err)
 	}
+	refs, err := sourceServiceAccountPullSecrets(context.Background(), &kube.TypedClient{Clientset: clientset}, "prod", &corev1.Pod{})
+	if err != nil || len(refs) != 1 || refs[0] != "private-registry" {
+		t.Fatalf("service-account reference metadata = %#v, err=%v", refs, err)
+	}
 }
 
 func TestEnsureSandboxNetworkPolicyRequiresExactOwnedDenyPolicy(t *testing.T) {
@@ -153,7 +157,15 @@ func isolationFake(enforce bool) (*fake.Clientset, discovery.DiscoveryInterface)
 			// of the sandbox policy on both directions: egress probes originate in
 			// the sandbox and ingress probes originate in the witness namespace.
 			policies, _ := clientset.Tracker().List(schema.GroupVersionResource{Group: networkingv1.GroupName, Version: "v1", Resource: "networkpolicies"}, schema.GroupVersionKind{Group: networkingv1.GroupName, Version: "v1", Kind: "NetworkPolicy"}, "")
-			blocked := len(policies.(*networkingv1.NetworkPolicyList).Items) != 0 && enforce
+			blocked := false
+			if enforce {
+				for _, policy := range policies.(*networkingv1.NetworkPolicyList).Items {
+					if pod.Labels[labelSession] != "" && policy.Labels[labelSession] == pod.Labels[labelSession] {
+						blocked = true
+						break
+					}
+				}
+			}
 			exitCode, phase := int32(0), corev1.PodSucceeded
 			if blocked {
 				exitCode, phase = 1, corev1.PodFailed

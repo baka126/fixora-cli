@@ -1,0 +1,8 @@
+{
+  "name": "fixora",
+  "description": "Kubernetes incident diagnosis and guarded repair previews powered by the Fixora CLI MCP server.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Fixora contributors"
+  }
+}

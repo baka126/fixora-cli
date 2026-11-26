@@ -32,11 +32,71 @@ func collectFailureEvidence(ctx context.Context, c *kube.TypedClient, sourceName
 	if source != nil {
 		evidence.Probes = probeEvidence(source)
 		evidence.ConfigMaps = configMapReferenceEvidence(ctx, c, sourceNamespace, source)
+		evidence.Secrets = secretReferenceEvidence(source)
 	}
 	if candidate != nil {
 		updateCandidateEvidence(evidence, candidate, time.Now())
 	}
 	return evidence
+}
+
+func secretReferenceEvidence(pod *corev1.Pod) []SecretReferenceEvidence {
+	if pod == nil {
+		return nil
+	}
+	var result []SecretReferenceEvidence
+	seen := map[string]bool{}
+	add := func(container, env, name, key string, optional bool) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		identity := name + "\x00" + key + "\x00" + container + "\x00" + env
+		if seen[identity] {
+			return
+		}
+		seen[identity] = true
+		result = append(result, SecretReferenceEvidence{Container: container, EnvironmentVariable: env, Name: name, Key: key, Status: "omitted-by-isolation", Optional: optional})
+	}
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, source := range container.EnvFrom {
+			if source.SecretRef != nil {
+				add(container.Name, "", source.SecretRef.Name, "*", source.SecretRef.Optional != nil && *source.SecretRef.Optional)
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+				ref := env.ValueFrom.SecretKeyRef
+				add(container.Name, env.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional)
+			}
+		}
+	}
+	addSecretVolume := func(volumeName, name string, items []corev1.KeyToPath, optional *bool) {
+		if len(items) == 0 {
+			add(volumeName, "", name, "*", optional != nil && *optional)
+			return
+		}
+		for _, item := range items {
+			add(volumeName, "", name, item.Key, optional != nil && *optional)
+		}
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if source := volume.Secret; source != nil {
+			addSecretVolume(volume.Name, source.SecretName, source.Items, source.Optional)
+		}
+		if volume.Projected != nil {
+			for _, projected := range volume.Projected.Sources {
+				if source := projected.Secret; source != nil {
+					addSecretVolume(volume.Name, source.Name, source.Items, source.Optional)
+				}
+			}
+		}
+	}
+	for _, imagePullSecret := range pod.Spec.ImagePullSecrets {
+		add("image-pull", "", imagePullSecret.Name, "*", false)
+	}
+	return result
 }
 
 func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namespace string, pod *corev1.Pod) []ConfigMapReferenceEvidence {

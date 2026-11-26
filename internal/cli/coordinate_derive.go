@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/coordinate"
 	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 )
 
 // References is the set of resources a workload's pod template actually
@@ -185,21 +187,141 @@ func deriveRelatedRefs(ctx context.Context, r kube.Reader, rootRef, namespace st
 // apply-eligible steps, and runs the existing coordinate saga on them. Returns
 // the process exit code.
 func runCoordinateFrom(ctx, executionCtx context.Context, stdout, stderr io.Writer, opts options, reader kube.Reader, a analyzer.Analyzer, k kube.Kubectl, rootRef string) int {
+	var storagePolicy *shadow.GraphStorageAuthority
+	if opts.storageShadowPolicy != "" {
+		var err error
+		storagePolicy, err = shadow.LoadGraphStoragePolicy(opts.storageShadowPolicy)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: load storage shadow policy: %v\n", err)
+			return 2
+		}
+	}
 	rootFinding, err := a.AnalyzeResource(ctx, rootRef)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: analyze %s: %v\n", rootRef, err)
 		return 1
 	}
+	if opts.preview {
+		graphRootRef := rootFinding.ResourceKind + "/" + rootFinding.ResourceName
+		graph, graphErr := discoverCoordinateDependencyGraph(ctx, k, graphRootRef, rootFinding.Namespace, storagePolicy)
+		if graphErr != nil {
+			fmt.Fprintf(stderr, "error: discover dependency graph: %v\n", graphErr)
+			return 1
+		}
+		var workloadRefs []string
+		for _, node := range graph.Nodes {
+			if coordinateGraphWorkloadKind(node.Kind) {
+				workloadRefs = append(workloadRefs, node.Kind+"/"+node.Name)
+			}
+		}
+		steps, stepErr := buildPreparedCoordinateSteps(ctx, reader, k, opts, workloadRefs, stderr)
+		if stepErr != nil {
+			fmt.Fprintf(stderr, "error: prepare dependency graph candidates: %v\n", stepErr)
+			return 1
+		}
+		for _, step := range steps {
+			if step.PatchFile != "" {
+				_ = os.Remove(step.PatchFile)
+			}
+		}
+		preview := buildCoordinateGraphPreview(graph, steps)
+		return writeCoordinateGraphPreview(stdout, opts.output, preview)
+	}
+	graphRootRef := rootFinding.ResourceKind + "/" + rootFinding.ResourceName
+	graph, err := discoverCoordinateDependencyGraph(ctx, k, graphRootRef, rootFinding.Namespace, storagePolicy)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: discover dependency graph: %v\n", err)
+		return 1
+	}
+	var workloadRefs []string
+	for _, node := range graph.Nodes {
+		if coordinateGraphWorkloadKind(node.Kind) {
+			workloadRefs = append(workloadRefs, node.Kind+"/"+node.Name)
+		}
+	}
+	hasPVC := graphHasPersistentClaims(graph)
+	if hasPVC && len(workloadRefs) < 2 {
+		fmt.Fprintln(stderr, "error: PVC snapshot verification requires a connected graph with at least two supported workloads")
+		return 2
+	}
+	if err := validateGraphStoragePolicySelection(graph, storagePolicy); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	steps, err := buildPreparedCoordinateSteps(ctx, reader, k, opts, workloadRefs, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: prepare dependency graph candidates: %v\n", err)
+		return 1
+	}
+	defer removeCoordinatePatchFiles(steps)
+	if len(workloadRefs) >= 2 {
+		if len(graph.Blockers) > 0 {
+			fmt.Fprintf(stderr, "error: dependency graph is not certifiable: %s\n", strings.Join(graph.Blockers, "; "))
+			return 2
+		}
+		bound, bindErr := bindCoordinateGraphCandidates(graph, steps)
+		if bindErr != nil {
+			fmt.Fprintf(stderr, "error: %v\n", bindErr)
+			return 2
+		}
+		eligible := filterApplyEligible(steps)
+		if len(eligible) != len(steps) {
+			fmt.Fprintln(stderr, "error: every connected workload must have an apply-eligible candidate before combined shadow verification")
+			return 2
+		}
+		var storagePlan *shadow.GraphStoragePlan
+		if hasPVC {
+			typed, typedErr := kube.NewRequiredTypedClient(opts.context, "combined graph CSI snapshot preflight")
+			if typedErr != nil {
+				fmt.Fprintf(stderr, "error: %v\n", typedErr)
+				return 2
+			}
+			storagePlan, err = shadow.PreflightGraphStorage(ctx, typed, bound, storagePolicy)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: CSI snapshot preflight failed: %v\n", err)
+				return 2
+			}
+			if err = shadow.BindGraphStoragePlan(&bound, storagePlan); err != nil {
+				fmt.Fprintf(stderr, "error: bind CSI storage plan: %v\n", err)
+				return 2
+			}
+			if err = storagePlan.Policy.CheckFresh(); err != nil {
+				fmt.Fprintf(stderr, "error: storage policy changed before confirmation: %v\n", err)
+				return 2
+			}
+			if !confirmGraphStoragePlan(storagePlan.Namespace, storagePlan.ConsentItems(), inputFor(opts), stderr) {
+				fmt.Fprintln(stderr, "CSI snapshot authorization declined; no shadow resources or snapshots were created")
+				return 2
+			}
+			if err = storagePlan.Policy.CheckFresh(); err != nil {
+				fmt.Fprintf(stderr, "error: storage policy changed during confirmation: %v\n", err)
+				return 2
+			}
+		}
+		fmt.Fprintln(stdout, "Derived connected graph fix set")
+		fmt.Fprintln(stdout, "===============================")
+		for _, step := range eligible {
+			fmt.Fprintf(stdout, "- %s (%s)\n", step.Ref, step.Namespace)
+		}
+		return runPreparedGraphCoordinateSteps(executionCtx, stdout, stderr, opts, reader, k, bound, eligible, storagePlan)
+	}
+	if len(graph.Blockers) > 0 && !(len(graph.Blockers) == 1 && graph.Blockers[0] == "combined shadow requires at least two connected supported workloads") {
+		fmt.Fprintf(stderr, "error: dependency graph is not certifiable: %s\n", strings.Join(graph.Blockers, "; "))
+		return 2
+	}
+	// Keep the established independent-target workflow when graph discovery
+	// finds no connected multi-workload dependency graph.
 	refs, err := deriveRelatedRefs(ctx, k, rootRef, rootFinding.Namespace)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: derive related resources: %v\n", err)
 		return 1
 	}
-	steps, err := buildPreparedCoordinateSteps(ctx, reader, k, opts, refs, stderr)
+	steps, err = buildPreparedCoordinateSteps(ctx, reader, k, opts, refs, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
+	defer removeCoordinatePatchFiles(steps)
 	eligible := filterApplyEligible(steps)
 
 	fmt.Fprintln(stdout, "Derived coordinated fix set")
@@ -213,4 +335,31 @@ func runCoordinateFrom(ctx, executionCtx context.Context, stdout, stderr io.Writ
 	}
 
 	return runPreparedCoordinateSteps(executionCtx, stdout, stderr, opts, reader, k, eligible)
+}
+
+func removeCoordinatePatchFiles(steps []coordinate.Step) {
+	for _, step := range steps {
+		if step.PatchFile != "" {
+			_ = os.Remove(step.PatchFile)
+		}
+	}
+}
+
+func graphHasPersistentClaims(graph shadow.DependencyGraph) bool {
+	for _, node := range graph.Nodes {
+		if node.Kind == "PersistentVolumeClaim" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateGraphStoragePolicySelection(graph shadow.DependencyGraph, authority *shadow.GraphStorageAuthority) error {
+	if graphHasPersistentClaims(graph) && authority == nil {
+		return fmt.Errorf("PVC-backed combined shadow requires --storage-shadow-policy and separate storage confirmation")
+	}
+	if authority != nil && !graphHasPersistentClaims(graph) {
+		return fmt.Errorf("--storage-shadow-policy was supplied but this graph has no PVC-backed workload")
+	}
+	return nil
 }

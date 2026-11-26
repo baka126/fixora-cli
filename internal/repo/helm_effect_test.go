@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
@@ -20,7 +21,87 @@ type helmEffectFixture struct {
 	calls                            int
 	serverPending                    bool
 	admissionRewrite                 bool
+	admissionSelector                bool
 	baselineReplicas                 bool
+}
+
+type helmServiceEffectFixture struct{ *helmEffectFixture }
+
+func (d *helmServiceEffectFixture) Renderer() HelmRenderer { return d }
+
+func (d *helmServiceEffectFixture) Render(_ context.Context, _ HelmRenderContext, _ *HelmInputs, edited []byte) ([]byte, error) {
+	d.calls++
+	out := helmServiceTarget
+	if len(edited) > 0 {
+		var values map[string]any
+		if err := yaml.Unmarshal(edited, &values); err != nil {
+			return nil, err
+		}
+		if selector, ok := values["selector"].(map[string]any); ok {
+			out = strings.Replace(out, "selector: {app: old}", fmt.Sprintf("selector: {app: %v}", selector["app"]), 1)
+		}
+		if backend, ok := values["backend"]; ok {
+			out = strings.Replace(out, "targetPort: 8080", fmt.Sprintf("targetPort: %v", backend), 1)
+		}
+	}
+	return []byte(out), nil
+}
+
+func TestHelmEffectCertifiesExactServiceRoutingSource(t *testing.T) {
+	c := helmSourceFixture(t)
+	if err := os.WriteFile(filepath.Join(c.RepoPath, c.EditValuesPath), []byte("selector: {app: old}\nbackend: 8080\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	var live map[string]any
+	if err := yaml.Unmarshal([]byte(helmServiceTarget), &live); err != nil {
+		t.Fatal(err)
+	}
+	meta := live["metadata"].(map[string]any)
+	meta["uid"] = "service-uid"
+	meta["annotations"] = map[string]any{"meta.helm.sh/release-name": "chosen", "meta.helm.sh/release-namespace": "app"}
+	base := &helmEffectFixture{live: live}
+	d := &helmServiceEffectFixture{helmEffectFixture: base}
+	req := HelmSourceRequest{
+		Context:  c,
+		Finding:  analyzer.Finding{ResourceKind: "Service", ResourceName: "api", Namespace: "app", ResourceUID: "service-uid", GitOps: analyzer.GitOpsHints{ManagedBy: "Helm", HelmRelease: "chosen"}},
+		Plan:     fix.Plan{Resource: "Service/api", Namespace: "app", Strategy: "service-routing", Confidence: 100, TargetUID: "service-uid", PatchTemplate: helmServicePatch, BlockedReasons: []string{fix.SourceOwnershipReviewReason}},
+		Mappings: []HelmMapping{{"/spec/selector", "/selector"}, {"/spec/ports/0/targetPort", "/backend"}},
+	}
+	plan, err := PrepareHelmSource(context.Background(), req, d)
+	if err != nil || plan.Status != "source-validated" || plan.Proof == nil {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	if err := plan.Proof.CheckFresh(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(plan.ChangedKeys, ","); got != "/backend,/selector" {
+		t.Fatalf("changed values keys=%q", got)
+	}
+}
+
+func TestHelmEffectRejectsAdmissionServiceSelectorMutation(t *testing.T) {
+	c := helmSourceFixture(t)
+	if err := os.WriteFile(filepath.Join(c.RepoPath, c.EditValuesPath), []byte("selector: {app: old}\nbackend: 8080\n"), 0640); err != nil {
+		t.Fatal(err)
+	}
+	var live map[string]any
+	if err := yaml.Unmarshal([]byte(helmServiceTarget), &live); err != nil {
+		t.Fatal(err)
+	}
+	meta := live["metadata"].(map[string]any)
+	meta["uid"] = "service-uid"
+	meta["annotations"] = map[string]any{"meta.helm.sh/release-name": "chosen", "meta.helm.sh/release-namespace": "app"}
+	base := &helmEffectFixture{live: live, admissionSelector: true}
+	d := &helmServiceEffectFixture{helmEffectFixture: base}
+	req := HelmSourceRequest{
+		Context:  c,
+		Finding:  analyzer.Finding{ResourceKind: "Service", ResourceName: "api", Namespace: "app", ResourceUID: "service-uid", GitOps: analyzer.GitOpsHints{ManagedBy: "Helm", HelmRelease: "chosen"}},
+		Plan:     fix.Plan{Resource: "Service/api", Namespace: "app", Strategy: "service-routing", Confidence: 100, TargetUID: "service-uid", PatchTemplate: helmServicePatch, BlockedReasons: []string{fix.SourceOwnershipReviewReason}},
+		Mappings: []HelmMapping{{"/spec/selector", "/selector"}, {"/spec/ports/0/targetPort", "/backend"}},
+	}
+	if _, err := PrepareHelmSource(context.Background(), req, d); err == nil {
+		t.Fatal("admission-added selector label accepted")
+	}
 }
 
 func (d *helmEffectFixture) Renderer() HelmRenderer { return d }
@@ -65,6 +146,9 @@ func (d *helmEffectFixture) ServerValidate(_ context.Context, p string) (HelmVal
 	_ = yaml.Unmarshal([]byte(p), &obj)
 	if d.admissionRewrite {
 		obj["spec"].(map[string]any)["replicas"] = 99
+	}
+	if d.admissionSelector {
+		obj["spec"].(map[string]any)["selector"].(map[string]any)["injected"] = "true"
 	}
 	return HelmValidation{Status: "passed", Admitted: obj}, nil
 }

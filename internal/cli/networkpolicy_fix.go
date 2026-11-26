@@ -26,12 +26,20 @@ type networkPolicyReport struct {
 	NoChangesMade bool                           `json:"noChangesMade"`
 	Next          string                         `json:"next,omitempty"`
 }
+
 func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts options, resource string) int {
+	if opts.telemetrySession == nil {
+		opts.telemetrySession = startTelemetrySession(opts, "network_policy_change")
+		if opts.telemetrySession != nil {
+			defer sendTelemetryReport(opts.telemetrySession, errout)
+		}
+	}
 	kind, name, ok := strings.Cut(resource, "/")
 	if !ok || name == "" || (strings.ToLower(kind) != "networkpolicy" && strings.ToLower(kind) != "netpol") || opts.namespace == "" {
 		fmt.Fprintln(errout, "NetworkPolicy repair requires NetworkPolicy/<name> and -n <namespace>")
 		return 2
 	}
+	opts.telemetrySession.SetFailureType("network_policy_change")
 	if opts.networkPolicyPolicy == "" {
 		fmt.Fprintln(errout, "NetworkPolicy replacement requires --networkpolicy-policy <local-file>; diagnosis remains read-only.")
 		return 2
@@ -73,6 +81,9 @@ func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts option
 		fmt.Fprintf(errout, "NetworkPolicy repair requires review: %v\nNo changes made.\n", err)
 		return 1
 	}
+	if opts.telemetrySession != nil {
+		opts.telemetrySession.SetStage("candidate")
+	}
 	report := networkPolicyReport{Status: "preview", Target: target, Workload: plan.Workload, SelectedPods: plan.SelectedPodCount, ChangedFields: plan.ChangedFields, NoChangesMade: true, Next: "Review the exact policy diff, then use --apply to run isolated verification and request apply consent."}
 	var aiSummary string
 	if opts.useAI {
@@ -99,9 +110,15 @@ func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts option
 		fmt.Fprintf(out, "NetworkPolicy %s/%s\n", target.Namespace, target.Name)
 		fmt.Fprintln(out, "Running isolated allow/deny tests for the approved policy spec...")
 	}
+	if opts.telemetrySession != nil {
+		opts.telemetrySession.SetStage("verification")
+	}
 	verification, err := networkpolicyfix.Verify(ctx, runtime, plan)
 	report.Verification = &verification
 	if err != nil {
+		if opts.telemetrySession != nil {
+			opts.telemetrySession.SetVerification("failed", 1, nil)
+		}
 		report.Status = verification.Status
 		report.Next = "Resolve the verification or cleanup issue before retrying."
 		fmt.Fprintf(errout, "NetworkPolicy verification failed: %v\n", err)
@@ -111,6 +128,9 @@ func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts option
 			fmt.Fprintf(out, "Verification: %s. No policy changes made.\n", verification.Status)
 		}
 		return 1
+	}
+	if opts.telemetrySession != nil {
+		opts.telemetrySession.SetVerification("verified", 1, nil)
 	}
 	if opts.output == "text" {
 		fmt.Fprintf(out, "Verified %d declared TCP cases; CNI allow/deny controls passed.\n", len(verification.Cases))
@@ -127,6 +147,9 @@ func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts option
 	}
 	applied, err := networkpolicyfix.Apply(ctx, runtime, plan, verification.Receipt)
 	if err != nil {
+		if opts.telemetrySession != nil {
+			opts.telemetrySession.SetStage("delivery")
+		}
 		report.Status = "apply-uncertain"
 		report.NoChangesMade = false
 		report.Next = "Re-read the exact NetworkPolicy before considering any retry."
@@ -135,6 +158,9 @@ func runNetworkPolicyFix(ctx context.Context, out, errout io.Writer, opts option
 			_ = output.Write(out, opts.output, report)
 		}
 		return 1
+	}
+	if opts.telemetrySession != nil {
+		opts.telemetrySession.MarkApplied()
 	}
 	outcome, _ := networkpolicyfix.Observe(ctx, runtime, applied)
 	report.Status = outcome.Status

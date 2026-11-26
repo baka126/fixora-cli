@@ -40,7 +40,7 @@ var registry = []Definition{
 	{Name: "OLMClusterCatalog", Kind: "ClusterCatalog", Resource: "clustercatalogs.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster catalog source and serving health", Enabled: true},
 	{Name: "OLMClusterExtension", Kind: "ClusterExtension", Resource: "clusterextensions.olm.operatorframework.io", Scope: "cluster", Description: "OLMv1 cluster extension install and progression health", Enabled: true},
 	{Name: "ResourceClaim", Kind: "ResourceClaim", Resource: "resourceclaims.resource.k8s.io", Scope: "namespaced", Description: "Missing DeviceClass references in ResourceClaim requests", Enabled: false},
-	{Name: "Secret", Kind: "Secret", Resource: "secrets", Scope: "namespaced", Description: "Secret key presence, base64 validity, and imagePullSecret resolution (key names only, never values)", Enabled: false},
+	{Name: "Secret", Kind: "Secret", Resource: "secrets", Scope: "namespaced", Description: "Secret references, key presence, and imagePullSecret schema across Pods and workload templates (key names only, never values)", Enabled: false},
 }
 
 func ListAnalyzers(filters []string) []Definition {

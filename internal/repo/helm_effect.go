@@ -90,7 +90,11 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 		return out, err
 	}
 	req.Context = in.context
-	key := ResourceKey{kube.WorkloadVersion(req.Finding.ResourceKind), req.Finding.ResourceKind, req.Finding.Namespace, req.Finding.ResourceName}
+	apiVersion := kube.WorkloadVersion(req.Finding.ResourceKind)
+	if req.Finding.ResourceKind == "Service" {
+		apiVersion = "v1"
+	}
+	key := ResourceKey{apiVersion, req.Finding.ResourceKind, req.Finding.Namespace, req.Finding.ResourceName}
 	scope := func(k ResourceKey) (bool, error) { return d.Scope(ctx, k) }
 	first, err := stableHelmRender(ctx, d.Renderer(), in, nil, scope)
 	if err != nil {
@@ -108,15 +112,24 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 		out.Status = "source-already-correct"
 		return out, nil
 	}
-	allowed := map[string]bool{"image": true, "fix-architecture": true, "resources": true, "env": true, "probe": true}
+	allowed := map[string]bool{"image": true, "fix-architecture": true, "resources": true, "env": true, "probe": true, "service-routing": true}
 	if !allowed[req.Plan.Strategy] {
 		return out, errors.New("repair family requires source review")
 	}
-	if err = shadow.ValidateCandidatePatch(req.Plan.PatchYAML(), req.Plan.Strategy, req.Plan.Resource, req.Plan.Namespace); err != nil {
-		return out, errors.New("workload candidate failed existing field policy")
-	}
-	if err = checkHelmContainerTargets(base, req.Plan.PatchYAML()); err != nil {
-		return out, err
+	if req.Plan.Strategy == "service-routing" {
+		if req.Finding.ResourceKind != "Service" || req.Plan.ApplyEligible || req.Plan.CanApply {
+			return out, errors.New("Service Helm source delivery requires a review-only Service candidate")
+		}
+		if _, err = expectedHelmServiceTarget(base, req.Plan.PatchYAML()); err != nil {
+			return out, errors.New("Service candidate failed exact routing policy")
+		}
+	} else {
+		if err = shadow.ValidateCandidatePatch(req.Plan.PatchYAML(), req.Plan.Strategy, req.Plan.Resource, req.Plan.Namespace); err != nil {
+			return out, errors.New("workload candidate failed existing field policy")
+		}
+		if err = checkHelmContainerTargets(base, req.Plan.PatchYAML()); err != nil {
+			return out, err
+		}
 	}
 	live, err := d.ReadTarget(ctx, key)
 	if err != nil {
@@ -126,7 +139,17 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 	if err != nil {
 		return out, err
 	}
-	if !reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(base), ""), semanticHelm(normalizedHelmPodSpec(live), "")) {
+	if req.Finding.ResourceKind == "Service" {
+		if err = validateHelmServiceRoutingChange(base, base); err != nil {
+			return out, errors.New("rendered baseline does not match live Service routing configuration")
+		}
+		if err = validateHelmServiceRoutingChange(live, live); err != nil {
+			return out, errors.New("rendered baseline does not match live Service routing configuration")
+		}
+		if helmHash(helmServiceRoutingProjection(base)) != helmHash(helmServiceRoutingProjection(live)) {
+			return out, errors.New("rendered baseline does not match live Service routing configuration")
+		}
+	} else if !reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(base), ""), semanticHelm(normalizedHelmPodSpec(live), "")) {
 		return out, errors.New("rendered baseline does not match live workload configuration")
 	}
 	candidates, err := ProposeHelmValues(in, first, key, req.Plan.PatchYAML(), req.Mappings)
@@ -189,7 +212,13 @@ func PrepareHelmSource(ctx context.Context, req HelmSourceRequest, d HelmSourceD
 	}
 	switch validation.Status {
 	case "passed":
-		if !sameHelmTargetIdentity(validation.Admitted, key) || !helmAdmittedPreserves(expected, validation.Admitted) || !reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(expected), ""), semanticHelm(normalizedHelmPodSpec(validation.Admitted), "")) {
+		admissionMatches := false
+		if req.Plan.Strategy == "service-routing" {
+			admissionMatches = helmServiceAdmissionMatches(expected, validation.Admitted, live)
+		} else {
+			admissionMatches = sameHelmTargetIdentity(validation.Admitted, key) && helmAdmittedPreserves(expected, validation.Admitted) && reflect.DeepEqual(semanticHelm(normalizedHelmPodSpec(expected), ""), semanticHelm(normalizedHelmPodSpec(validation.Admitted), ""))
+		}
+		if !admissionMatches {
 			return out, errors.New("server admission changed the reviewed workload")
 		}
 	case "pending":
@@ -269,7 +298,13 @@ func exactHelmEffect(before, after HelmInventory, key ResourceKey, expected map[
 			want = expected
 		}
 		got, exists := after.objects[k]
-		if !exists || helmHash(semanticHelm(want, "")) != helmHash(semanticHelm(got, "")) {
+		wantSemantic := semanticHelm(want, "")
+		gotSemantic := semanticHelm(got, "")
+		if key.Kind == "Service" {
+			wantSemantic = helmServiceSemantic(want)
+			gotSemantic = helmServiceSemantic(got)
+		}
+		if !exists || helmHash(wantSemantic) != helmHash(gotSemantic) {
 			return false
 		}
 	}
@@ -317,7 +352,14 @@ func helmLiveBinding(live map[string]any, key ResourceKey, req HelmSourceRequest
 	if ns := stringField(annotations, "meta.helm.sh/release-namespace"); ns != "" && ns != req.Context.Namespace {
 		return "", errors.New("live release namespace differs")
 	}
-	return helmHash([]any{key, uid, helmPodSpec(live), meta["labels"], meta["annotations"]}), nil
+	configuration := any(helmPodSpec(live))
+	if key.Kind == "Service" {
+		if err := validateHelmService(live); err != nil {
+			return "", err
+		}
+		configuration = live["spec"]
+	}
+	return helmHash([]any{key, uid, configuration, meta["labels"], meta["annotations"]}), nil
 }
 func mapString(m map[string]any, parent, key string) string {
 	nested, _ := m[parent].(map[string]any)

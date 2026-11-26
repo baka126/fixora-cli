@@ -89,6 +89,24 @@ func TestPrepareShadowConfigMapsCopiesOnlyReferencedDataKeys(t *testing.T) {
 	}
 }
 
+func TestCollectFailureEvidenceRecordsSecretReferenceMetadataWithoutReadingValues(t *testing.T) {
+	optional := true
+	pod := &corev1.Pod{Spec: corev1.PodSpec{
+		Containers:       []corev1.Container{{Name: "api", Env: []corev1.EnvVar{{Name: "TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "api-secret"}, Key: "token"}}}}}},
+		Volumes:          []corev1.Volume{{Name: "certs", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{Secret: &corev1.SecretProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "tls-secret"}, Items: []corev1.KeyToPath{{Key: "tls.crt"}}, Optional: &optional}}}}}}},
+		ImagePullSecrets: []corev1.LocalObjectReference{{Name: "api-pull"}},
+	}}
+	evidence := collectFailureEvidence(context.Background(), nil, "prod", pod, nil)
+	if len(evidence.Secrets) != 3 {
+		t.Fatalf("expected metadata-only workload Secret references, got %#v", evidence.Secrets)
+	}
+	for _, ref := range evidence.Secrets {
+		if ref.Status != "omitted-by-isolation" || ref.Name == "" || strings.Contains(fmt.Sprintf("%#v", ref), "secret-value") {
+			t.Fatalf("Secret evidence must be metadata-only and explicit about isolation: %#v", ref)
+		}
+	}
+}
+
 func TestPrepareShadowConfigMapsDetectsAdmissionMutation(t *testing.T) {
 	const privateValue = "private-setting-value"
 	clientset := corefake.NewSimpleClientset(&corev1.ConfigMap{

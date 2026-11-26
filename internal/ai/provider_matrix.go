@@ -46,6 +46,7 @@ type ProviderSpec struct {
 
 var providerSpecs = map[string]ProviderSpec{
 	"openai":                {ID: "openai", Protocol: ProtocolOpenAIChat, DefaultBaseURL: "https://api.openai.com/v1", AuthMode: "bearer", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
+	"chatgpt":               {ID: "chatgpt", Protocol: ProtocolOpenAIResponses, DefaultBaseURL: "https://api.openai.com/v1", AuthMode: "chatgpt-oauth", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
 	"ollama":                {ID: "ollama", Protocol: ProtocolOllama, DefaultBaseURL: "http://localhost:11434", AuthMode: "none", OutputModes: []OutputMode{OutputModePromptJSON}},
 	"anthropic":             {ID: "anthropic", Protocol: ProtocolAnthropic, DefaultBaseURL: "https://api.anthropic.com", AuthMode: "api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSONSchema}},
 	"gemini":                {ID: "gemini", Protocol: ProtocolGemini, DefaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", AuthMode: "google-api-key", OutputModes: []OutputMode{OutputModePromptJSON, OutputModeJSON, OutputModeJSONSchema}},
@@ -68,7 +69,7 @@ var providerSpecs = map[string]ProviderSpec{
 
 // SupportedProviderIDs returns configured provider IDs in stable display order.
 func SupportedProviderIDs() []string {
-	return []string{"openai", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "cohere", "huggingface", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "watsonxai", "ibmwatsonxai", "noop"}
+	return []string{"openai", "chatgpt", "ollama", "anthropic", "gemini", "google", "groq", "localai", "azureopenai", "customrest", "cohere", "huggingface", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "watsonxai", "ibmwatsonxai", "noop"}
 }
 
 func ResolveProvider(providerID string) (ProviderSpec, error) {

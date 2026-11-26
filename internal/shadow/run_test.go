@@ -13,9 +13,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
@@ -114,6 +117,89 @@ func TestRunCopiesConfigMapKeyBeforeCandidateAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestRunCleansFailedCandidateBeforeBoundedRetry(t *testing.T) {
+	client, clientset := configMapJobClient(t, true)
+	candidateCount := 0
+	clientset.PrependReactor("delete", "namespaces", func(action ktesting.Action) (bool, runtime.Object, error) {
+		name := action.(ktesting.DeleteAction).GetName()
+		for _, gvr := range []schema.GroupVersionResource{
+			{Version: "v1", Resource: "pods"},
+			{Group: networkingv1.GroupName, Version: "v1", Resource: "networkpolicies"},
+			{Version: "v1", Resource: "configmaps"},
+		} {
+			if objects, err := clientset.Tracker().List(gvr, schema.GroupVersionKind{}, name); err == nil {
+				switch list := objects.(type) {
+				case *corev1.PodList:
+					for _, item := range list.Items {
+						_ = clientset.Tracker().Delete(gvr, name, item.Name)
+					}
+				case *networkingv1.NetworkPolicyList:
+					for _, item := range list.Items {
+						_ = clientset.Tracker().Delete(gvr, name, item.Name)
+					}
+				case *corev1.ConfigMapList:
+					for _, item := range list.Items {
+						_ = clientset.Tracker().Delete(gvr, name, item.Name)
+					}
+				}
+			}
+		}
+		_ = clientset.Tracker().Delete(corev1.SchemeGroupVersion.WithResource("namespaces"), "", name)
+		return true, nil, nil
+	})
+	clientset.PrependReactor("create", "pods", func(action ktesting.Action) (bool, runtime.Object, error) {
+		pod := action.(ktesting.CreateAction).GetObject().(*corev1.Pod).DeepCopy()
+		if pod.Labels[labelOriginal] == "" {
+			return false, nil, nil
+		}
+		candidateCount++
+		pod.UID = types.UID(fmt.Sprintf("uid-candidate-%d", candidateCount))
+		phase, reason, code := corev1.PodSucceeded, "", int32(0)
+		if candidateCount == 1 {
+			phase, reason, code = corev1.PodFailed, "Error", 1
+		}
+		pod.Status = corev1.PodStatus{Phase: phase, ContainerStatuses: []corev1.ContainerStatus{{Name: "api", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: reason, ExitCode: code}}}}}
+		if err := clientset.Tracker().Create(corev1.SchemeGroupVersion.WithResource("pods"), pod, pod.Namespace); err != nil {
+			return true, nil, err
+		}
+		return true, pod, nil
+	})
+	ai := &mockAI{patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v3\n"}
+	req := configMapJobRequest(false)
+	req.Retries = 1
+	req.AI = ai
+	req.Redact = true
+	result, err := Run(context.Background(), client, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Attempts) != 2 || !result.Attempts[0].Revised || candidateCount != 2 {
+		t.Fatalf("expected one failed candidate and one verified retry: %#v candidates=%d", result, candidateCount)
+	}
+	firstDelete, secondNamespaceCreate := -1, -1
+	namespaceCreations := 0
+	for i, action := range clientset.Actions() {
+		if action.GetVerb() == "create" && action.GetResource().Resource == "namespaces" {
+			name := action.(ktesting.CreateAction).GetObject().(*corev1.Namespace).Name
+			if strings.HasPrefix(name, "fixora-shadow-") && !strings.HasSuffix(name, "-witness") {
+				namespaceCreations++
+				if namespaceCreations == 2 {
+					secondNamespaceCreate = i
+				}
+			}
+		}
+		if action.GetVerb() == "delete" && action.GetResource().Resource == "namespaces" {
+			name := action.(ktesting.DeleteAction).GetName()
+			if strings.HasPrefix(name, "fixora-shadow-") && !strings.HasSuffix(name, "-witness") && firstDelete < 0 {
+				firstDelete = i
+			}
+		}
+	}
+	if firstDelete < 0 || secondNamespaceCreate < 0 || firstDelete >= secondNamespaceCreate {
+		t.Fatalf("failed attempt namespace must be deleted before the retry namespace is created: delete=%d retry-create=%d", firstDelete, secondNamespaceCreate)
+	}
+}
+
 func TestRunMissingConfigMapKeyIsInconclusiveWithoutCandidate(t *testing.T) {
 	client, clientset := configMapJobClient(t, false)
 	result, err := Run(context.Background(), client, configMapJobRequest(false))
@@ -163,8 +249,9 @@ func TestCandidateDiagnosticsAreSuppressedWhenConfigMapValuesAreCopied(t *testin
 func configMapJobRequest(keep bool) Request {
 	return Request{
 		Namespace: "prod", Resource: "Job/api", ProbeImage: testIsolationProbeImage, Keep: keep, Timeout: time.Second,
-		Plan:  fix.Plan{Strategy: "image"},
-		Patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n",
+		Plan:    fix.Plan{Strategy: "image"},
+		Finding: analyzer.Finding{Status: "CreateContainerConfigError"},
+		Patch:   "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n",
 	}
 }
 
@@ -251,13 +338,17 @@ func TestRequiredConfigMapMakesShadowInconclusiveWithoutCandidate(t *testing.T) 
 	client := &kube.TypedClient{Clientset: clientset, Discovery: discoveryClient, Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
 	result, err := Run(context.Background(), client, Request{
 		Namespace: "prod", Resource: "Deployment/api", ProbeImage: testIsolationProbeImage,
-		Patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n",
+		Finding: analyzer.Finding{Status: "CreateContainerConfigError"},
+		Patch:   "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n",
 	})
 	if err != nil || result.Status != VerificationInconclusive || result.Verified {
 		t.Fatalf("required ConfigMap must make shadow inconclusive: result=%#v err=%v", result, err)
 	}
 	if result.Evidence == nil || len(result.Evidence.ConfigMaps) != 1 || result.Evidence.ConfigMaps[0].SourceStatus != "not-found" || result.Evidence.ConfigMaps[0].SandboxStatus != "unresolved" {
 		t.Fatalf("inconclusive result should preserve source ConfigMap key evidence: %#v", result.Evidence)
+	}
+	if result.EvidenceModule == nil || result.EvidenceModule.Status != EvidenceModuleInconclusive || result.ParityAssessment == nil {
+		t.Fatalf("pre-candidate dependency block should include truthful module and parity assessments: %#v", result)
 	}
 	for _, action := range clientset.Actions() {
 		if action.GetVerb() == "create" && action.GetResource().Resource == "pods" {
@@ -285,7 +376,7 @@ func TestKeepShadowRetainsOnlyTheOwnedRunNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.IsolationNamespace == "" || len(result.Cleanup) != 0 {
+	if result.IsolationNamespace == "" || result.IsolationUID == "" || result.CloneUID == "" || len(result.Cleanup) != 0 {
 		t.Fatalf("--keep-shadow should report one retained namespace: %#v", result)
 	}
 	if _, err := client.GetNamespace(context.Background(), result.IsolationNamespace); err != nil {
@@ -296,6 +387,30 @@ func TestKeepShadowRetainsOnlyTheOwnedRunNamespace(t *testing.T) {
 	}
 	if _, err := client.GetTypedPod(context.Background(), result.IsolationNamespace, result.CloneName); err != nil {
 		t.Fatalf("retained candidate is missing: %v status=%s isolation=%#v", err, result.Status, result.Isolation)
+	}
+}
+
+func TestKeepForShellCleansCloneWhenVerificationDoesNotPass(t *testing.T) {
+	clientset, discoveryClient := isolationFake(true)
+	if err := clientset.Tracker().Add(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Image: "repo/api:v1"}}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &kube.TypedClient{Clientset: clientset, Discovery: discoveryClient, Dynamic: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())}
+	result, err := Run(context.Background(), client, Request{
+		Namespace: "prod", Resource: "Deployment/api", ProbeImage: testIsolationProbeImage, Keep: true, KeepOnVerified: true, Timeout: time.Second,
+		Patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified || result.Status != VerificationFailed || result.IsolationNamespace == "" {
+		t.Fatalf("fixture should produce a failed verdict with namespace identity: %#v", result)
+	}
+	if _, err := client.GetNamespace(context.Background(), result.IsolationNamespace); !apierrors.IsNotFound(err) {
+		t.Fatalf("shell-retention mode must clean an unverified namespace: %q err=%v", result.IsolationNamespace, err)
 	}
 }
 

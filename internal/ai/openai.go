@@ -11,19 +11,24 @@ import (
 	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"github.com/fixora/kubectl-fixora/internal/chatgptauth"
 	"github.com/fixora/kubectl-fixora/internal/config"
+	"golang.org/x/oauth2"
 )
 
 type Client struct {
-	Provider   string
-	Protocol   Protocol
-	OutputMode OutputMode
-	Spec       ProviderSpec
-	Profile    string
-	BaseURL    string
-	APIKey     string
-	Model      string
-	HTTP       *http.Client
+	Provider      string
+	Protocol      Protocol
+	OutputMode    OutputMode
+	Spec          ProviderSpec
+	Profile       string
+	BaseURL       string
+	APIKey        string
+	Model         string
+	HTTP          *http.Client
+	TokenSource   oauth2.TokenSource
+	AccountEmail  string
+	singleAttempt bool
 }
 
 type chatMessage struct {
@@ -67,6 +72,12 @@ func NewFromEnv() (Client, error) {
 		key = strings.TrimSpace(cfg.AIAPIKey)
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_BASE_URL"), cfg.AIBaseURL)), "/")
+	if provider == "chatgpt" {
+		if configured := strings.TrimRight(strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_BASE_URL"), cfg.AIBaseURL)), "/"); configured != "" && configured != "https://api.openai.com/v1" {
+			return Client{}, fmt.Errorf("ChatGPT sign-in can only send credentials to https://api.openai.com/v1")
+		}
+		baseURL = "https://api.openai.com/v1"
+	}
 	model := strings.TrimSpace(os.Getenv("FIXORA_AI_MODEL"))
 	if model == "" {
 		configuredModel := cfg.AIModel
@@ -77,6 +88,20 @@ func NewFromEnv() (Client, error) {
 	}
 	if model == "" {
 		model = defaultModel(provider)
+	}
+	var tokenSource oauth2.TokenSource
+	accountEmail := ""
+	if provider == "chatgpt" {
+		tokenSource = chatgptauth.NewTokenSource(context.Background())
+		if _, err := tokenSource.Token(); err != nil {
+			return Client{}, err
+		}
+		if session, err := chatgptauth.Load(); err == nil {
+			accountEmail = session.Email
+		}
+		if model == "gpt-4o-mini" {
+			model = defaultModel(provider)
+		}
 	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL(provider)
@@ -125,7 +150,7 @@ func NewFromEnv() (Client, error) {
 		}
 	}
 	outputMode := OutputModePromptJSON
-	if provider == "openai" || provider == "groq" || provider == "localai" || provider == "customrest" || provider == "gemini" || provider == "google" || provider == "googlevertexai" {
+	if provider == "openai" || provider == "chatgpt" || provider == "groq" || provider == "localai" || provider == "customrest" || provider == "gemini" || provider == "google" || provider == "googlevertexai" {
 		outputMode = OutputModeJSON
 	}
 	if configured := strings.TrimSpace(os.Getenv("FIXORA_AI_OUTPUT_MODE")); configured != "" {
@@ -141,15 +166,17 @@ func NewFromEnv() (Client, error) {
 		return Client{}, fmt.Errorf("FIXORA_AI_BASE_URL is required for %s", provider)
 	}
 	return Client{
-		Provider:   provider,
-		Protocol:   protocol,
-		OutputMode: outputMode,
-		Spec:       spec,
-		Profile:    strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_PROFILE"), cfg.Profile)),
-		BaseURL:    baseURL,
-		APIKey:     key,
-		Model:      model,
-		HTTP:       &http.Client{Timeout: 60 * time.Second},
+		Provider:     provider,
+		Protocol:     protocol,
+		OutputMode:   outputMode,
+		Spec:         spec,
+		Profile:      strings.TrimSpace(firstNonEmpty(os.Getenv("FIXORA_AI_PROFILE"), cfg.Profile)),
+		BaseURL:      baseURL,
+		APIKey:       key,
+		Model:        model,
+		HTTP:         &http.Client{Timeout: 60 * time.Second},
+		TokenSource:  tokenSource,
+		AccountEmail: accountEmail,
 	}, nil
 }
 
@@ -193,11 +220,11 @@ func (c Client) explainOnce(ctx context.Context, finding analyzer.Finding) (*ana
 	case "watsonxai", "ibmwatsonxai":
 		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
 	case "googlevertexai":
-		return c.explainWithAdapter(ctx, NewVertexAdapter(c.HTTP, nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newVertexAdapter(ctx, c.HTTP, nil), payloadWithProfile)
 	case "amazonbedrockconverse":
-		return c.explainWithAdapter(ctx, NewBedrockConverseAdapter(nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newBedrockConverseAdapter(nil, c.singleAttempt), payloadWithProfile)
 	case "amazonbedrock":
-		return c.explainWithAdapter(ctx, NewBedrockInvokeAdapter(nil), payloadWithProfile)
+		return c.explainWithAdapter(ctx, newBedrockInvokeAdapter(nil, c.singleAttempt), payloadWithProfile)
 	case "amazonsagemaker", "oci":
 		return nil, fmt.Errorf("AI provider %q is not supported: %s", c.Provider, resolved.UnsupportedReason)
 	case "azureopenai":
@@ -330,11 +357,14 @@ func (c Client) explainOpenAI(ctx context.Context, payload string) (*analyzer.AI
 	}
 	spec = c.providerSpec(spec)
 	adapter := NewOpenAIChatAdapter(c.HTTP)
-	if spec.Protocol == ProtocolOpenAIResponses {
+	if c.Provider == "chatgpt" {
+		adapter = NewOpenAIResponsesStreamAdapter(c.HTTP)
+	} else if spec.Protocol == ProtocolOpenAIResponses {
 		adapter = NewOpenAIResponsesAdapter(c.HTTP)
 	}
 	return adapter.Explain(ctx, Request{
 		Provider: spec, Model: c.Model, BaseURL: c.BaseURL, APIKey: c.APIKey,
+		TokenSource:  c.TokenSource,
 		SystemPrompt: "You are Fixora CLI, a local Kubernetes SRE assistant. Be precise, safe, and do not invent secret values. " + jsonContract(),
 		UserPrompt:   "Analyze this redacted Kubernetes finding. Prefer GitOps-safe advice and explicit verification steps. Finding:\n" + payload,
 		Contract:     OutputContract{Schema: remediationSchema()},
@@ -466,6 +496,8 @@ func defaultBaseURL(provider string) string {
 
 func defaultModel(provider string) string {
 	switch strings.ToLower(provider) {
+	case "chatgpt":
+		return "gpt-6.1-sol"
 	case "ollama":
 		return "llama3.1"
 	case "anthropic":
@@ -487,7 +519,7 @@ func defaultModel(provider string) string {
 
 func providerAllowsNoKey(provider string) bool {
 	switch strings.ToLower(provider) {
-	case "ollama", "noop", "localai", "customrest", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci":
+	case "ollama", "noop", "localai", "customrest", "googlevertexai", "amazonbedrock", "amazonbedrockconverse", "amazonsagemaker", "oci", "chatgpt":
 		return true
 	default:
 		return false

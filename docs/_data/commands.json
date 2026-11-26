@@ -9,5 +9,6 @@
   {"name":"auth","status":"released"},{"name":"config","status":"released"},{"name":"cache","status":"released"},{"name":"profiles","status":"released"},
   {"name":"memory","status":"released"},{"name":"graph","status":"released"},{"name":"changes","status":"released"},{"name":"report","status":"released"},
   {"name":"bundle","status":"released"},{"name":"debug","status":"released"},{"name":"source","status":"released"},{"name":"repair","status":"released"},
-  {"name":"ai","status":"upcoming"},{"name":"ai doctor","status":"upcoming"},{"name":"coordinate","status":"upcoming"},{"name":"fix-set","status":"upcoming"}
+  {"name":"ai","status":"upcoming"},{"name":"ai doctor","status":"upcoming"},{"name":"mcp setup","status":"upcoming"},{"name":"coordinate","status":"upcoming"},{"name":"fix-set","status":"upcoming"},
+  {"name":"ask","status":"upcoming"},{"name":"cleanup","status":"upcoming"},{"name":"demo","status":"upcoming"}
 ]

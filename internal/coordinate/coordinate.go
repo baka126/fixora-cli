@@ -34,6 +34,10 @@ type StepReport struct {
 
 type Report struct {
 	Steps   []StepReport
+	ShadowVerified *bool `json:"shadowVerified,omitempty"`
+	LiveVerified *bool `json:"liveVerified,omitempty"`
+	ExternalDependenciesTested *bool `json:"externalDependenciesTested,omitempty"`
+	ShadowCleanup string `json:"shadowCleanup,omitempty"`
 	Aborted bool // preflight/confirm rejected the set; nothing mutated
 	Mutated bool // at least one Apply succeeded
 	Failed  bool // a step failed to apply or verify after mutation began

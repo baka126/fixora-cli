@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
@@ -15,10 +14,17 @@ type BedrockInvokeAPI interface {
 	InvokeModel(context.Context, *bedrockruntime.InvokeModelInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
 }
 
-type bedrockInvokeAdapter struct{ client BedrockInvokeAPI }
+type bedrockInvokeAdapter struct {
+	client        BedrockInvokeAPI
+	singleAttempt bool
+}
 
 func NewBedrockInvokeAdapter(client BedrockInvokeAPI) Adapter {
-	return bedrockInvokeAdapter{client: client}
+	return newBedrockInvokeAdapter(client, false)
+}
+
+func newBedrockInvokeAdapter(client BedrockInvokeAPI, singleAttempt bool) Adapter {
+	return bedrockInvokeAdapter{client: client, singleAttempt: singleAttempt}
 }
 
 func (a bedrockInvokeAdapter) Explain(ctx context.Context, request Request) (*analyzer.AIResult, error) {
@@ -31,7 +37,7 @@ func (a bedrockInvokeAdapter) Explain(ctx context.Context, request Request) (*an
 		if region == "" {
 			return nil, &ProviderError{Kind: ErrorConfiguration}
 		}
-		cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+		cfg, err := bedrockAWSConfig(ctx, region, a.singleAttempt)
 		if err != nil {
 			return nil, &ProviderError{Kind: ErrorConfiguration}
 		}

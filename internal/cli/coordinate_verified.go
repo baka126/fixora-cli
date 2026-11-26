@@ -80,6 +80,125 @@ type coordinateShadowVerifier func(context.Context, *kube.TypedClient, shadow.Re
 func certifyCoordinateSteps(ctx context.Context, r kube.Reader, client *kube.TypedClient, k kube.Kubectl, opts options, steps []coordinate.Step) ([]coordinate.CertifiedStep, error) {
 	return certifyCoordinateWith(ctx, r, client, opts, steps, shadow.Run)
 }
+
+func prepareGraphCertifiedSteps(ctx context.Context, reader kube.Reader, graph shadow.DependencyGraph, steps []coordinate.Step) ([]coordinate.CertifiedStep, map[string]shadow.GraphCandidate, error) {
+	certified := make([]coordinate.CertifiedStep, 0, len(steps))
+	candidates := map[string]shadow.GraphCandidate{}
+	for _, step := range steps {
+		if step.Kind != "Deployment" && step.Kind != "StatefulSet" && step.Kind != "DaemonSet" {
+			return nil, nil, fmt.Errorf("%s is not a supported graph workload", step.Ref)
+		}
+		if !step.Plan.ApplyEligible || sourceManaged(step.Finding) {
+			return nil, nil, fmt.Errorf("%s is not eligible for direct graph delivery", step.Ref)
+		}
+		target := repairpolicy.Target{Kind: step.Kind, Name: step.Name, Namespace: step.Namespace, UID: step.Plan.TargetUID, PodName: step.Finding.PodName, PodUID: step.Finding.PodUID}
+		if target.UID == "" {
+			target.UID = step.Finding.ResourceUID
+		}
+		before, err := repairpolicy.Collect(ctx, reader, target)
+		if err != nil {
+			return nil, nil, fmt.Errorf("collect graph target %s: %w", step.Ref, err)
+		}
+		proof := step.Plan.PolicyProof
+		if proof == nil {
+			if repairpolicy.Dedicated(step.Plan.Strategy) {
+				return nil, nil, fmt.Errorf("%s requires its original operator-bound policy proof", step.Ref)
+			}
+			proof, err = repairpolicy.BindCommon(before, step.Plan.PatchYAML(), step.Plan.Strategy, shadow.ValidateCandidatePatch)
+			if err != nil {
+				return nil, nil, fmt.Errorf("bind graph policy proof for %s: %w", step.Ref, err)
+			}
+		}
+		if err = proof.Check(before, step.Plan.PatchYAML()); err != nil {
+			return nil, nil, fmt.Errorf("graph policy proof for %s: %w", step.Ref, err)
+		}
+		inverse, err := coordinate.BuildInversePatch(before.Object, step.Plan.PatchYAML())
+		if err != nil {
+			return nil, nil, err
+		}
+		step.Plan.PolicyProof = proof
+		step.Plan.TargetUID = before.Target.UID
+		step.Plan.TargetPodUID = before.Target.PodUID
+		certified = append(certified, coordinate.CertifiedStep{Step: step, Proof: proof, InversePatch: inverse, Before: before})
+		candidates[step.Kind+"/"+step.Namespace+"/"+step.Name] = shadow.GraphCandidate{Strategy: step.Plan.Strategy, Patch: step.Plan.PatchYAML(), Proof: proof, Before: before}
+	}
+	return certified, candidates, nil
+}
+
+func runPreparedGraphCoordinateSteps(ctx context.Context, stdout, stderr io.Writer, opts options, reader kube.Reader, k kube.Kubectl, graph shadow.DependencyGraph, steps []coordinate.Step, storagePlan *shadow.GraphStoragePlan) int {
+	typed, err := kube.NewRequiredTypedClient(opts.context, "combined dependency graph shadow verification")
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	typed.LogTail = opts.logTail
+	typed.LogLimitBytes = opts.maxLogBytes
+	certified, candidates, err := prepareGraphCertifiedSteps(ctx, reader, graph, steps)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if _, err = bindCoordinateGraphCandidates(graph, steps); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stderr, "Verifying %d connected workload repairs and dependencies in one shadow namespace...\n", len(steps))
+	result, err := shadow.RunGraph(ctx, typed, shadow.GraphRequest{Graph: graph, Candidates: candidates, Timeout: opts.shadowTimeout, Keep: opts.keepShadow, StoragePlan: storagePlan, StorageConfirmed: storagePlan != nil})
+	if err != nil {
+		fmt.Fprintf(stderr, "error: combined shadow run failed: %v\n", err)
+		return 2
+	}
+	if !result.Verified {
+		fmt.Fprintln(stderr, "error: combined shadow verification did not certify the complete graph")
+		for _, blocker := range result.Blockers {
+			fmt.Fprintf(stderr, "  - %s\n", blocker)
+		}
+		return 2
+	}
+	for _, workload := range result.Workloads {
+		for i := range certified {
+			if certified[i].Step.Kind+"/"+certified[i].Step.Namespace+"/"+certified[i].Step.Name == workload.Source {
+				certified[i].Receipt = workload.PolicyReceipt
+			}
+		}
+	}
+	certificate, err := coordinate.NewGraphCertificate(graph, result)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: graph certificate rejected: %v\n", err)
+		return 2
+	}
+	if err = coordinate.CheckGraphCertifiedSteps(certified, certificate, certificate.Snapshot); err != nil {
+		fmt.Fprintf(stderr, "error: graph certificate rejected: %v\n", err)
+		return 2
+	}
+	apply, rollback := coordinateConfirmers(opts.yes, len(certified), inputFor(opts), stderr)
+	confirm := func() bool { writeCertifiedCoordinateProposal(stderr, opts, certified); return apply() }
+	readCurrent := func(readCtx context.Context) (coordinate.GraphSnapshot, error) {
+		var authority *shadow.GraphStorageAuthority
+		if storagePlan != nil {
+			authority = storagePlan.Policy
+		}
+		return refreshCoordinateGraphSnapshot(readCtx, typed, graph, authority)
+	}
+	report := coordinate.RunGraphVerified(ctx, certified, certificate, readCurrent, coordinateVerifiedDeps{k: k, timeout: opts.rolloutTimeout}, confirm, rollback)
+	if opts.output != "" && opts.output != "text" {
+		if code := output.Write(stdout, opts.output, report); code != 0 {
+			return code
+		}
+	} else {
+		fmt.Fprint(stdout, coordinate.ReportText(report))
+	}
+	if report.Aborted {
+		fmt.Fprintln(stderr, "coordinated graph apply aborted; no production changes made")
+		return 2
+	}
+	if report.Failed {
+		fmt.Fprintln(stderr, "coordinated graph apply stopped; inspect live verification and rollback status for each workload")
+		return 1
+	}
+	fmt.Fprintln(stdout, "All connected repairs are live-verified.")
+	return 0
+}
 func certifyCoordinateWith(ctx context.Context, r kube.Reader, client *kube.TypedClient, opts options, steps []coordinate.Step, verify coordinateShadowVerifier) ([]coordinate.CertifiedStep, error) {
 	if len(steps) < 2 {
 		return nil, errors.New("coordinated certification requires at least two eligible independent workloads")

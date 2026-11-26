@@ -8,7 +8,7 @@ section: reference
 
 # Analyzer catalog
 
-In v0.8.0, `filters -o json` reports each analyzer's kind, resource, scope, description, and `enabled` default. An explicit `--filter` selects only the named checks. Missing permissions or CRDs can produce skipped checks; no finding is not proof of health.
+`filters -o json` reports each analyzer's kind, resource, scope, description, and `enabled` default. Published v0.8.0 and the current development branch have different catalogs; the development branch adds opt-in `Secret` and `ResourceClaim` analyzers. An explicit `--filter` selects named checks. Missing permissions or CRDs can produce skipped checks; no finding is not proof of health.
 
 **Effect:** The first command reads the local analyzer registry. The second reads selected Kubernetes resources and bounded logs by default; add `--include-logs=false` to skip logs. No cluster write.
 
@@ -33,9 +33,9 @@ The selected filters narrow analyzer coverage; they do not disable incident log 
 
 `Deployment`, `ReplicaSet`, `StatefulSet`, `DaemonSet`, `Job`, `CronJob`, `ConfigMap`, `NetworkPolicy`, and `StorageClass` are in the v0.8.0 catalog but disabled by default. Select them for a focused investigation. Workload diagnosis through `why` and owned-Pod evidence is separate from whether a registry filter is enabled by default.
 
-## Upcoming catalog additions
+## Current development branch additions
 
-`Secret` (key-presence checks without printing values) and `ResourceClaim` (missing DeviceClass references) appear on [codex/production-hardening](https://github.com/baka126/fixora-cli/tree/codex/production-hardening), not in v0.8.0. `--secret-keys` and `--cert-expiry` are branch-only options. Check `filters -o json` on your installed binary before copying branch examples.
+`Secret` (key-presence checks without printing values) and `ResourceClaim` (missing DeviceClass references) are available as opt-in filters in the current development branch, not in v0.8.0. Secret inspection requires `--secret-keys`; it checks live Pods and Pod templates from Deployments, StatefulSets, DaemonSets, ReplicaSets, ReplicationControllers, Jobs, and CronJobs, including projected Secret items and referenced ServiceAccount image-pull Secrets. The caller needs read access to each listed resource; check `skippedChecks` when coverage matters. Certificate expiry checks use `--cert-expiry`. Both are read-only and remain opt-in. Check `filters -o json` on your installed binary before using these options.
 
 ## Interpretation
 

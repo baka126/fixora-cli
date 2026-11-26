@@ -14,6 +14,9 @@ type DeliveryMode string
 
 type VerificationStatus string
 
+type ProgressPhase string
+type EvidenceModuleStatus string
+
 const (
 	VerificationVerified     VerificationStatus = "verified"
 	VerificationFailed       VerificationStatus = "failed"
@@ -22,31 +25,78 @@ const (
 )
 
 const (
+	EvidenceModulePassed       EvidenceModuleStatus = "passed"
+	EvidenceModuleFailed       EvidenceModuleStatus = "failed"
+	EvidenceModuleInconclusive EvidenceModuleStatus = "inconclusive"
+	EvidenceModuleUnsupported  EvidenceModuleStatus = "unsupported"
+)
+
+const (
 	DeliveryPatch   DeliveryMode = "patch"
 	DeliveryCluster DeliveryMode = "cluster"
 	DeliveryPR      DeliveryMode = "pr"
 )
 
+const (
+	ProgressStartup      ProgressPhase = "startup"
+	ProgressSoak         ProgressPhase = "soak"
+	ProgressEvidence     ProgressPhase = "evidence"
+	ProgressVerified     ProgressPhase = "verified"
+	ProgressFailed       ProgressPhase = "failed"
+	ProgressInconclusive ProgressPhase = "inconclusive"
+)
+
+// ProgressEvent contains bounded verification state for human-readable CLI
+// progress. It intentionally excludes resource identities, logs, and values.
+type ProgressEvent struct {
+	Attempt         int                   `json:"attempt"`
+	Phase           ProgressPhase         `json:"phase"`
+	Elapsed         time.Duration         `json:"elapsed"`
+	PhaseElapsed    time.Duration         `json:"phaseElapsed"`
+	PhaseLimit      time.Duration         `json:"phaseLimit"`
+	Ready           bool                  `json:"ready"`
+	ReadyObserved   bool                  `json:"readyObserved,omitempty"`
+	StabilityPassed bool                  `json:"stabilityPassed,omitempty"`
+	Restarts        int                   `json:"restarts"`
+	ExitReason      string                `json:"exitReason,omitempty"`
+	ReadySeconds    int64                 `json:"readySeconds,omitempty"`
+	ReadyTimeKnown  bool                  `json:"readyTimeKnown,omitempty"`
+	EvidenceSamples int                   `json:"evidenceSamples"`
+	MemoryContainer string                `json:"memoryContainer,omitempty"`
+	MemorySamples   []int64               `json:"memorySamples,omitempty"`
+	MemoryCurrent   int64                 `json:"memoryCurrentBytes,omitempty"`
+	MemoryPeak      int64                 `json:"memoryPeakBytes,omitempty"`
+	MemoryLimit     int64                 `json:"memoryLimitBytes,omitempty"`
+	MemoryHeadroom  float64               `json:"memoryHeadroomPercent,omitempty"`
+	MemoryHasLimit  bool                  `json:"memoryHasLimit,omitempty"`
+	MemoryTrend     string                `json:"memoryTrend,omitempty"`
+	EvidenceModule  *EvidenceModuleResult `json:"evidenceModule,omitempty"`
+}
+
+type ProgressFunc func(ProgressEvent)
+
 type Request struct {
-	Namespace   string
-	Resource    string
-	Patch       string
-	Finding     analyzer.Finding
-	Plan        fix.Plan
-	Timeout     time.Duration
-	Retries     int
-	Keep        bool
-	Egress      string
-	ProbeImage  string
-	Delivery    DeliveryMode
-	RepoPath    string
-	Branch      string
-	PRBase      string
-	PRTitle     string
-	OutFile     string
-	ApplyDryRun bool
-	Redact      bool
-	AI          ai.Provider
+	Namespace      string
+	Resource       string
+	Patch          string
+	Finding        analyzer.Finding
+	Plan           fix.Plan
+	Timeout        time.Duration
+	Retries        int
+	Keep           bool
+	KeepOnVerified bool
+	Egress         string
+	ProbeImage     string
+	Delivery       DeliveryMode
+	RepoPath       string
+	Branch         string
+	PRBase         string
+	PRTitle        string
+	OutFile        string
+	ApplyDryRun    bool
+	Redact         bool
+	AI             ai.Provider
+	Progress       ProgressFunc
 }
 
 type Result struct {
@@ -57,11 +107,16 @@ type Result struct {
 	Verified           bool                  `json:"verified"`
 	Status             VerificationStatus    `json:"status"`
 	IsolationNamespace string                `json:"isolationNamespace,omitempty"`
+	IsolationUID       string                `json:"isolationUID,omitempty"`
 	Isolation          *IsolationReport      `json:"isolation,omitempty"`
 	Parity             int                   `json:"parity"`
+	OperationalParity  int                   `json:"operationalParity"`
+	ParityAssessment   *ParityAssessment     `json:"parityAssessment,omitempty"`
+	EvidenceModule     *EvidenceModuleResult `json:"evidenceModule,omitempty"`
 	Resource           string                `json:"resource"`
 	Namespace          string                `json:"namespace"`
 	CloneName          string                `json:"cloneName,omitempty"`
+	CloneUID           string                `json:"cloneUID,omitempty"`
 	NetworkPolicyName  string                `json:"networkPolicyName,omitempty"`
 	Delivery           string                `json:"delivery,omitempty"`
 	PRURL              string                `json:"prUrl,omitempty"`
@@ -85,18 +140,39 @@ type IsolationReport struct {
 }
 
 type Attempt struct {
-	Number       int              `json:"number"`
-	CloneName    string           `json:"cloneName"`
-	Phase        string           `json:"phase"`
-	Ready        bool             `json:"ready"`
-	Inconclusive bool             `json:"inconclusive,omitempty"`
-	Restarts     int              `json:"restarts"`
-	ExitReason   string           `json:"exitReason,omitempty"`
-	Logs         []string         `json:"logs,omitempty"`
-	Events       []string         `json:"events,omitempty"`
-	Revised      bool             `json:"revised,omitempty"`
-	Message      string           `json:"message,omitempty"`
-	Evidence     *FailureEvidence `json:"evidence,omitempty"`
+	Number         int                   `json:"number"`
+	CloneName      string                `json:"cloneName"`
+	Phase          string                `json:"phase"`
+	Ready          bool                  `json:"ready"`
+	Inconclusive   bool                  `json:"inconclusive,omitempty"`
+	Restarts       int                   `json:"restarts"`
+	ExitReason     string                `json:"exitReason,omitempty"`
+	Logs           []string              `json:"logs,omitempty"`
+	Events         []string              `json:"events,omitempty"`
+	Revised        bool                  `json:"revised,omitempty"`
+	Message        string                `json:"message,omitempty"`
+	Evidence       *FailureEvidence      `json:"evidence,omitempty"`
+	EvidenceModule *EvidenceModuleResult `json:"evidenceModule,omitempty"`
+}
+
+// EvidenceModuleResult is a bounded, value-free summary of the failure-specific
+// verification applied to a candidate.
+type EvidenceModuleResult struct {
+	Module  string               `json:"module,omitempty"`
+	Status  EvidenceModuleStatus `json:"status"`
+	Summary string               `json:"summary"`
+}
+
+type ParityAssessment struct {
+	Score       int               `json:"score"`
+	Deductions  []ParityDeduction `json:"deductions,omitempty"`
+	Limitations []string          `json:"limitations,omitempty"`
+}
+
+type ParityDeduction struct {
+	Category string `json:"category"`
+	Points   int    `json:"points"`
+	Summary  string `json:"summary"`
 }
 
 type FailureEvidence struct {
@@ -104,12 +180,23 @@ type FailureEvidence struct {
 	Probes               []ProbeEvidence              `json:"probes,omitempty"`
 	ProbeFailureEvents   []string                     `json:"probeFailureEvents,omitempty"`
 	ConfigMaps           []ConfigMapReferenceEvidence `json:"configMaps,omitempty"`
+	Secrets              []SecretReferenceEvidence    `json:"secrets,omitempty"`
 	ReadyAt              *time.Time                   `json:"readyAt,omitempty"`
 	TimeToReadySeconds   *int64                       `json:"timeToReadySeconds,omitempty"`
 	ReadyTimingEstimated bool                         `json:"readyTimingEstimated,omitempty"`
 	MemoryMetricsStatus  string                       `json:"memoryMetricsStatus,omitempty"`
 	MemoryCurve          []MemorySample               `json:"memoryCurve,omitempty"`
 	MemoryAssessment     *MemoryAssessment            `json:"memoryAssessment,omitempty"`
+}
+
+// SecretReferenceEvidence records only reference metadata. Secret data is never read.
+type SecretReferenceEvidence struct {
+	Container           string `json:"container,omitempty"`
+	EnvironmentVariable string `json:"environmentVariable,omitempty"`
+	Name                string `json:"name"`
+	Key                 string `json:"key,omitempty"`
+	Status              string `json:"status"`
+	Optional            bool   `json:"optional,omitempty"`
 }
 
 type ContainerEvidence struct {

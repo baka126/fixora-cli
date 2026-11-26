@@ -100,6 +100,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			return result, fmt.Errorf("create isolated shadow namespace: %w", err)
 		}
 		result.IsolationNamespace = shadowNS.Name
+		result.IsolationUID = string(shadowNS.UID)
 		plan, err := buildClonePlan(ctx, c, req, session, shadowNS.Name)
 		if err != nil {
 			cleanup(ctx, c, clonePlan{Namespace: shadowNS}, &result)
@@ -108,7 +109,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		plan.Namespace = shadowNS
 		lastPlan = plan
 		result.Evidence = collectFailureEvidence(ctx, c, req.Namespace, plan.Original, nil)
-		accountHasPullSecrets, accountErr := inspectSourceServiceAccount(ctx, c, req.Namespace, plan.Original)
+		accountPullSecrets, accountErr := sourceServiceAccountPullSecrets(ctx, c, req.Namespace, plan.Original)
 		if accountErr != nil {
 			result.Status = VerificationBlocked
 			result.Isolation = &IsolationReport{Status: string(VerificationBlocked), Summary: "source service-account image-pull dependencies could not be inspected"}
@@ -120,13 +121,17 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			return result, nil
 		}
 		limitations := sandboxDependencyLimitations(plan.Clone)
-		if accountHasPullSecrets {
+		for _, secretName := range accountPullSecrets {
+			result.Evidence.Secrets = append(result.Evidence.Secrets, SecretReferenceEvidence{Name: secretName, Key: "*", Status: "omitted-by-isolation"})
+		}
+		if len(accountPullSecrets) > 0 {
 			limitations = appendUnique(limitations, "source ServiceAccount image-pull secret references are not copied into the isolated namespace")
 		}
 		if len(limitations) > 0 {
 			result.Status = VerificationInconclusive
 			result.Isolation = &IsolationReport{Status: string(VerificationInconclusive), Summary: strings.Join(limitations, "; ")}
 			result.Warnings = appendUnique(result.Warnings, limitations...)
+			assessUnattemptedCandidate(&result, req, strings.Join(limitations, "; "))
 			cleanup(ctx, c, plan, &result)
 			if len(result.cleanupFailures()) > 0 {
 				result.Status = VerificationBlocked
@@ -194,6 +199,7 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			if summary == "" {
 				summary = "ConfigMap key dependencies could not be verified"
 			}
+			assessUnattemptedCandidate(&result, req, summary)
 			result.Isolation = &IsolationReport{Status: string(VerificationInconclusive), Summary: summary}
 			result.Warnings = appendUnique(result.Warnings, summary)
 			cleanup(ctx, c, plan, &result)
@@ -203,16 +209,38 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			}
 			return result, nil
 		}
-		if _, err := c.CreatePod(ctx, plan.Clone); err != nil {
+		createdPod, err := c.CreatePod(ctx, plan.Clone)
+		if err != nil {
 			cleanup(ctx, c, plan, &result)
 			return result, fmt.Errorf("create shadow pod: %w", err)
 		}
-		verification := verifyCloneWithSource(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence)
+		result.CloneUID = string(createdPod.UID)
+		verification := verifyCloneWithSourceProgress(ctx, c, plan.Clone.Namespace, plan.Clone.Name, req.Timeout, attempt, resourceAllowsCompletion(req.Resource), plan.Original, result.Evidence, req.Progress)
 		withholdCandidateDiagnostics(&verification, configMaps.Copied, &result)
 		gateOOMMemoryAssessment(req.Finding, &verification)
+		stabilityPassed := verification.Ready
+		module := assessFindingEvidenceModule(req.Finding, verification.Evidence, verification)
+		applyEvidenceModuleGate(&verification, module)
+		verification.EvidenceModule = &module
+		if req.Progress != nil {
+			finalPhase := ProgressFailed
+			if verification.Inconclusive {
+				finalPhase = ProgressInconclusive
+			} else if verification.Ready {
+				finalPhase = ProgressVerified
+			}
+			window := soakWindow(resourceAllowsCompletion(req.Resource))
+			event := progressEventForAttempt(attempt, finalPhase, 0, window, window, verification, verification.Evidence, &module)
+			event.StabilityPassed = stabilityPassed
+			req.Progress(event)
+		}
 		result.Evidence = verification.Evidence
 		result.Attempts = append(result.Attempts, verification)
+		result.EvidenceModule = &module
 		result.Parity = parityScore(plan.Original, plan.UnpatchedClone)
+		parity := assessOperationalParity(verification.Evidence, module, findingHasUnverifiedDependency(req.Finding), false)
+		result.OperationalParity = parity.Score
+		result.ParityAssessment = &parity
 		result.Verified = verification.Ready
 		result.Status = statusForAttempt(verification)
 		if result.Verified && req.Plan.PolicyProof != nil {
@@ -262,7 +290,8 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 			cleanup(ctx, c, plan, &result)
 		}
 	}
-	if !req.Keep && lastPlan.Clone != nil {
+	retain := req.Keep && (!req.KeepOnVerified || result.Verified)
+	if !retain && lastPlan.Clone != nil {
 		cleanup(ctx, c, lastPlan, &result)
 	}
 	if !result.Verified {
@@ -270,12 +299,27 @@ func Run(ctx context.Context, c *kube.TypedClient, req Request) (Result, error) 
 		result.FailureClass = diagnosis.Class
 		result.FailureSummary = diagnosis.Summary
 	}
-	if !req.Keep && len(result.cleanupFailures()) > 0 {
+	if !retain && len(result.cleanupFailures()) > 0 {
 		result.Verified = false
 		result.Status = VerificationBlocked
 		return result, fmt.Errorf("shadow cleanup failed: %s", result.cleanupFailures()[0])
 	}
 	return result, nil
+}
+
+func assessUnattemptedCandidate(result *Result, req Request, reason string) {
+	if result == nil {
+		return
+	}
+	module := assessFindingEvidenceModule(req.Finding, result.Evidence, Attempt{})
+	if module.Module != "" {
+		module.Status = EvidenceModuleInconclusive
+		module.Summary = "candidate was not created: " + reason
+	}
+	result.EvidenceModule = &module
+	parity := assessOperationalParity(result.Evidence, module, findingHasUnverifiedDependency(req.Finding), false)
+	result.OperationalParity = parity.Score
+	result.ParityAssessment = &parity
 }
 
 func withholdCandidateDiagnostics(attempt *Attempt, configMapsCopied bool, result *Result) {

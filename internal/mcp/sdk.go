@@ -45,6 +45,12 @@ type nopWriteCloser struct{ io.Writer }
 func (nopWriteCloser) Close() error { return nil }
 
 func (s Server) newSDKServer() *sdk.Server {
+	if s.PullRequestRepo != "" && s.prPreviews == nil {
+		s.prPreviews = newMCPPRPreviewRegistry()
+	}
+	if s.EnableSandbox && s.sandboxes == nil {
+		s.sandboxes = newSandboxRegistry(s.typedClientForSandbox)
+	}
 	server := sdk.NewServer(&sdk.Implementation{Name: "fixora-cli", Version: "v1alpha1"}, &sdk.ServerOptions{Capabilities: &sdk.ServerCapabilities{}, PageSize: 100})
 	addTool[resourceInput](server, s, "analyze", "Diagnose a Kubernetes resource and its related evidence.")
 	addTool[noInput](server, s, "incidents", "Scan the configured Kubernetes scope for incidents.")
@@ -61,6 +67,13 @@ func (s Server) newSDKServer() *sdk.Server {
 	addTool[noInput](server, s, "config", "Show non-secret Fixora configuration.")
 	if s.EnableShadow {
 		addShadowTool(server, s)
+	}
+	if s.EnableSandbox {
+		addOpenSandboxTool(server, s)
+		addCloseSandboxTool(server, s)
+	}
+	if s.PullRequestRepo != "" {
+		addCreatePRTool(server, s)
 	}
 	for _, item := range []struct{ name, description string }{
 		{"troubleshoot-pod", "Guide Pod incident triage."}, {"troubleshoot-deployment", "Guide Deployment rollout triage."},
@@ -142,6 +155,50 @@ func addShadowTool(server *sdk.Server, s Server) {
 			return nil, nil, err
 		}
 		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe, IsError: failed}, nil, nil
+	})
+}
+
+func addOpenSandboxTool(server *sdk.Server, s Server) {
+	sdk.AddTool[shadowInput, any](server, &sdk.Tool{Name: "open-sandbox", Description: "Verify a concrete fix and retain the isolated Pod only after all verification gates pass; requires server opt-in and confirm=true. Returns a bounded inspection handle and kubectl exec arguments; does not execute commands or change the production resource.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPointer(false)}}, func(ctx context.Context, req *sdk.CallToolRequest, input shadowInput) (*sdk.CallToolResult, any, error) {
+		value, callErr := s.callOpenSandbox(ctx, input)
+		if callErr != nil && value.FailureSummary == "" {
+			value.FailureSummary = redact.Text(callErr.Error())
+		}
+		safe, text, err := safeResult(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe, IsError: callErr != nil}, nil, nil
+	})
+}
+
+func addCloseSandboxTool(server *sdk.Server, s Server) {
+	sdk.AddTool[closeSandboxInput, any](server, &sdk.Tool{Name: "close-sandbox", Description: "Delete only the exact Fixora sandbox identified by an open-sandbox handle; requires confirm=true. The namespace UID and Fixora ownership metadata are rechecked before deletion.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPointer(true)}}, func(ctx context.Context, req *sdk.CallToolRequest, input closeSandboxInput) (*sdk.CallToolResult, any, error) {
+		value, callErr := s.callCloseSandbox(ctx, input)
+		if callErr != nil {
+			return nil, nil, fmt.Errorf("%s", redact.Text(callErr.Error()))
+		}
+		safe, text, err := safeResult(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe}, nil, nil
+	})
+}
+
+func addCreatePRTool(server *sdk.Server, s Server) {
+	sdk.AddTool[createPRInput, any](server, &sdk.Tool{Name: "create-pr", Description: "Preview or open a pull/merge request from the configured clean branch. Preview with confirm=false; after reviewing branch, base, verification note, and commits, confirm within 10 minutes with previewId, expectedBranch, expectedHeadCommit, and expectedBaseCommit echoed from that preview. This pushes the reviewed commit to the explicit remote and opens a review request; it never edits or commits source files or changes Kubernetes resources.", Annotations: &sdk.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: boolPointer(true)}}, func(ctx context.Context, req *sdk.CallToolRequest, input createPRInput) (*sdk.CallToolResult, any, error) {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		defer cancel()
+		value, callErr := s.callCreatePR(ctx, input)
+		if callErr != nil && value.FailureSummary == "" {
+			value.FailureSummary = redact.Text(callErr.Error())
+		}
+		safe, text, err := safeCreatePRResult(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: text}}, StructuredContent: safe, IsError: callErr != nil}, nil, nil
 	})
 }
 

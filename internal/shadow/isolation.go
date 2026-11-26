@@ -47,8 +47,13 @@ func sandboxDependencyLimitations(pod *corev1.Pod) []string {
 }
 
 func inspectSourceServiceAccount(ctx context.Context, c *kube.TypedClient, namespace string, pod *corev1.Pod) (bool, error) {
+	secrets, err := sourceServiceAccountPullSecrets(ctx, c, namespace, pod)
+	return len(secrets) != 0, err
+}
+
+func sourceServiceAccountPullSecrets(ctx context.Context, c *kube.TypedClient, namespace string, pod *corev1.Pod) ([]string, error) {
 	if c == nil || c.Clientset == nil {
-		return false, fmt.Errorf("typed Kubernetes client is unavailable for service-account inspection")
+		return nil, fmt.Errorf("typed Kubernetes client is unavailable for service-account inspection")
 	}
 	name := "default"
 	if pod != nil && strings.TrimSpace(pod.Spec.ServiceAccountName) != "" {
@@ -56,12 +61,18 @@ func inspectSourceServiceAccount(ctx context.Context, c *kube.TypedClient, names
 	}
 	account, err := c.Clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return len(account.ImagePullSecrets) != 0, nil
+	secrets := make([]string, 0, len(account.ImagePullSecrets))
+	for _, ref := range account.ImagePullSecrets {
+		if strings.TrimSpace(ref.Name) != "" {
+			secrets = append(secrets, ref.Name)
+		}
+	}
+	return secrets, nil
 }
 
 func unsupportedNetworkPolicyResources(resources []*metav1.APIResourceList) []string {
@@ -324,6 +335,10 @@ func isolationPod(namespace, role, session, image string, args []string, ports [
 }
 
 func runIsolationProbe(ctx context.Context, c *kube.TypedClient, namespace, session, image string, target *corev1.Pod, expectConnect bool) error {
+	return runIsolationProbeScoped(ctx, c, namespace, session, image, target, expectConnect, false)
+}
+
+func runIsolationProbeScoped(ctx context.Context, c *kube.TypedClient, namespace, session, image string, target *corev1.Pod, expectConnect, graphOrigin bool) error {
 	address, err := netip.ParseAddr(target.Status.PodIP)
 	if err != nil || !address.IsValid() || address.IsUnspecified() || address.IsMulticast() {
 		return fmt.Errorf("witness pod has no usable IP address")
@@ -335,6 +350,9 @@ func runIsolationProbe(ctx context.Context, c *kube.TypedClient, namespace, sess
 		return err
 	}
 	client := isolationPod(namespace, "probe", session, image, []string{"--request-json=" + string(data)}, nil)
+	if graphOrigin {
+		client.Labels[labelGraph] = session
+	}
 	created, err := c.CreatePod(ctx, client)
 	if err != nil {
 		return fmt.Errorf("create control probe: %w", err)

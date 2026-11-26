@@ -49,6 +49,15 @@ func ProposeHelmValues(in *HelmInputs, inv HelmInventory, key ResourceKey, patch
 	if err != nil {
 		return nil, err
 	}
+	serviceTarget := stringField(base, "kind") == "Service"
+	if serviceTarget {
+		if len(mappings) == 0 {
+			return nil, errors.New("Service routing requires explicit --helm-map fields")
+		}
+		if err := validateHelmServiceMappings(base, expected, mappings); err != nil {
+			return nil, err
+		}
+	}
 	var node yaml.Node
 	if err = decodeHelmValues(in.files[in.context.EditValuesPath], &node); err != nil {
 		return nil, err
@@ -192,6 +201,9 @@ func expectedHelmTarget(base map[string]any, patch string) (map[string]any, erro
 	var obj map[string]any
 	_ = n.Decode(&obj)
 	kind := stringField(base, "kind")
+	if kind == "Service" {
+		return expectedHelmServiceTarget(base, patch)
+	}
 	if err := kube.ValidateWorkloadPatchEnvelope(obj, kind); err != nil {
 		return nil, errors.New("candidate is not a supported workload patch")
 	}

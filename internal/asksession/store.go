@@ -53,6 +53,13 @@ type EvidenceRef struct {
 	At       time.Time `json:"at"`
 }
 
+// Scope binds a saved Ask conversation to its local read scope. LabelSelector
+// is retained only in the private session file and is never sent to AI.
+type Scope struct {
+	AllNamespaces bool   `json:"allNamespaces"`
+	LabelSelector string `json:"labelSelector,omitempty"`
+}
+
 type Session struct {
 	ID              string        `json:"id"`
 	ClusterID       string        `json:"clusterId"`
@@ -60,6 +67,7 @@ type Session struct {
 	ResourceKind    string        `json:"resourceKind"`
 	ResourceName    string        `json:"resourceName"`
 	ResourceUID     string        `json:"resourceUid,omitempty"`
+	Scope           *Scope        `json:"scope,omitempty"`
 	OwnerChain      []string      `json:"ownerChain,omitempty"`
 	FindingID       string        `json:"findingId"`
 	Status          string        `json:"status"`
@@ -213,6 +221,11 @@ func (s Store) List(clusterID string) ([]Session, error) {
 		session.EvidenceRefs = nil
 		session.AnalyzerFilters = nil
 		session.OwnerChain = nil
+		if session.Scope != nil {
+			scope := *session.Scope
+			scope.LabelSelector = ""
+			session.Scope = &scope
+		}
 		out = append(out, session)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
@@ -327,8 +340,23 @@ func (s Store) write(state diskStore) error {
 }
 
 func normalizeSession(session *Session, now time.Time) error {
-	if strings.TrimSpace(session.Namespace) == "" || strings.TrimSpace(session.ResourceKind) == "" || strings.TrimSpace(session.ResourceName) == "" {
-		return errors.New("ask session target identity is required")
+	if strings.TrimSpace(session.Namespace) == "" {
+		return errors.New("ask session namespace or scope is required")
+	}
+	if session.Scope == nil {
+		if strings.TrimSpace(session.ResourceKind) == "" || strings.TrimSpace(session.ResourceName) == "" {
+			return errors.New("ask session target identity is required")
+		}
+	} else {
+		if strings.TrimSpace(session.ResourceKind) != "" || strings.TrimSpace(session.ResourceName) != "" || session.ResourceUID != "" || len(session.OwnerChain) != 0 || session.FindingID != "" {
+			return errors.New("Ask scope session cannot contain a Kubernetes resource identity")
+		}
+		if session.Scope.AllNamespaces && session.Namespace != "cluster" || !session.Scope.AllNamespaces && session.Namespace == "cluster" {
+			return errors.New("Ask scope session namespace does not match its all-namespaces setting")
+		}
+		if len(session.Scope.LabelSelector) > 256 || strings.ContainsAny(session.Scope.LabelSelector, "\x00\r\n") {
+			return errors.New("Ask scope label selector is invalid or exceeds its size limit")
+		}
 	}
 	if session.CreatedAt.IsZero() {
 		session.CreatedAt = now

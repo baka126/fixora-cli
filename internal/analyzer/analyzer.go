@@ -906,6 +906,9 @@ func (a Analyzer) redact(value string) string {
 
 func podProblem(pod kube.Pod) (status, category, severity string) {
 	for _, cs := range append(pod.Status.InitStatuses, pod.Status.ContainerStatuses...) {
+		if terminated, ok := cs.LastState["terminated"]; ok && terminated.IsOOMKilled() {
+			return "OOMKilled", "resources", "high"
+		}
 		for stateName, state := range cs.State {
 			reason := firstNonEmpty(state.Reason, stateName)
 			switch {

@@ -52,8 +52,16 @@ func evidenceCard(finding analyzer.Finding, plan fix.Plan, result shadow.Result,
 	} else {
 		fmt.Fprintf(&b, "Attempts: %d\n", len(result.Attempts))
 	}
-	if result.Status != "" && (result.Parity > 0 || (result.Verified && verified)) {
+	if result.ParityAssessment != nil {
+		fmt.Fprintf(&b, "Structural parity: %d%%\n", result.Parity)
+		for _, line := range shadow.ParityAssessmentLines(*result.ParityAssessment, false) {
+			fmt.Fprintf(&b, "%s\n", line)
+		}
+	} else if result.Status != "" && (result.Parity > 0 || (result.Verified && verified)) {
 		fmt.Fprintf(&b, "Parity: %d%%\n", result.Parity)
+	}
+	if result.EvidenceModule != nil {
+		fmt.Fprintf(&b, "Evidence module: %s (%s) — %s\n", cardField(result.EvidenceModule.Module), cardField(string(result.EvidenceModule.Status)), cardField(result.EvidenceModule.Summary))
 	}
 	evidence := latestCardEvidence(result)
 	if evidence != nil {
