@@ -112,6 +112,84 @@ func TestAIDoctorCommandIsAvailable(t *testing.T) {
 	}
 }
 
+func TestAIDoctorHelpShowsLiveOption(t *testing.T) {
+	for _, args := range [][]string{{"ai", "doctor", "--help"}, {"ai-doctor", "--help"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Execute(args, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "--live") {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestAIDoctorDefaultsToConfigurationOnly(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	setAIDoctorConfig(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"ai", "doctor"}, &stdout, &stderr)
+	if code != 0 || requests != 0 || !strings.Contains(stdout.String(), `"status": "configured"`) {
+		t.Fatalf("code=%d requests=%d stdout=%q stderr=%q", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestAIDoctorLiveChecksConfiguredProvider(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"content":"{\"summary\":\"probe ok\",\"rootCause\":\"synthetic\",\"recommendedFix\":\"none\"}"}}]}`))
+	}))
+	defer server.Close()
+	setAIDoctorConfig(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"ai", "doctor", "--live"}, &stdout, &stderr)
+	if code != 0 || requests != 1 || !strings.Contains(stdout.String(), `"status": "ok"`) {
+		t.Fatalf("code=%d requests=%d stdout=%q stderr=%q", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestAIDoctorLiveFailureIsNonzeroAndSanitized(t *testing.T) {
+	const sentinel = "cli-provider-response-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"` + sentinel + `"}}`))
+	}))
+	defer server.Close()
+	setAIDoctorConfig(t, server.URL)
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"ai", "doctor", "--live"}, &stdout, &stderr)
+	combined := stdout.String() + stderr.String()
+	if code != 1 || !strings.Contains(stdout.String(), `"status": "error"`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(combined, sentinel) || strings.Contains(combined, "doctor-secret-key") {
+		t.Fatalf("live doctor output leaked provider data: %q", combined)
+	}
+}
+
+func TestAIDoctorRejectsUnknownArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Execute([]string{"ai", "doctor", "--unknown"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "usage:") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func setAIDoctorConfig(t *testing.T, baseURL string) {
+	t.Helper()
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("FIXORA_AI_PROVIDER", "openai")
+	t.Setenv("FIXORA_AI_API_KEY", "doctor-secret-key")
+	t.Setenv("FIXORA_AI_BASE_URL", baseURL)
+	t.Setenv("FIXORA_AI_MODEL", "doctor-test-model")
+	t.Setenv("FIXORA_AI_PROTOCOL", "")
+	t.Setenv("FIXORA_AI_OUTPUT_MODE", "")
+}
+
 func TestStartChooserDefaultsToDashboardAndCanSelectScan(t *testing.T) {
 	for _, tc := range []struct{ input, want string }{
 		{"\n", "dashboard"},

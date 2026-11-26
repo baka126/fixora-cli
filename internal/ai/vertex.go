@@ -20,8 +20,12 @@ type vertexAdapter struct {
 }
 
 func NewVertexAdapter(client *http.Client, tokenSource oauth2.TokenSource) Adapter {
+	return newVertexAdapter(context.Background(), client, tokenSource)
+}
+
+func newVertexAdapter(ctx context.Context, client *http.Client, tokenSource oauth2.TokenSource) Adapter {
 	if tokenSource == nil {
-		tokenSource, _ = google.DefaultTokenSource(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		tokenSource, _ = google.DefaultTokenSource(ctx, "https://www.googleapis.com/auth/cloud-platform")
 	}
 	return vertexAdapter{httpClient: defaultHTTPClient(client), tokenSource: tokenSource}
 }
@@ -41,6 +45,9 @@ func (a vertexAdapter) Explain(ctx context.Context, request Request) (*analyzer.
 	base.Path = path.Join(base.Path, "v1", "projects", project, "locations", location, "publishers", "google", "models", request.Model+":generateContent")
 	token, err := a.tokenSource.Token()
 	if err != nil || token == nil || strings.TrimSpace(token.AccessToken) == "" {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, &ProviderError{Kind: ErrorAuthentication}
 	}
 	body := map[string]any{"systemInstruction": map[string]any{"parts": []map[string]string{{"text": request.SystemPrompt}}}, "contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": request.UserPrompt}}}}}
