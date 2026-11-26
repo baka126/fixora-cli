@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
+	"golang.org/x/oauth2"
 )
 
 type Adapter interface {
@@ -19,6 +20,8 @@ type Request struct {
 	Model        string
 	BaseURL      string
 	APIKey       string
+	TokenSource  oauth2.TokenSource
+	SchemaName   string
 	SystemPrompt string
 	UserPrompt   string
 	Contract     OutputContract
@@ -49,6 +52,7 @@ type ProviderError struct {
 	StatusCode int
 	Code       string
 	Param      string
+	RequestID  string
 	RetryAfter time.Duration
 }
 
@@ -90,6 +94,21 @@ func (e *ProviderError) summary() string {
 		}
 		if e.Param != "" {
 			message += "; param=" + e.Param
+		}
+		if e.RequestID != "" {
+			message += "; request_id=" + e.RequestID
+		}
+		message += ")"
+	} else if e.Code != "" || e.RequestID != "" {
+		message += " ("
+		if e.Code != "" {
+			message += "code=" + e.Code
+		}
+		if e.Code != "" && e.RequestID != "" {
+			message += "; "
+		}
+		if e.RequestID != "" {
+			message += "request_id=" + e.RequestID
 		}
 		message += ")"
 	}

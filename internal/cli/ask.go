@@ -42,6 +42,7 @@ type askReport struct {
 	EvidenceRefs   []asksession.EvidenceRef `json:"evidenceRefs,omitempty"`
 	AIAvailable    bool                     `json:"aiAvailable"`
 	Coverage       []string                 `json:"coverage,omitempty"`
+	Scope          *askScopeDescriptor      `json:"scope,omitempty"`
 }
 
 func runAskCommand(ctx context.Context, stdout, stderr io.Writer, opts options, a analyzer.Analyzer, reader kube.Reader, k kube.Kubectl, request string) int {
@@ -105,6 +106,24 @@ func askScanError(report analyzer.ScanReport) error {
 	return fmt.Errorf("%s", report.Skipped[0].Reason)
 }
 
+func askWantsScopeInvestigation(request string) bool {
+	if askWantsSummary(request) {
+		return true
+	}
+	request = strings.ToLower(strings.TrimSpace(request))
+	for _, phrase := range []string{
+		"what is configured", "what's configured", "show configuration", "configuration in this namespace",
+		"how is this namespace set up", "how is the cluster set up", "cluster overview", "namespace overview",
+		"what resources are running", "what is running in", "what's running in", "show me the workloads",
+		"are any workloads healthy", "which workloads are healthy", "what is healthy", "what's healthy",
+	} {
+		if strings.Contains(request, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 func askShouldBroaden(report analyzer.ScanReport, opts options, request string) bool {
 	if opts.quick || strings.TrimSpace(opts.filters) != "" {
 		return false
@@ -145,7 +164,9 @@ func askCoverageSummary(report analyzer.ScanReport, broadened bool) []string {
 	return coverage
 }
 
-func runAskWithFindings(ctx context.Context, stdout, stderr io.Writer, opts options, request string, findings []analyzer.Finding, resolver targetResolver, preview askPreviewer) int {
+type askScopeFallback func() int
+
+func runAskWithFindings(ctx context.Context, stdout, stderr io.Writer, opts options, request string, findings []analyzer.Finding, resolver targetResolver, preview askPreviewer, scopeFallback ...askScopeFallback) int {
 	if err := validateAskOptions(opts); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 2
@@ -217,6 +238,9 @@ func runAskWithFindings(ctx context.Context, stdout, stderr io.Writer, opts opti
 		selectedIDs = append(selectedIDs, id)
 	}
 	if len(selectedIDs) == 0 {
+		if len(scopeFallback) > 0 && scopeFallback[0] != nil {
+			return scopeFallback[0]()
+		}
 		return writeAskNoFinding(stdout, opts, askReport{Status: "no-match", Request: request, Interpretation: intent.Interpretation, Intent: intent, PreviewOnly: true, NoChangesMade: true, Next: "Name a workload or narrow the scope, then try `kubectl fixora ask` again."})
 	}
 	matches := make([]ai.IntentCandidate, 0, len(selectedIDs))
@@ -426,27 +450,45 @@ func runAskSessionCommand(ctx context.Context, stdout, stderr io.Writer, opts op
 			fmt.Fprintf(stderr, "error: %v\n", loadErr)
 			return 1
 		}
-		if err := askSessionNamespaceError(opts, session.Namespace); err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 2
-		}
-		opts.namespace = askReadNamespace(session.Namespace)
-		ref := session.ResourceKind + "/" + session.ResourceName
-		resource, getErr := reader.GetResource(ctx, opts.namespace, ref)
-		if getErr != nil || resource == nil {
-			fmt.Fprintf(stderr, "error: saved target %s/%s could not be revalidated; start a new Ask session\n", session.Namespace, ref)
-			return 1
-		}
-		if currentUID := resourceUID(resource); session.ResourceUID != "" && currentUID != session.ResourceUID {
-			fmt.Fprintln(stderr, "error: saved target identity changed; start a new Ask session")
-			return 1
-		}
-		filters := splitCSV(opts.filters)
-		if len(filters) == 0 {
-			filters = mergeAskFilters(mergeAskFilters(session.AnalyzerFilters, analyzer.AskFiltersForRequest(request, opts.quick)), analyzer.SmartFiltersFor(ref, request+" "+session.Status))
+		if session.Scope != nil {
+			if err := askScopeSessionError(opts, session); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return 2
+			}
+			opts.namespace = askReadNamespace(session.Namespace)
+			opts.allNS = session.Scope.AllNamespaces
+			if !opts.visited["selector"] && !opts.visited["l"] {
+				opts.labelSelector = session.Scope.LabelSelector
+			}
+			filters := splitCSV(opts.filters)
+			if len(filters) == 0 {
+				filters = mergeAskFilters(session.AnalyzerFilters, analyzer.AskFiltersForRequest(request, opts.quick))
+			}
 			inventoryFilters = filters
+			a = analyzer.New(reader, askAnalyzerOptions(opts, opts.namespace, filters))
+		} else {
+			if err := askSessionNamespaceError(opts, session.Namespace); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return 2
+			}
+			opts.namespace = askReadNamespace(session.Namespace)
+			ref := session.ResourceKind + "/" + session.ResourceName
+			resource, getErr := reader.GetResource(ctx, opts.namespace, ref)
+			if getErr != nil || resource == nil {
+				fmt.Fprintf(stderr, "error: saved target %s/%s could not be revalidated; start a new Ask session\n", session.Namespace, ref)
+				return 1
+			}
+			if currentUID := resourceUID(resource); session.ResourceUID != "" && currentUID != session.ResourceUID {
+				fmt.Fprintln(stderr, "error: saved target identity changed; start a new Ask session")
+				return 1
+			}
+			filters := splitCSV(opts.filters)
+			if len(filters) == 0 {
+				filters = mergeAskFilters(mergeAskFilters(session.AnalyzerFilters, analyzer.AskFiltersForRequest(request, opts.quick)), analyzer.SmartFiltersFor(ref, request+" "+session.Status))
+				inventoryFilters = filters
+			}
+			a = analyzer.New(reader, askAnalyzerOptions(opts, opts.namespace, filters))
 		}
-		a = analyzer.New(reader, askAnalyzerOptions(opts, opts.namespace, filters))
 	}
 
 	client, aiErr := ai.NewFromEnv()
@@ -456,15 +498,19 @@ func runAskSessionCommand(ctx context.Context, stdout, stderr io.Writer, opts op
 		resolver = client
 		responder = client
 		fmt.Fprintf(stderr, "AI provider %s (%s) will receive redacted incident evidence for this turn.\n", client.Provider, client.Model)
-	} else if opts.askSession == "" {
+	} else if opts.askSession == "" && !askWantsScopeInvestigation(request) {
 		if aiErr != nil {
 			fmt.Fprintf(stderr, "error: natural-language ask requires a configured AI provider: %s\n", aiErr.Error())
 		} else {
 			fmt.Fprintln(stderr, "error: natural-language ask requires a configured AI provider; the noop provider cannot resolve targets")
 		}
 		return 1
-	} else if aiErr != nil {
-		fmt.Fprintf(stderr, "warning: AI unavailable (%s); using current deterministic finding evidence.\n", ai.FailureSummary(aiErr))
+	} else if aiErr != nil || client.Provider == "noop" {
+		reason := "the noop provider cannot answer natural-language questions"
+		if aiErr != nil {
+			reason = ai.FailureSummary(aiErr)
+		}
+		fmt.Fprintf(stderr, "warning: AI unavailable (%s); using deterministic evidence for this Ask turn.\n", reason)
 	}
 
 	report := a.ScanReport(ctx)
@@ -478,10 +524,11 @@ func runAskSessionCommand(ctx context.Context, stdout, stderr io.Writer, opts op
 	report.Findings = mergeAskInventoryFindings(report.Findings, inventory)
 	report.Skipped = append(report.Skipped, inventorySkipped...)
 	opts.askCoverage = askCoverageSummary(report, broadened)
-	if err := askScanError(report); err != nil {
+	if err := askScanError(report); err != nil && !askWantsScopeInvestigation(request) {
 		fmt.Fprintf(stderr, "error: could not refresh Ask incident evidence because the scan was incomplete: %s\n", err)
 		return 1
 	}
+	opts.askScopeFilters = append([]string(nil), inventoryFilters...)
 	return runAskSessionWithFindings(ctx, stdout, stderr, opts, clusterID, store, request, report.Findings, resolver, responder, func(ctx context.Context, previewOpts options, selected analyzer.Finding, ref string) int {
 		analysisCtx, cancel := fixAnalysisContext(ctx, previewOpts.timeout)
 		defer cancel()
@@ -505,6 +552,9 @@ func runAskSessionWithFindings(ctx context.Context, stdout, stderr io.Writer, op
 		return 2
 	}
 	if opts.askSession == "" {
+		if askWantsScopeInvestigation(request) {
+			return runAskScopeTurn(ctx, stdout, stderr, opts, clusterID, store, request, nil, findings, scopeResponderFor(responder), responder != nil)
+		}
 		if len(findings) == 0 {
 			return writeAskNoFinding(stdout, opts, askReport{Status: "no-findings", Request: request, PreviewOnly: true, NoChangesMade: true, Next: "Use `kubectl fixora scan` to inspect the selected scope."})
 		}
@@ -512,6 +562,8 @@ func runAskSessionWithFindings(ctx context.Context, stdout, stderr io.Writer, op
 		conversationOpts.askConversation = true
 		return runAskWithFindings(ctx, stdout, stderr, conversationOpts, request, findings, resolver, func(turnCtx context.Context, turnOpts options, selected analyzer.Finding, ref string) int {
 			return runAskIncidentTurn(turnCtx, stdout, stderr, turnOpts, clusterID, store, request, nil, selected, turnOpts.askRelatedFindings, responder, preview, responder != nil)
+		}, func() int {
+			return runAskScopeTurn(ctx, stdout, stderr, opts, clusterID, store, request, nil, findings, scopeResponderFor(responder), responder != nil)
 		})
 	}
 
@@ -519,6 +571,9 @@ func runAskSessionWithFindings(ctx context.Context, stdout, stderr io.Writer, op
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if session.Scope != nil {
+		return runAskScopeTurn(ctx, stdout, stderr, opts, clusterID, store, request, &session, findings, scopeResponderFor(responder), responder != nil)
 	}
 	var selected *analyzer.Finding
 	for i := range findings {
@@ -920,6 +975,13 @@ func runAskSessionsCommand(stdout, stderr io.Writer, clusterID string, store ask
 				state = "open"
 			}
 			target := session.Namespace + "/" + session.ResourceKind + "/" + session.ResourceName
+			if session.Scope != nil {
+				target = "all namespaces"
+				if !session.Scope.AllNamespaces {
+					target = "namespace/" + session.Namespace
+				}
+				state = "scope conversation"
+			}
 			fmt.Fprintf(stdout, "%-12s  %-35s  %-20s  %s\n", session.ID, target, session.UpdatedAt.Format(time.RFC3339), state)
 		}
 		return 0

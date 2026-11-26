@@ -36,9 +36,12 @@ func runServiceFix(ctx context.Context, out, errout io.Writer, o options, f anal
 		fmt.Fprintln(errout, err)
 		return 1
 	}
-	return runServiceFixRuntime(ctx, out, errout, o, runtime, f)
+	return runServiceFixRuntimeWithKubectl(ctx, out, errout, o, runtime, kube.NewKubectl(o.context), f)
 }
 func runServiceFixRuntime(ctx context.Context, out, errout io.Writer, o options, r servicefix.Runtime, f analyzer.Finding) int {
+	return runServiceFixRuntimeWithKubectl(ctx, out, errout, o, r, kube.NewKubectl(o.context), f)
+}
+func runServiceFixRuntimeWithKubectl(ctx context.Context, out, errout io.Writer, o options, r servicefix.Runtime, k kube.Kubectl, f analyzer.Finding) int {
 	if o.servicePolicy == "" {
 		p := servicefix.Plan{Resource: f.ResourceKind + "/" + f.ResourceName, Namespace: f.Namespace, Status: "prerequisite-required", Scope: "unverified", Prerequisites: []string{"Provide --service-policy <local-file> with approved backend, selector, port and digest-pinned probe image"}}
 		if o.output != "text" {
@@ -70,6 +73,29 @@ func runServiceFixRuntime(ctx context.Context, out, errout io.Writer, o options,
 	if err != nil {
 		fmt.Fprintf(errout, "Service repair requires review: %v\nNo changes made.\n", err)
 		return 1
+	}
+	if hasHelmSourceContext(o) {
+		if o.apply || strings.EqualFold(o.delivery, "cluster") {
+			fmt.Fprintln(errout, "error: Helm-managed Service routing is source-only; direct cluster delivery is blocked")
+			return 2
+		}
+		renderContext, mappings, contextErr := helmSourceContext(o, f.Namespace)
+		if contextErr != nil {
+			fmt.Fprintln(errout, "error:", contextErr)
+			return 2
+		}
+		if err := helmCapabilities(ctx, k, &renderContext); err != nil {
+			fmt.Fprintln(errout, "error:", err)
+			return 2
+		}
+		req := repo.HelmSourceRequest{Context: renderContext, Finding: f, Mappings: mappings}
+		return runHelmServiceSource(ctx, out, errout, o, r, f, p, req, helmCLIDeps{k, k, o, f})
+	}
+	if o.repoPath != "" && (strings.EqualFold(o.delivery, "pr") || o.sourcePatch || o.preview) {
+		if detected, detectErr := repo.Detect(o.repoPath); detectErr == nil && detected.Type == "helm" {
+			fmt.Fprintln(out, "Helm Service source requires manual review with explicit chart context and --helm-map paths; no values write, verifier, or PR created.")
+			return 0
+		}
 	}
 	if o.output != "text" {
 		return output.Write(out, o.output, p)

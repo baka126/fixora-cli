@@ -162,6 +162,17 @@ func (c Client) structuredJSONOnce(ctx context.Context, systemPrompt, userPrompt
 		return c.resolveCohereIntent(ctx, client, systemPrompt, userPrompt)
 	case "huggingface":
 		return c.resolveHuggingFaceIntent(ctx, client, systemPrompt, userPrompt)
+	case "chatgpt":
+		provider, err := ResolveProvider("chatgpt")
+		if err != nil {
+			return "", err
+		}
+		provider.OutputModes = []OutputMode{OutputModeJSONSchema}
+		return generateOpenAIResponsesText(ctx, client, Request{
+			Provider: provider, Model: c.Model, BaseURL: c.BaseURL, TokenSource: c.TokenSource,
+			SystemPrompt: systemPrompt, UserPrompt: userPrompt, SchemaName: schemaName,
+			Contract: OutputContract{Schema: schema},
+		})
 	default:
 		return c.resolveOpenAIIntent(ctx, client, systemPrompt, userPrompt, schemaName, schema)
 	}

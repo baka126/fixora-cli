@@ -3,6 +3,7 @@ package shadow
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,12 +29,15 @@ func readyPod(restarts int32) *corev1.Pod {
 	}
 }
 
-func TestStartupAndStabilityWindowsMeetThreeMinuteHorizon(t *testing.T) {
+func TestStartupPlusStabilityWindowEqualsThreeMinuteVerificationHorizon(t *testing.T) {
 	if startupWindow != 60*time.Second {
 		t.Fatalf("want 60s startup allowance, got %s", startupWindow)
 	}
 	if got := soakWindow(false); got != 120*time.Second {
 		t.Fatalf("want 120s stability window, got %s", got)
+	}
+	if got := startupWindow + soakWindow(false); got != 3*time.Minute {
+		t.Fatalf("want 3m total verification horizon, got %s", got)
 	}
 }
 
@@ -92,6 +96,52 @@ func TestVerifyCloneTimeoutIsInconclusive(t *testing.T) {
 	attempt := verifyCloneWithWindows(context.Background(), client, "test", "candidate", 10*time.Millisecond, 1, false, time.Second, time.Second)
 	if !attempt.Inconclusive || statusForAttempt(attempt) != VerificationInconclusive {
 		t.Fatalf("deadline without a verdict must be inconclusive, got %#v", attempt)
+	}
+}
+
+func TestVerifyCloneReportsStartupSoakAndFinalProgress(t *testing.T) {
+	pod := readyPod(0)
+	pod.Namespace = "test"
+	pod.Name = "candidate"
+	client := &kube.TypedClient{Clientset: corefake.NewSimpleClientset(pod)}
+	var events []ProgressEvent
+	attempt := verifyCloneWithEvidenceProgress(context.Background(), client, "test", "candidate", time.Second, 2, false, pod, nil, time.Second, 10*time.Millisecond, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if !attempt.Ready {
+		t.Fatalf("ready candidate should pass progress verification, got %#v", attempt)
+	}
+	var phases []ProgressPhase
+	for _, event := range events {
+		phases = append(phases, event.Phase)
+	}
+	if !reflect.DeepEqual(phases, []ProgressPhase{ProgressStartup, ProgressSoak, ProgressVerified}) {
+		t.Fatalf("want startup, soak, verified progress, got %#v", phases)
+	}
+}
+
+func TestVerifyCloneReportsFailedAndInconclusiveProgress(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		pod       *corev1.Pod
+		timeout   time.Duration
+		wantFinal ProgressPhase
+	}{
+		{name: "failed", pod: readyPod(1), timeout: time.Second, wantFinal: ProgressFailed},
+		{name: "inconclusive", pod: &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending}}, timeout: 10 * time.Millisecond, wantFinal: ProgressInconclusive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.pod.Namespace = "test"
+			test.pod.Name = "candidate"
+			client := &kube.TypedClient{Clientset: corefake.NewSimpleClientset(test.pod)}
+			var phases []ProgressPhase
+			verifyCloneWithEvidenceProgress(context.Background(), client, "test", "candidate", test.timeout, 1, false, test.pod, nil, time.Second, time.Second, func(event ProgressEvent) {
+				phases = append(phases, event.Phase)
+			})
+			if len(phases) < 2 || phases[0] != ProgressStartup || phases[len(phases)-1] != test.wantFinal {
+				t.Fatalf("want startup followed by %s verdict, got %#v", test.wantFinal, phases)
+			}
+		})
 	}
 }
 

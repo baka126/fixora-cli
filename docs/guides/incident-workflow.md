@@ -39,11 +39,25 @@ An enabled shadow check creates isolated resources, applies the patch to a clone
 
 After shadow verification, Fixora prints a compact evidence card with the target, finding, verdict, attempt count, and available readiness, memory, and parity measurements. Failed runs show this concise card by default; `--proof` includes detailed failure evidence. A verified PR description reuses the same summary, while review-only PRs explicitly state that shadow verification was not run.
 
+For policy-approved Helm-managed Service routing, use the explicit values workflow in [delivery and verification]({{ '/guides/delivery/' | relative_url }}). Its preview certifies the rendered values effect without creating verifier resources; source delivery runs the temporary route verifier before writing. The Helm values change remains a proposal until the owning deployment or GitOps controller reconciles it.
+
 Fixora also keeps a small local history for the same cluster and workload. After a shadow run it records the outcome and available numeric readiness or memory measurements. Only a verified session can appear as “Seen before” in a later analysis; this history is context, never approval to reuse a patch or bypass current checks. The profile is stored under `~/.fixora/<cluster-hash>/profiles.json` with private file permissions. If the profile cannot be read or written, the current fix continues without history.
 
 ## Interactive or scripted
 
 Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, name the target and provide explicit values; inspect structured output and require your own approval before a write. Bare `kubectl fixora` opens the older dashboard in v0.8.0; the new no-argument chooser is **Upcoming** on [the development branch](https://github.com/baka126/fixora-cli/tree/codex/production-hardening).
+
+## Try a disposable demo
+
+Use `kubectl fixora demo [oom|config|probe]` to create one labeled workload in a generated namespace, with default-deny ingress and egress, inspect the live analyzer finding, and display the regular guarded repair preview. The command asks before creating resources; `--yes` opts into creation for scripts, while `--preview` shows the fixture without creating it. The namespace is removed on success, errors, timeout, and interrupt using a UID precondition. If deletion fails, Fixora prints the exact namespace and a recovery command. Demo repairs are always preview-only.
+
+**Effect:** Creates a temporary namespace, default-deny NetworkPolicy, and one test Deployment after explicit confirmation. Deletes the namespace on exit. It does not apply a repair.
+
+```bash
+kubectl fixora demo --preview
+kubectl fixora demo config
+kubectl fixora demo oom --yes
+```
 
 ## Ask a follow-up and resume an incident
 

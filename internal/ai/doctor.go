@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -14,12 +15,19 @@ import (
 const doctorLiveProbeTimeout = 30 * time.Second
 
 type DoctorResult struct {
-	Provider string `json:"provider"`
-	Protocol string `json:"protocol"`
-	Model    string `json:"model"`
-	BaseURL  string `json:"baseURL"`
-	Status   string `json:"status"`
-	Detail   string `json:"detail,omitempty"`
+	Provider string        `json:"provider"`
+	Protocol string        `json:"protocol"`
+	Model    string        `json:"model"`
+	BaseURL  string        `json:"baseURL"`
+	Status   string        `json:"status"`
+	Detail   string        `json:"detail,omitempty"`
+	Checks   []DoctorCheck `json:"checks,omitempty"`
+}
+
+type DoctorCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
 }
 
 func Doctor(_ context.Context) DoctorResult {
@@ -30,8 +38,8 @@ func Doctor(_ context.Context) DoctorResult {
 	return result
 }
 
-// DoctorLive sends one synthetic generation request through the configured
-// provider adapter. It does not inspect or send Kubernetes data.
+// DoctorLive verifies the diagnosis and structured Ask adapters with synthetic
+// requests. It does not inspect or send Kubernetes data.
 func DoctorLive(ctx context.Context) DoctorResult {
 	result, client, err := doctorClient()
 	if err != nil {
@@ -40,6 +48,7 @@ func DoctorLive(ctx context.Context) DoctorResult {
 	if strings.EqualFold(client.Provider, "noop") {
 		result.Status = "error"
 		result.Detail = "AI provider does not support live generation"
+		result.Checks = []DoctorCheck{{Name: "diagnosis", Status: "error", Detail: result.Detail}, {Name: "ask", Status: "skipped", Detail: "diagnosis check failed"}}
 		return result
 	}
 	client.singleAttempt = true
@@ -59,11 +68,13 @@ func DoctorLive(ctx context.Context) DoctorResult {
 	if err != nil {
 		result.Status = "error"
 		result.Detail = doctorFailureSummary(err)
+		result.Checks = []DoctorCheck{{Name: "diagnosis", Status: "error", Detail: result.Detail}, {Name: "ask", Status: "skipped", Detail: "diagnosis check failed"}}
 		return result
 	}
 	if answer == nil || answer.Unstructured {
 		result.Status = "error"
 		result.Detail = doctorFailureSummary(&ProviderError{Kind: ErrorContract})
+		result.Checks = []DoctorCheck{{Name: "diagnosis", Status: "error", Detail: result.Detail}, {Name: "ask", Status: "skipped", Detail: "diagnosis check failed"}}
 		return result
 	}
 	encoded, err := json.Marshal(answer)
@@ -73,10 +84,59 @@ func DoctorLive(ctx context.Context) DoctorResult {
 	if err != nil {
 		result.Status = "error"
 		result.Detail = doctorFailureSummary(err)
+		result.Checks = []DoctorCheck{{Name: "diagnosis", Status: "error", Detail: result.Detail}, {Name: "ask", Status: "skipped", Detail: "diagnosis check failed"}}
 		return result
 	}
+	result.Checks = []DoctorCheck{{Name: "diagnosis", Status: "ok"}}
+
+	askCtx, askCancel := context.WithTimeout(ctx, doctorLiveProbeTimeout)
+	defer askCancel()
+	content, err := client.structuredJSONOnce(
+		askCtx,
+		"You are checking Fixora's structured Ask response path. Return exactly the requested JSON. Do not claim to inspect a Kubernetes cluster.",
+		"This is a synthetic provider health check. Return {\"ok\":true}.",
+		"fixora_doctor_ask",
+		doctorAskSchema(),
+	)
+	if err == nil {
+		err = validateDoctorAskResponse(content)
+	}
+	if err != nil {
+		result.Status = "error"
+		result.Detail = doctorFailureSummary(err)
+		result.Checks = append(result.Checks, DoctorCheck{Name: "ask", Status: "error", Detail: result.Detail})
+		return result
+	}
+	result.Checks = append(result.Checks, DoctorCheck{Name: "ask", Status: "ok"})
 	result.Status = "ok"
 	return result
+}
+
+func doctorAskSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"ok": map[string]any{"type": "boolean"}},
+		"required":             []string{"ok"},
+		"additionalProperties": false,
+	}
+}
+
+func validateDoctorAskResponse(content string) error {
+	if len(content) == 0 || len(content) > 1024 {
+		return &ProviderError{Kind: ErrorContract}
+	}
+	var response struct {
+		OK bool `json:"ok"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&response); err != nil || !response.OK {
+		return &ProviderError{Kind: ErrorContract}
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return &ProviderError{Kind: ErrorContract}
+	}
+	return nil
 }
 
 func doctorFailureSummary(err error) string {
@@ -98,6 +158,13 @@ func doctorClient() (DoctorResult, Client, error) {
 		return DoctorResult{Status: "error", Detail: err.Error()}, Client{}, err
 	}
 	result := DoctorResult{Provider: client.Provider, Protocol: string(client.Protocol), Model: client.Model, BaseURL: safeEndpointIdentity(client.BaseURL), Status: "configured"}
+	if client.Provider == "chatgpt" {
+		if client.AccountEmail != "" {
+			result.Detail = "Signed in as " + client.AccountEmail + "; ChatGPT plan usage is enabled"
+		} else {
+			result.Detail = "ChatGPT plan usage is enabled"
+		}
+	}
 	return result, client, nil
 }
 

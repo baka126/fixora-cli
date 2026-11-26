@@ -11,6 +11,7 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/ops"
 	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -100,6 +101,161 @@ func TestVerifiedSagaStopsOnUnknownAndReportsExactMutations(t *testing.T) {
 	if strings.Contains(strings.Join(d.calls, ";"), "apply b") {
 		t.Fatal(d.calls)
 	}
+}
+
+func TestGraphCertifiedStepsAllowConnectedWorkloadsAndBindCandidates(t *testing.T) {
+	first, second := certifiedFixture(t, "api"), certifiedFixture(t, "worker")
+	apiNode := graphNodeForCertifiedStep(first)
+	workerNode := graphNodeForCertifiedStep(second)
+	config := shadow.GraphNode{APIVersion: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "shared", UID: "cm-uid", ResourceVersion: "9"}
+	graph := shadow.DependencyGraph{Root: apiNode.ID(), Nodes: []shadow.GraphNode{apiNode, workerNode, config}, Edges: []shadow.GraphEdge{{From: apiNode.ID(), To: config.ID(), Type: shadow.GraphConfigMapEdge}, {From: workerNode.ID(), To: config.ID(), Type: shadow.GraphConfigMapEdge}}}
+	result := shadow.GraphResult{Verified: true, Status: shadow.VerificationVerified, Namespace: "fixora-shadow-run", NamespaceUID: "namespace-uid", NamespaceResourceVersion: "1", CleanupStatus: "deleted",
+		Workloads:          []shadow.GraphWorkloadResult{{Source: apiNode.ID(), Pod: "api-shadow", PodUID: "api-pod", PodResourceVersion: "2", Verified: true, Status: shadow.VerificationVerified}, {Source: workerNode.ID(), Pod: "worker-shadow", PodUID: "worker-pod", PodResourceVersion: "3", Verified: true, Status: shadow.VerificationVerified}},
+		SourceDependencies: []shadow.GraphNode{config}, Dependencies: []shadow.GraphNode{{APIVersion: "v1", Kind: "ConfigMap", Namespace: "fixora-shadow-run", Name: "shared", UID: "shadow-cm", ResourceVersion: "1"}},
+		NetworkPolicies: []shadow.GraphNode{{Kind: "NetworkPolicy", Namespace: "fixora-shadow-run", Name: "fixora-default-deny", UID: "deny", ResourceVersion: "1"}, {Kind: "NetworkPolicy", Namespace: "fixora-shadow-run", Name: "fixora-graph-access", UID: "allow", ResourceVersion: "2"}}}
+	source, err := GraphSourceSnapshot(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.GraphDigest = source.Digest
+	cert, err := NewGraphCertificate(graph, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckGraphCertifiedSteps([]CertifiedStep{first, second}, cert, source); err != nil {
+		t.Fatalf("connected graph candidates should pass their graph certificate: %v", err)
+	}
+	second.Step.Plan.PatchTemplate += "# changed\n"
+	if err := CheckGraphCertifiedSteps([]CertifiedStep{first, second}, cert, source); err == nil {
+		t.Fatal("candidate bytes differing from the graph receipt must block")
+	}
+}
+
+func graphNodeForCertifiedStep(step CertifiedStep) shadow.GraphNode {
+	return shadow.GraphNode{APIVersion: "apps/v1", Kind: "Deployment", Namespace: step.Step.Namespace, Name: step.Step.Name, UID: step.Step.Plan.TargetUID, ResourceVersion: "1", CandidatePatch: step.Step.Plan.PatchYAML()}
+}
+
+func graphVerifiedFixture(t *testing.T) ([]CertifiedStep, GraphCertificate, GraphSnapshot) {
+	t.Helper()
+	steps := []CertifiedStep{certifiedFixture(t, "api"), certifiedFixture(t, "worker")}
+	apiNode, workerNode := graphNodeForCertifiedStep(steps[0]), graphNodeForCertifiedStep(steps[1])
+	config := shadow.GraphNode{APIVersion: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "shared", UID: "cm-uid", ResourceVersion: "9"}
+	graph := shadow.DependencyGraph{Root: apiNode.ID(), Nodes: []shadow.GraphNode{apiNode, workerNode, config}, Edges: []shadow.GraphEdge{{From: apiNode.ID(), To: config.ID(), Type: shadow.GraphConfigMapEdge}, {From: workerNode.ID(), To: config.ID(), Type: shadow.GraphConfigMapEdge}}}
+	result := shadow.GraphResult{Verified: true, Status: shadow.VerificationVerified, Namespace: "fixora-shadow-run", NamespaceUID: "namespace-uid", NamespaceResourceVersion: "1", CleanupStatus: "deleted",
+		Workloads:          []shadow.GraphWorkloadResult{{Source: apiNode.ID(), Pod: "api-shadow", PodUID: "api-pod", PodResourceVersion: "2", Verified: true, Status: shadow.VerificationVerified}, {Source: workerNode.ID(), Pod: "worker-shadow", PodUID: "worker-pod", PodResourceVersion: "3", Verified: true, Status: shadow.VerificationVerified}},
+		SourceDependencies: []shadow.GraphNode{config}, Dependencies: []shadow.GraphNode{{APIVersion: "v1", Kind: "ConfigMap", Namespace: "fixora-shadow-run", Name: "shared", UID: "shadow-cm", ResourceVersion: "1"}},
+		NetworkPolicies: []shadow.GraphNode{{Kind: "NetworkPolicy", Namespace: "fixora-shadow-run", Name: "fixora-default-deny", UID: "deny", ResourceVersion: "1"}, {Kind: "NetworkPolicy", Namespace: "fixora-shadow-run", Name: "fixora-graph-access", UID: "allow", ResourceVersion: "2"}}}
+	snapshot, err := GraphSourceSnapshot(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.GraphDigest = snapshot.Digest
+	cert, err := NewGraphCertificate(graph, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return steps, cert, snapshot
+}
+
+func TestGraphVerifiedPreflightsCompleteSetBeforeAnyWrite(t *testing.T) {
+	steps, cert, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{}
+	reads := 0
+	readCurrent := func(context.Context) (GraphSnapshot, error) {
+		reads++
+		current := snapshot
+		if reads == 3 {
+			current.Nodes = append([]GraphSourceIdentity(nil), snapshot.Nodes...)
+			current.Nodes[0].ResourceVersion = "changed"
+		}
+		return current, nil
+	}
+	confirmed := false
+	report := RunGraphVerified(context.Background(), steps, cert, readCurrent, d, func() bool { confirmed = true; return true }, func() bool { return false })
+	if !confirmed || !report.Aborted || report.Mutated || containsCall(d.calls, "apply ") {
+		t.Fatalf("stale graph must block before first mutation: %#v calls=%v", report, d.calls)
+	}
+}
+
+func TestGraphVerifiedSagaPreflightsAllBeforeApply(t *testing.T) {
+	steps, cert, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{}
+	reads := 0
+	readCurrent := func(context.Context) (GraphSnapshot, error) { reads++; return snapshot, nil }
+	report := RunGraphVerified(context.Background(), steps, cert, readCurrent, d, func() bool { return true }, func() bool { return false })
+	if report.Aborted || report.Failed || !report.Mutated || len(d.calls) == 0 {
+		t.Fatalf("expected graph apply saga: %#v calls=%v", report, d.calls)
+	}
+	preflightsBeforeApply, firstApply := 0, -1
+	for i, call := range d.calls {
+		if firstApply < 0 && strings.HasPrefix(call, "apply ") {
+			firstApply = i
+			continue
+		}
+		if firstApply < 0 && strings.HasPrefix(call, "preflight ") {
+			preflightsBeforeApply++
+		}
+	}
+	if preflightsBeforeApply < len(steps) || firstApply < 0 {
+		t.Fatalf("all targets must preflight before first write: %v", d.calls)
+	}
+	if report.ShadowVerified == nil || !*report.ShadowVerified || report.LiveVerified == nil || !*report.LiveVerified || report.ExternalDependenciesTested == nil || *report.ExternalDependenciesTested || report.ShadowCleanup != "deleted" {
+		t.Fatalf("graph verification surfaces must be distinct in the report: %#v", report)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"externalDependenciesTested":false`) || !strings.Contains(string(encoded), `"shadowCleanup":"deleted"`) {
+		t.Fatalf("structured report omitted graph boundary fields: %s", encoded)
+	}
+}
+
+func TestGraphVerifiedRejectsMissingCertificateBeforePreflight(t *testing.T) {
+	steps, _, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{}
+	report := RunGraphVerified(context.Background(), steps, GraphCertificate{}, func(context.Context) (GraphSnapshot, error) { return snapshot, nil }, d, func() bool { return true }, func() bool { return true })
+	if !report.Aborted || report.Mutated || len(d.calls) != 0 {
+		t.Fatalf("missing graph certificate must block before preflight or writes: %#v %v", report, d.calls)
+	}
+}
+
+func TestGraphVerifiedRollsBackAppliedPrefixAfterFailure(t *testing.T) {
+	steps, cert, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{applyError: "worker"}
+	rollbackAsked := false
+	report := RunGraphVerified(context.Background(), steps, cert, func(context.Context) (GraphSnapshot, error) { return snapshot, nil }, d, func() bool { return true }, func() bool { rollbackAsked = true; return true })
+	if !report.Failed || !report.Mutated || !rollbackAsked || !report.Steps[0].RolledBack || report.Steps[1].Applied {
+		t.Fatalf("failed graph saga did not restore only its applied prefix: %#v calls=%v", report, d.calls)
+	}
+}
+
+func TestGraphVerifiedRollsBackAfterLiveRolloutFailure(t *testing.T) {
+	steps, cert, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{classes: map[string]string{"api": ops.RolloutUnknown}}
+	rollbackAsked := false
+	report := RunGraphVerified(context.Background(), steps, cert, func(context.Context) (GraphSnapshot, error) { return snapshot, nil }, d, func() bool { return true }, func() bool { rollbackAsked = true; return true })
+	if !report.Failed || !rollbackAsked || !report.Steps[0].RolledBack || containsCall(d.calls, "apply worker") {
+		t.Fatalf("rollout failure must stop later applies and offer rollback: %#v calls=%v", report, d.calls)
+	}
+}
+
+func TestGraphVerifiedKeepsAppliedPrefixWhenRollbackDeclined(t *testing.T) {
+	steps, cert, snapshot := graphVerifiedFixture(t)
+	d := &verifiedFake{classes: map[string]string{"api": ops.RolloutUnknown}}
+	report := RunGraphVerified(context.Background(), steps, cert, func(context.Context) (GraphSnapshot, error) { return snapshot, nil }, d, func() bool { return true }, func() bool { return false })
+	if !report.Failed || !report.Mutated || report.Steps[0].RolledBack || report.Steps[0].RollbackStatus != "available" {
+		t.Fatalf("rollback refusal should preserve explicit applied prefix: %#v", report)
+	}
+}
+
+func containsCall(calls []string, prefix string) bool {
+	for _, call := range calls {
+		if strings.HasPrefix(call, prefix) {
+			return true
+		}
+	}
+	return false
 }
 func TestSecondStepFailureOffersReverseFieldRollback(t *testing.T) {
 	d := &verifiedFake{classes: map[string]string{"b": ops.RolloutUnknown}}

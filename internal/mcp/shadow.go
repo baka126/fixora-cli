@@ -35,17 +35,23 @@ type shadowSummary struct {
 }
 
 func (s Server) callShadow(ctx context.Context, input shadowInput) (shadowSummary, error) {
+	result, err := s.executeShadow(ctx, input, false)
+	summary := shadowSummary{Verified: result.Verified, Parity: result.Parity, Resource: result.Resource, Namespace: result.Namespace, FailureClass: result.FailureClass, FailureSummary: result.FailureSummary, Cleanup: result.Cleanup, Warnings: result.Warnings}
+	return summary, err
+}
+
+func (s Server) executeShadow(ctx context.Context, input shadowInput, retainVerified bool) (shadow.Result, error) {
 	if !s.EnableShadow {
-		return shadowSummary{}, fmt.Errorf("MCP shadow verification is disabled at server startup")
+		return shadow.Result{}, fmt.Errorf("MCP shadow verification is disabled at server startup")
 	}
 	if !input.Confirm {
-		return shadowSummary{}, fmt.Errorf("shadow verification requires confirm=true after operator approval")
+		return shadow.Result{}, fmt.Errorf("shadow verification requires confirm=true after operator approval")
 	}
 	if err := allowResourceRef(input.Resource); err != nil {
-		return shadowSummary{}, err
+		return shadow.Result{}, err
 	}
 	if input.TimeoutSeconds < 0 || input.TimeoutSeconds > 600 {
-		return shadowSummary{}, fmt.Errorf("timeoutSeconds must be between 0 and 600")
+		return shadow.Result{}, fmt.Errorf("timeoutSeconds must be between 0 and 600")
 	}
 	var finding analyzer.Finding
 	var err error
@@ -55,15 +61,15 @@ func (s Server) callShadow(ctx context.Context, input shadowInput) (shadowSummar
 		finding, err = analyzer.New(s.reader(), s.AnalyzerOpt).AnalyzeResource(ctx, input.Resource)
 	}
 	if err != nil {
-		return shadowSummary{}, err
+		return shadow.Result{}, err
 	}
 	plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{Container: input.Container, Image: input.Image, MemoryRequest: input.MemoryRequest, MemoryLimit: input.MemoryLimit, CPURequest: input.CPURequest, Strategy: input.Strategy})
 	if !plan.ApplyEligible {
-		return shadowSummary{}, fmt.Errorf("shadow verification requires an apply-eligible concrete patch")
+		return shadow.Result{}, fmt.Errorf("shadow verification requires an apply-eligible concrete patch")
 	}
 	patch := plan.PatchYAML()
 	if err := shadow.ValidateCandidatePatch(patch, plan.Strategy, plan.Resource, finding.Namespace); err != nil {
-		return shadowSummary{}, fmt.Errorf("candidate patch rejected: %w", err)
+		return shadow.Result{}, fmt.Errorf("candidate patch rejected: %w", err)
 	}
 	clientFactory := s.newTypedClient
 	if clientFactory == nil {
@@ -73,7 +79,7 @@ func (s Server) callShadow(ctx context.Context, input shadowInput) (shadowSummar
 	}
 	client, err := clientFactory()
 	if err != nil {
-		return shadowSummary{}, err
+		return shadow.Result{}, err
 	}
 	runner := s.runShadow
 	if runner == nil {
@@ -83,13 +89,8 @@ func (s Server) callShadow(ctx context.Context, input shadowInput) (shadowSummar
 	if timeout == 0 {
 		timeout = 10 * time.Minute
 	}
-	req := shadow.Request{Namespace: finding.Namespace, Resource: plan.Resource, Patch: patch, Finding: finding, Plan: plan, Timeout: timeout, Retries: 0, Keep: false, Egress: "deny", Delivery: shadow.DeliveryPatch, Redact: true}
+	req := shadow.Request{Namespace: finding.Namespace, Resource: plan.Resource, Patch: patch, Finding: finding, Plan: plan, Timeout: timeout, Retries: 0, Keep: retainVerified, KeepOnVerified: retainVerified, Egress: "deny", Delivery: shadow.DeliveryPatch, Redact: true}
 	runCtx, cancel := context.WithTimeout(ctx, timeout+2*time.Minute)
 	defer cancel()
-	result, err := runner(runCtx, client, req)
-	summary := shadowSummary{Verified: result.Verified, Parity: result.Parity, Resource: result.Resource, Namespace: result.Namespace, FailureClass: result.FailureClass, FailureSummary: result.FailureSummary, Cleanup: result.Cleanup, Warnings: result.Warnings}
-	if err != nil {
-		return summary, err
-	}
-	return summary, nil
+	return runner(runCtx, client, req)
 }

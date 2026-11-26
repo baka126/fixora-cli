@@ -80,3 +80,26 @@ func TestEvidenceCardReadsLatestAttemptEvidence(t *testing.T) {
 		t.Fatalf("card did not use the latest attempt evidence:\n%s", got)
 	}
 }
+
+func TestEvidenceCardShowsOperationalParityBreakdownSeparatelyFromSpecParity(t *testing.T) {
+	result := shadow.Result{
+		Status: shadow.VerificationVerified, Verified: true, Parity: 92, OperationalParity: 65,
+		ParityAssessment: &shadow.ParityAssessment{Score: 65, Deductions: []shadow.ParityDeduction{{Category: "missing-evidence-module", Points: 10, Summary: "no failure-specific evidence module is available for this finding"}}},
+	}
+	card := evidenceCard(analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}, fix.Plan{Strategy: "resources"}, result, true)
+	for _, want := range []string{"Structural parity: 92%", "Operational parity: 65%", "Parity -10: no failure-specific evidence module is available for this finding"} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("evidence card omitted %q: %s", want, card)
+		}
+	}
+}
+
+func TestEvidenceCardShowsFailureSpecificEvidenceModule(t *testing.T) {
+	card := evidenceCard(analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "test"}, fix.Plan{}, shadow.Result{
+		Status:         shadow.VerificationInconclusive,
+		EvidenceModule: &shadow.EvidenceModuleResult{Module: "image-pull", Status: shadow.EvidenceModuleInconclusive, Summary: "runtime image identity was not observed"},
+	}, false)
+	if !strings.Contains(card, "Evidence module: image-pull (inconclusive) — runtime image identity was not observed") {
+		t.Fatalf("evidence card omitted module assessment:\n%s", card)
+	}
+}

@@ -1029,6 +1029,17 @@ func TestCrashLoopRecognizesContainerRuntimeOOMStartError(t *testing.T) {
 	}
 }
 
+func TestRunContainerErrorRecognizesContainerRuntimeOOMStartError(t *testing.T) {
+	pod := kube.Pod{Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{
+		Name: "memory-hog", State: map[string]kube.StatusState{"waiting": {Reason: "RunContainerError"}},
+		LastState: map[string]kube.StatusState{"terminated": {Reason: "StartError", ExitCode: 128, Message: "failed to create containerd task: container init was OOM-killed (memory limit too low?)"}},
+	}}}}
+	status, category, _ := podProblem(pod)
+	if status != "OOMKilled" || category != "resources" {
+		t.Fatalf("container runtime OOM reported as RunContainerError must retain resource diagnosis, got %s/%s", status, category)
+	}
+}
+
 func boolPointer(v bool) *bool { return &v }
 func testDeploymentOwner(deployment map[string]any) map[string]map[string]any {
 	meta := deployment["metadata"].(map[string]any)

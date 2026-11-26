@@ -246,6 +246,10 @@ func stripEphemeralVolumeMounts(containers []corev1.EphemeralContainer, removed 
 }
 
 func validateShadowSource(pod *corev1.Pod) error {
+	return validateShadowSourceWithSecretDependencies(pod, nil)
+}
+
+func validateShadowSourceWithSecretDependencies(pod *corev1.Pod, allowedSecrets map[string]bool) error {
 	if pod == nil {
 		return fmt.Errorf("shadow verification cannot clone an empty pod template")
 	}
@@ -261,8 +265,10 @@ func validateShadowSource(pod *corev1.Pod) error {
 			return fmt.Errorf("shadow verification is blocked for pod using hostPath volume %q", volume.Name)
 		case volume.PersistentVolumeClaim != nil:
 			return fmt.Errorf("shadow verification is blocked for pod using persistent volume claim %q; storage parity requires an isolated volume clone", volume.Name)
-		case volume.Secret != nil || hasProjectedSecret(volume):
+		case volume.Secret != nil && !allowedSecrets[volume.Secret.SecretName]:
 			return fmt.Errorf("shadow verification is blocked for pod mounting Secret volume %q", volume.Name)
+		case hasProjectedSecret(volume) && !projectedSecretsAllowed(volume, allowedSecrets):
+			return fmt.Errorf("shadow verification is blocked for pod mounting an unapproved projected Secret")
 		case isExternalDataVolume(volume):
 			return fmt.Errorf("shadow verification is blocked for pod mounting external or shared data volume %q", volume.Name)
 		}
@@ -284,17 +290,29 @@ func validateShadowSource(pod *corev1.Pod) error {
 			}
 		}
 		for _, source := range container.EnvFrom {
-			if source.SecretRef != nil {
+			if source.SecretRef != nil && !allowedSecrets[source.SecretRef.Name] {
 				return fmt.Errorf("shadow verification is blocked for container %q importing Secret environment variables", container.Name)
 			}
 		}
 		for _, env := range container.Env {
-			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && !allowedSecrets[env.ValueFrom.SecretKeyRef.Name] {
 				return fmt.Errorf("shadow verification is blocked for container %q reading Secret environment variable %q", container.Name, env.Name)
 			}
 		}
 	}
 	return nil
+}
+
+func projectedSecretsAllowed(volume corev1.Volume, allowed map[string]bool) bool {
+	if volume.Projected == nil {
+		return true
+	}
+	for _, source := range volume.Projected.Sources {
+		if source.Secret != nil && !allowed[source.Secret.Name] {
+			return false
+		}
+	}
+	return true
 }
 
 func isExternalDataVolume(volume corev1.Volume) bool {

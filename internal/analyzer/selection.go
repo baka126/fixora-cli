@@ -22,6 +22,9 @@ func AskFiltersForRequest(request string, quick bool) []string {
 		"everything", "all analyzers", "all issues", "all problems", "all resources",
 		"across the cluster", "cluster-wide", "whole cluster", "entire cluster",
 		"what is unhealthy", "what's unhealthy", "cluster health", "overall health",
+		"what is configured", "what's configured", "cluster overview", "namespace overview",
+		"what resources are running", "what is running in", "what's running in",
+		"are any workloads healthy", "which workloads are healthy", "what is healthy", "what's healthy",
 	) {
 		return AllDiagnosticFilters()
 	}

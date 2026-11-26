@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -94,7 +95,12 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 			defer func() { <-sem }()
 			list, err := pa.run(ctx)
 			if err != nil {
-				results[i].skipped = []SkippedCheck{rbacAwareSkip(pa.name, err)}
+				var coverageErr secretCoverageError
+				if strings.EqualFold(pa.name, "secret") && errors.As(err, &coverageErr) {
+					results[i].skipped = []SkippedCheck{{Name: coverageErr.resource, Reason: coverageErr.Error(), RBACBlocked: coverageErr.rbacBlocked}}
+				} else {
+					results[i].skipped = []SkippedCheck{rbacAwareSkip(pa.name, err)}
+				}
 				return
 			}
 			results[i].findings = list

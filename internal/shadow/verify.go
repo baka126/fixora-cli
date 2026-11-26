@@ -20,10 +20,18 @@ func verifyCloneWithWindows(ctx context.Context, c *kube.TypedClient, namespace,
 }
 
 func verifyCloneWithSource(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence) Attempt {
-	return verifyCloneWithEvidence(ctx, c, namespace, name, timeout, attempt, allowCompletion, source, evidence, startupWindow, soakWindow(allowCompletion))
+	return verifyCloneWithSourceProgress(ctx, c, namespace, name, timeout, attempt, allowCompletion, source, evidence, nil)
+}
+
+func verifyCloneWithSourceProgress(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence, progress ProgressFunc) Attempt {
+	return verifyCloneWithEvidenceProgress(ctx, c, namespace, name, timeout, attempt, allowCompletion, source, evidence, startupWindow, soakWindow(allowCompletion), progress)
 }
 
 func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence, startupAllowance, stabilityWindow time.Duration) Attempt {
+	return verifyCloneWithEvidenceProgress(ctx, c, namespace, name, timeout, attempt, allowCompletion, source, evidence, startupAllowance, stabilityWindow, nil)
+}
+
+func verifyCloneWithEvidenceProgress(ctx context.Context, c *kube.TypedClient, namespace, name string, timeout time.Duration, attempt int, allowCompletion bool, source *corev1.Pod, evidence *FailureEvidence, startupAllowance, stabilityWindow time.Duration, progress ProgressFunc) Attempt {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
@@ -41,6 +49,33 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 		}
 	}()
 	verificationStarted := time.Now()
+	var stableSince time.Time
+	progressPhase := ProgressStartup
+	emitProgress := func(phase ProgressPhase) {
+		if progress == nil {
+			return
+		}
+		phaseLimit := startupAllowance
+		phaseElapsed := time.Since(verificationStarted)
+		if phase == ProgressSoak || phase == ProgressEvidence {
+			phaseLimit = stabilityWindow
+			if !stableSince.IsZero() {
+				phaseElapsed = time.Since(stableSince)
+			}
+		}
+		progress(progressEventForAttempt(attempt, phase, time.Since(verificationStarted), phaseElapsed, phaseLimit, result, result.Evidence, nil))
+	}
+	emitProgress(ProgressStartup)
+	defer func() {
+		switch {
+		case result.Ready:
+			emitProgress(ProgressVerified)
+		case result.Inconclusive:
+			emitProgress(ProgressInconclusive)
+		default:
+			emitProgress(ProgressFailed)
+		}
+	}()
 	var startupTimer *time.Timer
 	var startupDone <-chan time.Time
 	if !allowCompletion {
@@ -48,7 +83,6 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 		defer startupTimer.Stop()
 		startupDone = startupTimer.C
 	}
-	var stableSince time.Time
 	var stableDone <-chan time.Time
 	resourceVersion := ""
 	const baselineRestarts = 0
@@ -92,6 +126,8 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 				}
 				stableSince = time.Now()
 				stableDone = time.After(stabilityWindow)
+				progressPhase = ProgressSoak
+				emitProgress(progressPhase)
 				startupTimer.Stop()
 				startupDone = nil
 			}
@@ -105,9 +141,22 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 		return result
 	}
 	defer watcher.Stop()
+	var progressTicks <-chan time.Time
+	var progressTicker *time.Ticker
+	if progress != nil {
+		progressTicker = time.NewTicker(5 * time.Second)
+		progressTicks = progressTicker.C
+		defer progressTicker.Stop()
+	}
 
 	for {
 		select {
+		case <-progressTicks:
+			phase := ProgressStartup
+			if !stableSince.IsZero() {
+				phase = progressPhase
+			}
+			emitProgress(phase)
 		case <-ctx.Done():
 			result.Ready = false
 			result.Message = "verification ended before the startup and stability checks completed"
@@ -129,6 +178,8 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 				if pod.Status.Phase == corev1.PodRunning && podReady(pod) && within {
 					stableSince = time.Now()
 					stableDone = time.After(stabilityWindow)
+					progressPhase = ProgressSoak
+					emitProgress(progressPhase)
 					startupDone = nil
 					continue
 				}
@@ -166,6 +217,9 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 				continue
 			}
 			applyMemorySampleResult(result.Evidence, observation)
+			if len(result.Evidence.MemoryCurve) > 0 {
+				emitProgress(ProgressEvidence)
+			}
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
 				result.Ready = false
@@ -227,6 +281,8 @@ func verifyCloneWithEvidence(ctx context.Context, c *kube.TypedClient, namespace
 					}
 					stableSince = time.Now()
 					stableDone = time.After(stabilityWindow)
+					progressPhase = ProgressSoak
+					emitProgress(progressPhase)
 					startupTimer.Stop()
 					startupDone = nil
 				}

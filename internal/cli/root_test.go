@@ -225,12 +225,53 @@ func TestVerifiedPatchDeliverySummarizesClusterState(t *testing.T) {
 	}
 }
 
+func TestShareLineAppearsOnlyAfterVerifiedDelivery(t *testing.T) {
+	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod"}
+	verified := shadow.Result{Status: shadow.VerificationVerified, Verified: true, Parity: 91, Attempts: []shadow.Attempt{{Number: 1}}}
+	var stdout, stderr bytes.Buffer
+	if code := deliverVerifiedFix(context.Background(), &stdout, &stderr, options{output: "text", outFile: "patch.yaml"}, kube.Kubectl{}, finding, fix.Plan{}, verified, shadow.DeliveryPatch, true); code != 0 {
+		t.Fatalf("verified patch delivery exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Share: Fixora verified Deployment/api in prod · parity 91% · 1 attempt(s) · delivery patch") {
+		t.Fatalf("verified result should print the copyable share line: %s", stdout.String())
+	}
+
+	for _, status := range []shadow.VerificationStatus{shadow.VerificationFailed, shadow.VerificationInconclusive, shadow.VerificationBlocked, ""} {
+		var out, errout bytes.Buffer
+		result := shadow.Result{Status: status, Verified: false, Parity: 91, Attempts: []shadow.Attempt{{Number: 1}}}
+		if code := deliverVerifiedFix(context.Background(), &out, &errout, options{output: "text", outFile: "patch.yaml"}, kube.Kubectl{}, finding, fix.Plan{}, result, shadow.DeliveryPatch, false); code != 0 {
+			t.Fatalf("status %q delivery exit %d: %s", status, code, errout.String())
+		}
+		if strings.Contains(out.String(), "Share:") {
+			t.Errorf("status %q must not emit a share line: %s", status, out.String())
+		}
+	}
+	var blockedOut, blockedErr bytes.Buffer
+	blocked := fix.Plan{Strategy: "review", ApplyEligible: false}
+	if code := deliverVerifiedFix(context.Background(), &blockedOut, &blockedErr, options{output: "text"}, kube.Kubectl{}, finding, blocked, verified, shadow.DeliveryCluster, true); code == 0 || strings.Contains(blockedOut.String(), "Share:") {
+		t.Fatalf("blocked delivery must not emit a share line, code=%d stdout=%q stderr=%q", code, blockedOut.String(), blockedErr.String())
+	}
+	var previewOut, previewErr bytes.Buffer
+	previewPlan := fix.Plan{Resource: "Deployment/api", Strategy: "image", PatchTemplate: "spec: {}\n", ApplyEligible: true}
+	runGuidedFix(context.Background(), &previewOut, &previewErr, options{output: "text", preview: true}, kube.Kubectl{}, finding, previewPlan, "Deployment/api")
+	if strings.Contains(previewOut.String(), "Share:") {
+		t.Fatalf("preview-only output must not emit a share line: %s", previewOut.String())
+	}
+}
+
 func TestDeliveryHeadlineDoesNotClaimSkippedVerification(t *testing.T) {
 	if got := deliveryHeadline(false, 0); got != "Fix not shadow-verified" {
 		t.Fatalf("unverified headline: %q", got)
 	}
 	if got := deliveryHeadline(true, 95); got != "Fix Verified - Parity 95%" {
 		t.Fatalf("verified headline: %q", got)
+	}
+}
+
+func TestDeliveryHeadlineUsesOperationalParityWhenAvailable(t *testing.T) {
+	result := shadow.Result{Parity: 97, OperationalParity: 68, ParityAssessment: &shadow.ParityAssessment{Score: 68}}
+	if got := deliveryHeadlineForResult(true, result); got != "Fix Verified - Parity 68%" {
+		t.Fatalf("delivery headline should use the operational score: %q", got)
 	}
 }
 
@@ -375,6 +416,46 @@ func TestParseProductionBounds(t *testing.T) {
 	}
 	if len(opts.lintFiles) != 1 || opts.lintFiles[0] != "app.yaml" {
 		t.Fatalf("expected lint file app.yaml, got %#v", opts.lintFiles)
+	}
+}
+
+func TestParseShadowRetriesRejectsMoreThanTwoRetries(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	_, _, err := parseFlags([]string{"--shadow-retries", "3"})
+	if err == nil || !strings.Contains(err.Error(), "maximum is 2") {
+		t.Fatalf("expected a clear error for more than two retries, got %v", err)
+	}
+}
+
+func TestParseShadowShellFlag(t *testing.T) {
+	opts, _, err := parseFlags([]string{"--shadow-shell"})
+	if err != nil || !opts.shadowShell {
+		t.Fatalf("--shadow-shell should parse, opts=%+v err=%v", opts, err)
+	}
+}
+
+func TestShadowShellRejectsPreviewAndNonInteractiveInvocation(t *testing.T) {
+	for _, opts := range []options{
+		{output: "text", preview: true, shadowVerify: true, interactive: true, shadowShell: true},
+		{output: "json", shadowVerify: true, shadowShell: true},
+		{output: "text", shadowVerify: true, shadowShell: true},
+		{output: "text", interactive: true, shadowShell: true},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := runGuidedFix(context.Background(), &stdout, &stderr, opts, kube.Kubectl{}, analyzer.Finding{}, fix.Plan{}, "Deployment/api"); code != 2 || !strings.Contains(stderr.String(), "--shadow-shell requires") {
+			t.Errorf("unsafe shell mode should fail before workflow, opts=%+v code=%d stderr=%q", opts, code, stderr.String())
+		}
+	}
+}
+
+func TestParsePlainProgressFlag(t *testing.T) {
+	t.Setenv("FIXORA_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	opts, _, err := parseFlags([]string{"--plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.plain {
+		t.Fatal("--plain should enable line-oriented shadow progress")
 	}
 }
 
@@ -584,8 +665,8 @@ func TestIncidentDefaultsSimplifyProductionWorkflow(t *testing.T) {
 	if !opts.includeLogs || !opts.typedClient || !opts.redact || !opts.paranoid || !opts.shadowVerify || !opts.useAI {
 		t.Fatalf("fix defaults should enable logs, typed client, redaction, paranoid, AI, and shadow: %#v", opts)
 	}
-	if opts.shadowRetries != 1 {
-		t.Fatalf("fix defaults should allow one redacted AI shadow retry, got %d", opts.shadowRetries)
+	if opts.shadowRetries != 2 {
+		t.Fatalf("fix defaults should allow two redacted AI shadow retries (three total attempts), got %d", opts.shadowRetries)
 	}
 
 	opts = options{quick: true, visited: map[string]bool{"no-ai": true}, noAI: true}

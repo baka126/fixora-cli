@@ -29,6 +29,9 @@ jobs:
     - name: Test
       run: make test-coverage
 
+    - name: Check Claude Code plugin wiring
+      run: python3 scripts/check_claude_plugin.py
+
     - name: Govulncheck
       if: matrix.os == 'ubuntu-latest'
       uses: golang/govulncheck-action@v1

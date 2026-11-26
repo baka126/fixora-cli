@@ -11,6 +11,17 @@ import (
 func printCommandHelp(w io.Writer, command string) bool {
 	var help string
 	switch command {
+	case "mcp":
+		help = `Usage: kubectl fixora mcp setup <claude-code|gemini-cli> [--scope user|project] [--context NAME] [-n NAMESPACE] [--apply]
+
+Print a host-native command to register Fixora's local MCP server. --apply
+runs the selected CLI and updates its MCP configuration. The AI host uses its
+own sign-in; Fixora does not receive the host's subscription credentials.
+
+Examples:
+  kubectl fixora mcp setup claude-code
+  kubectl fixora mcp setup gemini-cli --context staging -n payments --apply
+`
 	case "scan", "incidents":
 		help = `Usage: kubectl fixora scan [-A | -n namespace] [flags]
 
@@ -80,13 +91,14 @@ Examples:
   kubectl fixora fix pvc/data -n prod --pvc-policy ./pvc-repair.yaml --preview
   kubectl fixora fix hpa/api-scale -n prod --hpa-policy ./hpa-repair.yaml --preview
 
-Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, --startup-baseline, -o json
+Useful flags: --context, --ai, --no-ai, --yes, --quick, --edit-patch, --startup-baseline, --shadow-shell, -o json
 Startup baselines must match the Deployment and image; restoration always runs shadow verification.
 Fix enables AI when configured; --no-ai disables it. AI candidates and startup/cache
 repairs require shadow verification, including with --quick. Other quick repairs
 skip shadow verification. Use --yes for scripted delivery.
 PVC repairs require an exact local --pvc-policy. Expansion is non-rollbackable and remains
 pending until the provisioner reports capacity; Fixora never mounts a production PVC in a shadow.
+--shadow-shell opens an optional post-verdict shell in the isolated candidate; it requires a TTY and pods/exec.
 NetworkPolicy replacement requires an exact local --networkpolicy-policy. Preview is read-only;
 --apply runs isolated declared TCP tests and requires explicit consent. AI cannot change policy intent.
 `
@@ -122,10 +134,36 @@ Examples:
   kubectl fixora cleanup
   kubectl fixora cleanup --context staging --yes
 `
+	case "demo":
+		help = `Usage: kubectl fixora demo [oom|config|probe] [--preview] [--ai] [--yes] [--context name]
+
+Create one labeled workload in a unique namespace, verify an eligible proposed
+repair in an isolated shadow, and delete the demo namespace on exit. Optional AI
+can make at most two bounded revisions after measured failures. No repair is
+delivered or applied to the demo workload.
+
+Fixtures:
+  probe   Readiness probe targets the wrong declared port (default; concrete correction)
+  config  Missing ConfigMap key reference (may require operator evidence)
+  oom     Container exceeds its memory limit
+
+Examples:
+  kubectl fixora demo --preview
+  kubectl fixora demo --yes
+  kubectl fixora demo oom --yes
+`
 	case "ai":
 		help = `Usage: kubectl fixora ai doctor
 
 Check the configured AI provider without scanning the cluster.
+`
+	case "auth":
+		help = `Usage: kubectl fixora auth login chatgpt
+       kubectl fixora auth logout chatgpt
+       kubectl fixora auth set <provider> <api-key> [base-url] [model]
+
+Sign in with ChatGPT to use eligible ChatGPT plan usage (development build).
+Claude Code uses its own subscription through the Fixora MCP plugin.
 `
 	case "debug":
 		help = `Usage: kubectl fixora debug <tool> [resource] [flags]
@@ -136,6 +174,29 @@ Tools: trace, graph, storage, rbac, dns, security, node-pressure,
 Examples:
   kubectl fixora debug trace service/api -n prod
   kubectl fixora debug storage -A
+`
+	case "rbac":
+		help = `Usage: kubectl fixora rbac [service-account] [verb] [resource] [-n namespace]
+       kubectl fixora rbac repair -n namespace --rbac-policy ./rbac-repair.yaml [--apply] [--yes]
+       kubectl fixora rbac grants list
+       kubectl fixora rbac grants export --grant <id> --out <path>
+       kubectl fixora rbac grants import --file <path>
+       kubectl fixora rbac revoke --grant <id> -n namespace [--apply] [--yes]
+
+The original form checks one authorization action. The repair form previews a namespaced Role and
+RoleBinding from an exact local policy. Apply creates only those objects and never claims workload recovery.
+The policy namespace must match -n. Secret access, ServiceAccount changes, workload mutations, and
+permission escalation are denied. A successful grant is saved in a private local receipt. ` + "`rbac grants list`" + ` reads local receipts only. Export writes sensitive authorization metadata to a new mode-0600 file; import requires the same cluster and verifies the exact live Role and RoleBinding before saving locally. Import makes no cluster changes. ` + "`rbac revoke`" + ` previews by default and deletes only the recorded UIDs.
+Known Helm/GitOps-managed targets remain review-only.
+
+Examples:
+  kubectl fixora rbac api get configmaps -n payments
+  kubectl fixora rbac repair -n payments --rbac-policy ./rbac-repair.yaml
+  kubectl fixora rbac repair -n payments --rbac-policy ./rbac-repair.yaml --apply
+  kubectl fixora rbac grants list
+  kubectl fixora rbac grants export --grant a1b2c3d4e5f6 --out ./grant-receipt.json
+  kubectl fixora rbac grants import --file ./grant-receipt.json
+  kubectl fixora rbac revoke --grant a1b2c3d4e5f6 -n payments
 `
 	case "source":
 		help = `Usage: kubectl fixora source <tool> [path] [flags]
@@ -173,7 +234,7 @@ var suggestedCommands = []string{
 	"filters", "integrations", "serve", "health", "watch", "report",
 	"bundle", "predict", "cost", "graph", "trace", "storage", "rbac",
 	"dns", "security", "node-pressure", "repo", "validate", "changes",
-	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup", "ask",
+	"preflight", "policy-check", "lint", "profiles", "cache", "memory", "cleanup", "demo", "ask",
 }
 
 func suggestCommand(input string) string {
