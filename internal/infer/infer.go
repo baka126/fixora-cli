@@ -2,6 +2,8 @@ package infer
 
 import (
 	"context"
+	"slices"
+	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/fix"
@@ -13,9 +15,11 @@ type kubeReader = kube.Reader
 
 // Result is one inferrer's proposal plus the provenance shown to the user.
 type Result struct {
-	Options   fix.ConcreteOptions
-	Guardrail string // guardrail token added to the plan
-	Warning   string // surfaced in the plan and reviewed before shadow
+	Options          fix.ConcreteOptions
+	EphemeralCache   *fix.EphemeralCache
+	ConnectionConfig *fix.ConnectionConfig
+	Guardrail        string // guardrail token added to the plan
+	Warning          string // surfaced in the plan and reviewed before shadow
 }
 
 // Inferrer derives concrete patch values for one strategy.
@@ -27,7 +31,7 @@ type Inferrer interface {
 
 // Concrete runs the first registered inferrer that handles the plan. It
 // returns the original plan and false unless the concretized result comes back
-// ApplyEligible — there is no half-concretized intermediate state.
+// concrete and eligible or a controller-specific source review proposal.
 func Concrete(ctx context.Context, r kubeReader, f analyzer.Finding, p fix.Plan) (fix.Plan, bool) {
 	return concreteWith(ctx, r, f, p, registered)
 }
@@ -42,7 +46,13 @@ func concreteWith(ctx context.Context, r kubeReader, f analyzer.Finding, p fix.P
 			continue
 		}
 		candidate := fix.Concretize(p, result.Options)
-		if !candidate.ApplyEligible {
+		if result.EphemeralCache != nil {
+			candidate = fix.WithEphemeralCachePatch(p, *result.EphemeralCache)
+		}
+		if result.ConnectionConfig != nil {
+			candidate = fix.WithConnectionConfigPatch(p, *result.ConnectionConfig)
+		}
+		if !candidate.ApplyEligible && !(slices.Contains(candidate.Guardrails, "controller-review-only") && candidate.PatchTemplate != "" && !strings.Contains(candidate.PatchTemplate, "TODO_") && candidate.Strategy != "runtime" && candidate.Strategy != "security") {
 			continue
 		}
 		if result.Guardrail != "" {

@@ -1,0 +1,16 @@
+{
+  "name": "fixora-cli",
+  "description": "Claude Code plugins maintained by the Fixora CLI project.",
+  "owner": {
+    "name": "Fixora contributors",
+    "url": "https://github.com/baka126/fixora-cli"
+  },
+  "plugins": [
+    {
+      "name": "fixora",
+      "source": "./plugins/fixora",
+      "description": "Kubernetes incident diagnosis and guarded repair previews powered by the Fixora CLI MCP server.",
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -27,6 +27,16 @@ func revisePatch(ctx context.Context, aiProvider ai.Provider, patch, planType st
 	for _, e := range attempt.Events {
 		finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "Event", Value: redact.KubernetesText(e)})
 	}
+	if attempt.Evidence != nil && attempt.Evidence.MemoryAssessment != nil {
+		assessment := attempt.Evidence.MemoryAssessment
+		if assessment.Status != "" || assessment.Summary != "" {
+			value := strings.TrimSpace(assessment.Status + ": " + assessment.Summary)
+			if len(value) > 240 {
+				value = value[:237] + "..."
+			}
+			finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "Memory assessment", Value: redact.KubernetesText(value)})
+		}
+	}
 	finding.Evidence = append(finding.Evidence, analyzer.Evidence{Label: "Current Patch", Value: redact.KubernetesText(patch)})
 	res, err := aiProvider.Explain(ctx, finding)
 	if err != nil {

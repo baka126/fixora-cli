@@ -26,6 +26,7 @@ type clonePlan struct {
 	UnpatchedClone    *corev1.Pod
 	Clone             *corev1.Pod
 	Policy            *networkingv1.NetworkPolicy
+	Namespace         *corev1.Namespace
 	Warnings          []string
 	NamespaceMetadata namespaceMetadata
 }
@@ -35,7 +36,7 @@ type namespaceMetadata struct {
 	Annotations map[string]string
 }
 
-func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session string) (clonePlan, error) {
+func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session, shadowNamespace string) (clonePlan, error) {
 	original, err := podTemplateForResource(ctx, c, req.Namespace, req.Resource, req.Finding.PodName)
 	if err != nil {
 		return clonePlan{}, err
@@ -45,13 +46,14 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	}
 	clone := sanitizePod(original, session, req.Timeout)
 	clone.Name = cloneName(original.Name, session)
+	clone.Namespace = shadowNamespace
 	nsMetadata := namespaceLabels(ctx, c, req.Namespace)
-	warnings := cloneWarnings(req.Egress)
+	warnings := cloneWarnings()
 	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource, nsMetadata)...)
 	if strings.EqualFold(req.Plan.Strategy, "fix-architecture") {
 		platformSource := original
 		if platformSource.Spec.NodeName == "" && strings.TrimSpace(req.Finding.PodName) != "" {
-			platformSource, err = c.GetTypedPod(ctx, clone.Namespace, req.Finding.PodName)
+			platformSource, err = c.GetTypedPod(ctx, req.Namespace, req.Finding.PodName)
 			if err != nil {
 				return clonePlan{}, fmt.Errorf("read failing controller pod for architecture verification: %w", err)
 			}
@@ -72,7 +74,7 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	if err := validateCloneContainerIdentity(unpatchedClone, clone); err != nil {
 		return clonePlan{}, err
 	}
-	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
+	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session)
 	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceMetadata: nsMetadata}, nil
 }
 
@@ -244,6 +246,10 @@ func stripEphemeralVolumeMounts(containers []corev1.EphemeralContainer, removed 
 }
 
 func validateShadowSource(pod *corev1.Pod) error {
+	return validateShadowSourceWithSecretDependencies(pod, nil)
+}
+
+func validateShadowSourceWithSecretDependencies(pod *corev1.Pod, allowedSecrets map[string]bool) error {
 	if pod == nil {
 		return fmt.Errorf("shadow verification cannot clone an empty pod template")
 	}
@@ -259,8 +265,10 @@ func validateShadowSource(pod *corev1.Pod) error {
 			return fmt.Errorf("shadow verification is blocked for pod using hostPath volume %q", volume.Name)
 		case volume.PersistentVolumeClaim != nil:
 			return fmt.Errorf("shadow verification is blocked for pod using persistent volume claim %q; storage parity requires an isolated volume clone", volume.Name)
-		case volume.Secret != nil || hasProjectedSecret(volume):
+		case volume.Secret != nil && !allowedSecrets[volume.Secret.SecretName]:
 			return fmt.Errorf("shadow verification is blocked for pod mounting Secret volume %q", volume.Name)
+		case hasProjectedSecret(volume) && !projectedSecretsAllowed(volume, allowedSecrets):
+			return fmt.Errorf("shadow verification is blocked for pod mounting an unapproved projected Secret")
 		case isExternalDataVolume(volume):
 			return fmt.Errorf("shadow verification is blocked for pod mounting external or shared data volume %q", volume.Name)
 		}
@@ -282,17 +290,29 @@ func validateShadowSource(pod *corev1.Pod) error {
 			}
 		}
 		for _, source := range container.EnvFrom {
-			if source.SecretRef != nil {
+			if source.SecretRef != nil && !allowedSecrets[source.SecretRef.Name] {
 				return fmt.Errorf("shadow verification is blocked for container %q importing Secret environment variables", container.Name)
 			}
 		}
 		for _, env := range container.Env {
-			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && !allowedSecrets[env.ValueFrom.SecretKeyRef.Name] {
 				return fmt.Errorf("shadow verification is blocked for container %q reading Secret environment variable %q", container.Name, env.Name)
 			}
 		}
 	}
 	return nil
+}
+
+func projectedSecretsAllowed(volume corev1.Volume, allowed map[string]bool) bool {
+	if volume.Projected == nil {
+		return true
+	}
+	for _, source := range volume.Projected.Sources {
+		if source.Secret != nil && !allowed[source.Secret.Name] {
+			return false
+		}
+	}
+	return true
 }
 
 func isExternalDataVolume(volume corev1.Volume) bool {
@@ -465,33 +485,25 @@ func applyPatchToPod(pod *corev1.Pod, patchYAML string) error {
 	if err != nil {
 		return fmt.Errorf("merge patch into shadow pod: %w", err)
 	}
-	return json.Unmarshal(merged, pod)
+	// Decode into a fresh object: decoding into the source can retain omitted
+	// scalar fields on reused slice entries after strategic-merge deletion.
+	var revised corev1.Pod
+	if err := json.Unmarshal(merged, &revised); err != nil {
+		return err
+	}
+	*pod = revised
+	return nil
 }
 
 func podStrategicPatch(obj map[string]any) ([]byte, error) {
-	kind := strings.ToLower(fmt.Sprint(obj["kind"]))
-	if kind == "pod" || kind == "" {
-		return json.Marshal(removeIdentity(obj))
-	}
-	spec, ok := nestedMap(obj, "spec")
+	spec, ok := kube.WorkloadPodSpec(obj)
 	if !ok {
-		return nil, fmt.Errorf("patch does not include a spec")
+		return nil, fmt.Errorf("patch must target a correctly nested Pod spec")
 	}
-	template, ok := nestedMap(spec, "template")
-	if ok {
-		templateSpec, ok := nestedMap(template, "spec")
-		if !ok {
-			return nil, fmt.Errorf("workload patch does not include spec.template.spec")
-		}
-		return json.Marshal(map[string]any{"spec": templateSpec})
-	}
-	if _, ok := spec["containers"]; ok {
-		return json.Marshal(map[string]any{"spec": spec})
-	}
-	return nil, fmt.Errorf("cannot project %s patch into a shadow pod; only pod template spec changes are supported", kind)
+	return json.Marshal(map[string]any{"spec": spec})
 }
 
-func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1.NetworkPolicy {
+func sandboxNetworkPolicy(namespace, name, session string) *networkingv1.NetworkPolicy {
 	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}
 	np := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
@@ -510,21 +522,14 @@ func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1
 			Egress:      []networkingv1.NetworkPolicyEgressRule{},
 		},
 	}
-	if strings.EqualFold(egress, "allow") {
-		np.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{}}
-	}
 	return np
 }
 
-func cloneWarnings(egress string) []string {
+func cloneWarnings() []string {
 	warnings := []string{
 		"shadow pod labels are stripped so existing Services should not route traffic to the clone",
 		"shadow clone service account token access is disabled to avoid reusing workload credentials",
-	}
-	if strings.EqualFold(egress, "allow") || egress == "" {
-		warnings = append(warnings, "shadow NetworkPolicy blocks ingress but allows egress for parity; downstream systems may still see clone traffic")
-	} else {
-		warnings = append(warnings, "shadow egress is blocked; readiness may fail for workloads that need external dependencies")
+		"shadow egress is denied; readiness may be inconclusive when external dependencies are required",
 	}
 	return warnings
 }

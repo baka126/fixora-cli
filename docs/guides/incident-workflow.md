@@ -37,6 +37,43 @@ Review the target, diff, strategy, blocked reasons, and rollback hint. A low-con
 
 An enabled shadow check creates isolated resources, applies the patch to a clone, waits for selected health signals, and reports what it observed. A `--quick` path can skip that check. A skipped, failed, or inconclusive check must be treated differently from a verified result. See [delivery and verification]({{ '/guides/delivery/' | relative_url }}).
 
+After shadow verification, Fixora prints a compact evidence card with the target, finding, verdict, attempt count, and available readiness, memory, and parity measurements. Failed runs show this concise card by default; `--proof` includes detailed failure evidence. A verified PR description reuses the same summary, while review-only PRs explicitly state that shadow verification was not run.
+
+For policy-approved Helm-managed Service routing, use the explicit values workflow in [delivery and verification]({{ '/guides/delivery/' | relative_url }}). Its preview certifies the rendered values effect without creating verifier resources; source delivery runs the temporary route verifier before writing. The Helm values change remains a proposal until the owning deployment or GitOps controller reconciles it.
+
+Fixora also keeps a small local history for the same cluster and workload. After a shadow run it records the outcome and available numeric readiness or memory measurements. Only a verified session can appear as “Seen before” in a later analysis; this history is context, never approval to reuse a patch or bypass current checks. The profile is stored under `~/.fixora/<cluster-hash>/profiles.json` with private file permissions. If the profile cannot be read or written, the current fix continues without history.
+
 ## Interactive or scripted
 
 Run `fix` without a resource for a guided terminal flow in v0.8.0. For scripts, name the target and provide explicit values; inspect structured output and require your own approval before a write. Bare `kubectl fixora` opens the older dashboard in v0.8.0; the new no-argument chooser is **Upcoming** on [the development branch](https://github.com/baka126/fixora-cli/tree/codex/production-hardening).
+
+## Try a disposable demo
+
+Use `kubectl fixora demo [oom|config|probe]` to create one labeled workload in a generated namespace, with default-deny ingress and egress, inspect the live analyzer finding, and display the regular guarded repair preview. The command asks before creating resources; `--yes` opts into creation for scripts, while `--preview` shows the fixture without creating it. The namespace is removed on success, errors, timeout, and interrupt using a UID precondition. If deletion fails, Fixora prints the exact namespace and a recovery command. Demo repairs are always preview-only.
+
+**Effect:** Creates a temporary namespace, default-deny NetworkPolicy, and one test Deployment after explicit confirmation. Deletes the namespace on exit. It does not apply a repair.
+
+```bash
+kubectl fixora demo --preview
+kubectl fixora demo config
+kubectl fixora demo oom --yes
+```
+
+## Ask a follow-up and resume an incident
+
+Use `ask` to investigate Kubernetes resources and analyzer findings in natural language. Fixora chooses relevant analyzers from the question, broadens once if the inferred scan is inconclusive, and adds registry-wide, allow-listed summaries for live resources while preserving their namespace and identity. The summaries include selected operational facts such as readiness, workload images and resource requests, Service and route references, storage state, scaling bounds, policy report counts, and operator progression. Unknown fields and unavailable optional CRDs remain unknown; Fixora does not send raw objects to fill gaps. A repair preview still requires one exact target. Ask sends bounded, redacted evidence to the configured AI provider and saves a short local session summary so you can continue in a later command:
+
+**Effect:** Reads scoped cluster evidence and may read bounded logs, sends bounded redacted context to the configured AI provider, and stores a local session summary. These questions do not apply cluster changes.
+
+```bash
+kubectl fixora ask "why is the API crashing?" -n payments
+kubectl fixora ask --session <id> "what changed since my last question?"
+kubectl fixora ask sessions list
+kubectl fixora ask sessions delete <id>
+```
+
+A resumed turn is bound to the current cluster and revalidates the original resource before collecting fresh evidence. Missing, recreated, or re-owned targets are rejected. Session files live under `~/.fixora/<cluster-hash>/ask-sessions.json`, use private local permissions, keep bounded summaries rather than raw logs or Kubernetes objects, and expire after 30 days. Every AI-backed turn sends current redacted incident evidence and bounded prior-turn summaries to the configured provider. Review provider and data handling settings before use.
+
+Text output shows a compact summary with a few cited signals; add `--proof` to display all bounded claims and evidence references, or use `-o json` for the complete structured result. A recovery is reported only when fresh analyzer evidence confirms a healthy target and its saved controller chain. If that identity evidence is missing, Fixora stops rather than claiming recovery.
+
+Ask is preview-only. A repair request may open Fixora's guarded repair preview, but the model cannot authorize apply or delivery.

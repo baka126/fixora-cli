@@ -1,0 +1,11 @@
+{{- if .Values.collateral }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: setup-hook
+  annotations:
+    helm.sh/hook: pre-install
+    helm.sh/hook-weight: "0"
+data:
+  reference: {{ .Values.choice | quote }}
+{{- end }}

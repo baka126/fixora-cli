@@ -2,6 +2,8 @@ package analyzer
 
 import (
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +50,91 @@ func TestDefaultIncidentFilters(t *testing.T) {
 	if !matchesAny(filterSet(got), "pod-security", "podsecurity", "security") {
 		t.Fatalf("comprehensive filters no longer select pod-security: %#v", got)
 	}
+}
+
+func TestAllDiagnosticFiltersCoverRegistryAndPrecisionAliases(t *testing.T) {
+	filters := filterSet(AllDiagnosticFilters())
+	for _, def := range registry {
+		for _, value := range []string{def.Name, def.Kind, def.Resource} {
+			if value != "" && !filters[valueLower(value)] {
+				t.Errorf("all diagnostic filters missing registry alias %q", value)
+			}
+		}
+	}
+	for _, alias := range allPrecisionAnalyzerAliases() {
+		if !filters[valueLower(alias)] {
+			t.Errorf("all diagnostic filters missing precision alias %q", alias)
+		}
+	}
+}
+
+func TestAskFiltersForRequestSelectsByQuestionAndBroadensUnknowns(t *testing.T) {
+	tests := []struct {
+		name    string
+		request string
+		quick   bool
+		want    []string
+		all     bool
+	}{
+		{name: "networking issue", request: "Why is the service unreachable?", want: []string{"pod", "service", "networking"}},
+		{name: "storage issue", request: "Why is this PVC pending?", want: []string{"pod", "pvc", "storage", "storageclass", "node"}},
+		{name: "unknown target broadens", request: "Why is api not working?", all: true},
+		{name: "broad cluster inventory", request: "What is unhealthy across the cluster?", all: true},
+		{name: "quick remains reduced", request: "What is unhealthy across the cluster?", quick: true, want: []string{"pod"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AskFiltersForRequest(tt.request, tt.quick)
+			if tt.all {
+				if !reflect.DeepEqual(got, AllDiagnosticFilters()) {
+					t.Fatalf("filters=%#v want full catalog", got)
+				}
+				return
+			}
+			for _, want := range tt.want {
+				if !containsString(got, want) {
+					t.Errorf("filters=%#v missing %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAskInventoryDefinitionsFollowSelectedScope(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters []string
+		want    []string
+	}{
+		{name: "pod only", filters: []string{"pod"}, want: []string{"Pod"}},
+		{name: "networking group", filters: []string{"pod", "networking"}, want: []string{"Gateway", "GatewayClass", "HTTPRoute", "Ingress", "NetworkPolicy", "Pod", "Service"}},
+		{name: "all checks", filters: AllDiagnosticFilters(), want: registryNames()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defs := AskInventoryDefinitions(tt.filters)
+			got := make([]string, 0, len(defs))
+			for _, def := range defs {
+				got = append(got, def.Name)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("inventory definitions=%#v want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func registryNames() []string {
+	names := make([]string, 0, len(registry))
+	for _, def := range registry {
+		names = append(names, def.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func valueLower(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func containsString(values []string, want string) bool {

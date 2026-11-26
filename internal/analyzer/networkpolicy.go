@@ -14,7 +14,9 @@ func (a Analyzer) analyzeNetworkPolicies(ctx *ScanContext) ([]Finding, error) {
 	pods, podErr := ctx.GetResourceItems(a.opts.Namespace, a.opts.AllNS, "pods")
 
 	out := []Finding{}
-	for _, policy := range policies {
+	selectors := make([]labels.Selector, len(policies))
+	selectorValid := make([]bool, len(policies))
+	for i, policy := range policies {
 		namespace, name := objectNamespaceName(policy)
 		selector := nestedMap(nestedMap(policy, "spec"), "podSelector")
 		matchLabels := stringMap(selector["matchLabels"])
@@ -23,11 +25,13 @@ func (a Analyzer) analyzeNetworkPolicies(ctx *ScanContext) ([]Finding, error) {
 			out = append(out, networkPolicyFinding(policy, "EmptyPodSelector", "medium", "NetworkPolicy podSelector selects all pods in its namespace.", "An empty podSelector applies this policy to every pod in "+namespace+"."))
 			continue
 		}
-		if podErr != nil {
-			continue
-		}
 		matcher, selectorErr := networkPolicySelector(selector)
 		if selectorErr != nil {
+			out = append(out, networkPolicyFinding(policy, "InvalidPodSelector", "high", "NetworkPolicy podSelector is malformed.", "The selector cannot be evaluated with Kubernetes label-selector semantics."))
+			continue
+		}
+		selectors[i], selectorValid[i] = matcher, true
+		if podErr != nil {
 			continue
 		}
 		if !networkPolicySelectorMatchesPods(namespace, matcher, pods) {
@@ -36,6 +40,30 @@ func (a Analyzer) analyzeNetworkPolicies(ctx *ScanContext) ([]Finding, error) {
 				selectorText = matcher.String()
 			}
 			out = append(out, networkPolicyFinding(policy, "NoSelectedPods", "low", "NetworkPolicy does not select any observable pods.", "No pods matched selector "+selectorText+" for "+keyFor(namespace, name)+"."))
+		}
+	}
+	if podErr == nil {
+		overlaps := map[int]bool{}
+		for _, pod := range pods {
+			podNamespace, _ := objectNamespaceName(pod)
+			podLabels, _ := objectLabelsAnnotations(pod)
+			selected := []int{}
+			for i, policy := range policies {
+				policyNamespace, _ := objectNamespaceName(policy)
+				if podNamespace == policyNamespace && selectorValid[i] && selectors[i].Matches(labels.Set(podLabels)) {
+					selected = append(selected, i)
+				}
+			}
+			if len(selected) > 1 {
+				for _, i := range selected {
+					overlaps[i] = true
+				}
+			}
+		}
+		for i, overlapping := range overlaps {
+			if overlapping {
+				out = append(out, networkPolicyFinding(policies[i], "OverlappingPolicies", "medium", "Multiple NetworkPolicies select the same Pod; allowed traffic is additive.", "This policy shares at least one Pod with another standard NetworkPolicy."))
+			}
 		}
 	}
 	if podErr != nil && len(policies) > 0 {

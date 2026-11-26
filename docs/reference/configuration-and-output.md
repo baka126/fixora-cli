@@ -20,7 +20,9 @@ kubectl fixora config view
 kubectl fixora config validate
 ```
 
-`config set|unset|reset` writes local settings; `config export` emits a shareable redacted view. Do not include a provider key in issue reports. Environment variables include `FIXORA_AI_PROVIDER`, `FIXORA_AI_API_KEY`, `FIXORA_AI_MODEL`, `FIXORA_AI_BASE_URL`, `FIXORA_AI_PROFILE`, and `FIXORA_SERVE_TOKEN`. `auth set` is a local credential workflow. The current branch expands context/profile controls; consult that branch's help before using them.
+`config set|unset|reset` writes local settings; `config export` emits a shareable redacted view. Do not include a provider key in issue reports. AI settings include `FIXORA_AI_PROVIDER`, `FIXORA_AI_API_KEY`, `FIXORA_AI_MODEL`, `FIXORA_AI_BASE_URL`, `FIXORA_AI_PROTOCOL`, `FIXORA_AI_OUTPUT_MODE`, `FIXORA_AI_PROJECT`, `FIXORA_AI_LOCATION`, `FIXORA_AI_API_VERSION`, and `FIXORA_AI_PROFILE`. Vertex AI uses Google application-default credentials; Bedrock uses the AWS SDK credential chain plus `AWS_REGION` or `AWS_DEFAULT_REGION`. `auth set` is a local credential workflow. The current branch expands context/profile controls; consult that branch's help before using them.
+
+Development builds support optional fix-session telemetry only when `--telemetry` is passed. `FIXORA_TELEMETRY_URL` selects the HTTPS collector and optional `FIXORA_TELEMETRY_AUTH_TOKEN` supplies its bearer token. Neither setting sends anything by itself; `--no-telemetry` explicitly disables the report. See the [telemetry guide]({{ '/guides/telemetry/' | relative_url }}) for the exact report fields and data exclusions.
 
 ## Output formats
 
@@ -37,3 +39,11 @@ kubectl fixora scan -n prod -o json
 ## Exit behavior
 
 `0` means the command completed; it does not mean the cluster is healthy or a finding was verified. Flag/argument errors commonly exit `2`; operational errors commonly exit `1`. For automation, test the command and inspect structured fields such as findings, blocked reasons, verification status, and skipped checks. Do not infer remediation success from a zero exit alone.
+
+## Verification policy output (branch checkpoint)
+
+Policy summaries expose the family, result, changed fields and caveats. Raw operator baselines and runtime proof/receipt authority are omitted from JSON/YAML; loading a saved plan cannot authorize delivery.
+
+Coordinated reports distinguish shadow verification, actual apply, live verification and rollback availability/refusal. Text uses `not-applied`, `apply-unconfirmed`, `applied-unverified`, `live-verified` and `fields-restored`. Structured steps include `Verification` and `RollbackStatus`. `fields-restored` confirms the original changed configuration was read back; it does not claim the original failing workload is healthy. An aborted set exits `2`; an apply or live-verification failure exits `1`.
+
+An apply command error can leave the server outcome uncertain (for example, after a lost response). `apply-unconfirmed` is not counted as a confirmed mutation or silently rolled back; inspect the live target before recovery.

@@ -1,9 +1,10 @@
 // Package coordinate applies an ordered, user-vetted set of single-resource
-// fixes as a transaction, rolling back the applied prefix on failure.
+// fixes as an ordered saga, offering rollback of the applied prefix on failure.
 package coordinate
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
@@ -21,15 +22,22 @@ type Step struct {
 }
 
 type StepReport struct {
-	Ref        string
-	Applied    bool
-	Healthy    bool
-	RolledBack bool
-	Detail     string
+	ApplyAttempted bool
+	Verification   string `json:"verification,omitempty"`
+	RollbackStatus string `json:"rollbackStatus,omitempty"`
+	Ref            string
+	Applied        bool
+	Healthy        bool
+	RolledBack     bool
+	Detail         string
 }
 
 type Report struct {
 	Steps   []StepReport
+	ShadowVerified *bool `json:"shadowVerified,omitempty"`
+	LiveVerified *bool `json:"liveVerified,omitempty"`
+	ExternalDependenciesTested *bool `json:"externalDependenciesTested,omitempty"`
+	ShadowCleanup string `json:"shadowCleanup,omitempty"`
 	Aborted bool // preflight/confirm rejected the set; nothing mutated
 	Mutated bool // at least one Apply succeeded
 	Failed  bool // a step failed to apply or verify after mutation began
@@ -58,6 +66,9 @@ func Run(ctx context.Context, steps []Step, d Deps, sourceManaged func(analyzer.
 		switch {
 		case !s.Plan.ApplyEligible:
 			report.Steps[i].Detail = "blocked: not apply-eligible (" + strings.Join(s.Plan.BlockedReasons, "; ") + ")"
+			report.Aborted = true
+		case slices.Contains(s.Plan.Guardrails, "shadow-required"):
+			report.Steps[i].Detail = "blocked: this repair requires the single-workload shadow verification and delivery workflow"
 			report.Aborted = true
 		case sourceManaged(s.Finding):
 			report.Steps[i].Detail = "blocked: Helm/GitOps-managed — deliver via --repo, not direct apply"

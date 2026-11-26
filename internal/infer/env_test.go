@@ -116,6 +116,25 @@ func TestEnvInferrerDeclinesOnSelfMatch(t *testing.T) {
 	}
 }
 
+func TestEnvInferrerDeclinesWhenReferencedConfigMapAlreadyExists(t *testing.T) {
+	f := envFinding("ConfigMap", "app-confg")
+	r := fakeConfigReader{items: []map[string]any{
+		configMap("app-confg", "some-key"),
+		configMap("app-config", "some-key"),
+	}}
+	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
+		t.Fatal("a resolved reference must not be redirected to a similar name")
+	}
+}
+
+func TestEnvInferrerDeclinesUnknownReferenceKinds(t *testing.T) {
+	f := envFinding("PersistentVolumeClaim", "app-confg")
+	r := fakeConfigReader{items: []map[string]any{configMap("app-config", "some-key")}}
+	if _, ok, _ := (envInferrer{}).Infer(context.Background(), r, f, fix.Plan{Strategy: "env"}); ok {
+		t.Fatal("only ConfigMap references may be redirected to ConfigMaps")
+	}
+}
+
 func TestEnvInferrerDeclinesWithoutKeyEvidence(t *testing.T) {
 	f := analyzer.Finding{
 		Status: "CreateContainerConfigError",

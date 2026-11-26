@@ -31,7 +31,7 @@ func TestInteractiveFixDetection(t *testing.T) {
 
 func TestWalkthroughQuitAtRootCause(t *testing.T) {
 	finding := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Summary: "no cpu request"}
-	plan := fix.Plan{Resource: "deployment/api"}
+	plan := fix.Plan{Resource: "deployment/api", ApplyEligible: true, PatchTemplate: "spec:\n  replicas: 1\n"}
 	opts := options{output: "text", promptInput: bufio.NewReader(strings.NewReader("q\n"))}
 	var stdout, stderr bytes.Buffer
 	code := runFixWalkthrough(context.Background(), &stdout, &stderr, opts, kube.Kubectl{}, finding, plan, "deployment/api")
@@ -134,5 +134,93 @@ func TestWalkthroughReviewOnlyPatchFile(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "review-only") {
 		t.Fatalf("expected review-only messaging, got %q", stdout.String())
+	}
+}
+
+func TestWalkthroughWithoutConcretePatchDoesNotOfferFix(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "crashloop-demo", Namespace: "fixora-demo", Status: "CrashLoopBackOff", Evidence: []analyzer.Evidence{{Label: "Container command broken-app", Value: "sh -c exit 1"}}}
+	p := fix.BuildPlan(f)
+	var out, errout bytes.Buffer
+	opts := options{output: "text", noColor: true, promptInput: bufio.NewReader(strings.NewReader("")), outFile: t.TempDir() + "/patch.yaml"}
+	if code := runFixWalkthrough(context.Background(), &out, &errout, opts, kube.Kubectl{}, f, p, "Deployment/crashloop-demo"); code != 0 {
+		t.Fatal(code)
+	}
+	for _, unwanted := range []string{"TODO_", "Continue to the proposed fix?", "Step 2/4", "+++ proposed/"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("misleading output %q: %s", unwanted, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "Container command broken-app") || !strings.Contains(out.String(), "broken-app's intended startup behavior") || !strings.Contains(out.String(), "-n fixora-demo --proof") {
+		t.Fatalf("default result should stay concise and provide a scoped details command: %s", out.String())
+	}
+	if _, err := os.Stat(opts.outFile); !os.IsNotExist(err) {
+		t.Fatal("must not write a placeholder patch")
+	}
+}
+
+func TestPreviewDoesNotRenderPlaceholderPatch(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod", Status: "CrashLoopBackOff"}
+	var out, errout bytes.Buffer
+	runGuidedFix(context.Background(), &out, &errout, options{output: "text", preview: true, noColor: true}, kube.Kubectl{}, f, fix.BuildPlan(f), "Deployment/api")
+	if !strings.Contains(out.String(), "-n prod --proof") {
+		t.Fatalf("missing scoped next step: %s", out.String())
+	}
+	if strings.Contains(out.String(), "TODO_") || strings.Contains(out.String(), "Suggested diff") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestPreviewWithRepairablePlanKeepsSummaryAndDiffOnlyByDefault(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "dependency-demo", Namespace: "fixora-demo", Status: "DatabaseUnreachable", Severity: "critical", Summary: "The container cannot reach its database dependency.", AI: &analyzer.AIResult{Summary: "db-client cannot resolve DB_HOST and exits repeatedly.", RootCause: "Long AI explanation with evidence, alternatives, and detailed analysis.", RecommendedFix: "Read DB_HOST and DB_PORT from the existing connection ConfigMap; shadow verification must confirm that the client connects.", Commands: []string{"kubectl logs deployment/dependency-demo -n fixora-demo"}, Warnings: []string{"Check that the owning GitOps source references the approved ConfigMap."}}}
+	plan := fix.Plan{Resource: "Deployment/dependency-demo", Namespace: "fixora-demo", Status: f.Status, Strategy: "env", ApplyEligible: true, Confidence: 90, Risk: "low", Steps: []string{"GENERIC_PLAN_STEP"}, Warnings: []string{"SPECIFIC_PLAN_WARNING"}, RollbackCommand: "kubectl rollout undo deployment/dependency-demo -n fixora-demo", PatchTemplate: "spec:\n  template:\n    spec:\n      containers:\n      - name: db-client\n        env:\n        - name: DB_HOST\n          valueFrom:\n            configMapKeyRef:\n              name: dependency-demo-connection\n              key: DB_HOST\n"}
+	var out, errout bytes.Buffer
+	opts := options{output: "text", preview: true, noColor: true}
+	runGuidedFix(context.Background(), &out, &errout, opts, kube.Kubectl{}, f, plan, "Deployment/dependency-demo")
+	for _, wanted := range []string{"DatabaseUnreachable", "db-client cannot resolve DB_HOST", "Read DB_HOST and DB_PORT", "--- current/Deployment/dependency-demo", "configMapKeyRef", "no changes made"} {
+		if !strings.Contains(out.String(), wanted) {
+			t.Fatalf("compact preview missing %q: %s", wanted, out.String())
+		}
+	}
+	for _, unwanted := range []string{"Fixora incident fix", "Fixora why:", "Fixora plan for", "Long AI explanation", "kubectl logs deployment", "GENERIC_PLAN_STEP", "SPECIFIC_PLAN_WARNING", "Rollback hint", "Confidence: 90%"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("default preview leaked detail %q: %s", unwanted, out.String())
+		}
+	}
+
+	out.Reset()
+	opts.proof = true
+	runGuidedFix(context.Background(), &out, &errout, opts, kube.Kubectl{}, f, plan, "Deployment/dependency-demo")
+	for _, wanted := range []string{"Long AI explanation", "kubectl logs deployment", "GENERIC_PLAN_STEP", "SPECIFIC_PLAN_WARNING", "Rollback:"} {
+		if !strings.Contains(out.String(), wanted) {
+			t.Fatalf("--proof preview missing detail %q: %s", wanted, out.String())
+		}
+	}
+}
+
+func TestUnresolvedFixDefaultOutputIsConcise(t *testing.T) {
+	f := analyzer.Finding{ResourceKind: "Deployment", ResourceName: "api", Namespace: "prod", Status: "CrashLoopBackOff", Summary: "Container app exited with code 1 and is repeatedly restarting.", Evidence: []analyzer.Evidence{{Label: "Container command app", Value: "sh -c exit 1"}, {Label: "Exit code app", Value: "1"}, {Label: "Controller status", Value: "RAW_CONTROLLER_MAP"}, {Label: "Related analyzer finding 1", Value: "UNRELATED_WORKLOAD"}}, Logs: []analyzer.LogSnippet{{Source: "previous", Text: "Application failed"}}}
+	for _, interactive := range []bool{true, false} {
+		var out, errout bytes.Buffer
+		opts := options{output: "text", noColor: true, preview: !interactive, promptInput: bufio.NewReader(strings.NewReader(""))}
+		runGuidedFix(context.Background(), &out, &errout, opts, kube.Kubectl{}, f, fix.BuildPlan(f), "Deployment/api")
+		for _, unwanted := range []string{"RAW_CONTROLLER_MAP", "UNRELATED_WORKLOAD", "Proof\n", "55%", "Rollback hint", "Fixora plan"} {
+			if strings.Contains(out.String(), unwanted) {
+				t.Fatalf("default output leaks details %q: %s", unwanted, out.String())
+			}
+		}
+		for _, wanted := range []string{"Cause:", "app", "code 1", "startup behavior", "-n prod --proof"} {
+			if !strings.Contains(out.String(), wanted) {
+				t.Fatalf("missing actionable evidence %q: %s", wanted, out.String())
+			}
+		}
+		if len(strings.Split(out.String(), "\n")) > 20 {
+			t.Fatal("default diagnosis should fit on one screen")
+		}
+		out.Reset()
+		opts.proof = true
+		runGuidedFix(context.Background(), &out, &errout, opts, kube.Kubectl{}, f, fix.BuildPlan(f), "Deployment/api")
+		if !strings.Contains(out.String(), "RAW_CONTROLLER_MAP") {
+			t.Fatal("explicit --proof must retain full evidence")
+		}
 	}
 }

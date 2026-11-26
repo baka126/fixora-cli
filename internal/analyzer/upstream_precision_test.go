@@ -103,7 +103,6 @@ func TestDefaultScanDoesNotReadOptionalResourceClaims(t *testing.T) {
 		}
 	}
 }
-
 func TestPodFindingIncludesIdentityMatchedEventWithoutNameInMessage(t *testing.T) {
 	pod := kube.Pod{Metadata: kube.ObjectMeta{Name: "api", Namespace: "prod", UID: "new"}, Status: kube.PodStatus{ContainerStatuses: []kube.ContainerStatus{{Name: "api", State: map[string]kube.StatusState{"waiting": {Reason: "CrashLoopBackOff"}}}}}}
 	event := kube.Event{Metadata: kube.ObjectMeta{Namespace: "prod"}, InvolvedObject: kube.ObjectReference{Kind: "Pod", Namespace: "prod", Name: "api", UID: "new"}, Reason: "BackOff", Message: "Back-off restarting failed container"}
@@ -142,8 +141,8 @@ func TestNetworkPolicyExpressionOperators(t *testing.T) {
 			if !tc.want && tc.operator != "Unknown" && (len(got) != 1 || got[0].Status != "NoSelectedPods") {
 				t.Fatalf("expected unmatched selector, got %#v", got)
 			}
-			if tc.operator == "Unknown" && len(got) != 0 {
-				t.Fatalf("malformed selector should not create a false finding: %#v", got)
+			if tc.operator == "Unknown" && (len(got) != 1 || got[0].Status != "InvalidPodSelector") {
+				t.Fatalf("malformed selector should be diagnosed explicitly: %#v", got)
 			}
 		})
 	}

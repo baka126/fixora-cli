@@ -13,9 +13,22 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
 
-// ContainerName returns the failing container from the "Container image
-// <name>: <image>" evidence the pod analyzer attaches.
+// ContainerName prefers an explicit failing container, declining conflicts,
+// then falls back to the container image evidence attached by the analyzer.
 func ContainerName(f analyzer.Finding) string {
+	failing := ""
+	for _, evidence := range f.Evidence {
+		if strings.EqualFold(evidence.Label, "Failing container") {
+			name := strings.TrimSpace(evidence.Value)
+			if name == "" || (failing != "" && failing != name) {
+				return ""
+			}
+			failing = name
+		}
+	}
+	if failing != "" {
+		return failing
+	}
 	const prefix = "container image "
 	for _, evidence := range f.Evidence {
 		if strings.HasPrefix(strings.ToLower(evidence.Label), prefix) {

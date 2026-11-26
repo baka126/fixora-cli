@@ -189,6 +189,21 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 		return Finding{}, fmt.Errorf("resource must look like kind/name")
 	}
 	ns := a.opts.Namespace
+	if isPersistentVolumeClaimKind(kind) {
+		findings, err := a.analyzePVCs(NewScanContext(ctx, a.k, a.opts))
+		if err != nil {
+			return Finding{}, err
+		}
+		for _, finding := range findings {
+			if finding.Namespace == ns && finding.ResourceName == name {
+				return finding, nil
+			}
+		}
+	}
+	pdbKind := strings.TrimSuffix(strings.TrimSuffix(kind, ".v1.policy"), ".policy")
+	if pdbKind == "pdb" || pdbKind == "poddisruptionbudget" || pdbKind == "poddisruptionbudgets" {
+		return a.pdbResourceFinding(ctx, name, ns)
+	}
 	if kind == "pod" || kind == "pods" {
 		pod, err := a.k.GetPod(ctx, ns, name)
 		if err != nil {
@@ -208,7 +223,11 @@ func (a Analyzer) AnalyzeResource(ctx context.Context, resource string) (Finding
 	if isControllerKind(kind) {
 		return a.findingForController(ctx, obj, kind, name, ns)
 	}
-	finding := a.findingForObject(obj, kind, name, ns)
+	findingKind := kind
+	if strings.EqualFold(kind, "hpa") || strings.EqualFold(kind, "horizontalpodautoscaler") || strings.EqualFold(kind, "horizontalpodautoscalers") {
+		findingKind = "HorizontalPodAutoscaler"
+	}
+	finding := a.findingForObject(obj, findingKind, name, ns)
 	if a.opts.IncludeLogs {
 		finding.Logs = append(finding.Logs, LogSnippet{Source: "logs", Text: "logs are collected for Pods; analyze the owning pod for container logs"})
 	}
@@ -229,13 +248,26 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 		return finding, nil
 	}
 	events, _ := a.k.GetEvents(ctx, namespace, "")
-	selector := controllerSelector(obj, kind)
+	if denied, err := kube.CurrentAdmissionFailure(ctx, a.k, obj, events); err == nil && denied != nil {
+		meta, _ := obj["metadata"].(map[string]any)
+		finding.ResourceUID, _ = meta["uid"].(string)
+		finding.Status = "FailedCreate"
+		finding.Severity = "critical"
+		finding.Category = "security"
+		finding.Summary = "Current owned revision is denied by Pod Security Admission: " + denied.Message
+		finding.Evidence = append(finding.Evidence, Evidence{Label: "Current admission failure", Value: denied.Message})
+		finding.Recommendations = []Recommendation{{Title: "Restore approved security settings", Description: "Review the enforced namespace policy and preserve the application's existing UID/GID; verify any approved strengthening in shadow.", PatchType: "security", SafeByDefault: false}}
+		return finding, nil
+	}
 	var related []kube.Pod
 	for _, pod := range pods.Items {
 		if pod.Metadata.Namespace != namespace {
 			continue
 		}
-		if podOwnedBy(pod, kind, name) || labelsMatch(selector, pod.Metadata.Labels) {
+		owner, _ := kube.ResolveWorkloadOwner(ctx, a.k, pod)
+		meta, _ := obj["metadata"].(map[string]any)
+		targetUID, _ := meta["uid"].(string)
+		if owner.Matches(normalizeControllerKind(kind), name, targetUID) {
 			related = append(related, pod)
 		}
 	}
@@ -265,9 +297,7 @@ func (a Analyzer) findingForController(ctx context.Context, obj map[string]any, 
 		return severityRank(failures[i].Severity) > severityRank(failures[j].Severity)
 	})
 	top := failures[0]
-	top.ResourceKind = normalizeControllerKind(kind)
-	top.ResourceName = name
-	top.ID = namespace + "/" + top.ResourceKind + "/" + name + "/" + top.PodName + "/" + top.Status
+	top.ID = namespace + "/" + top.ResourceKind + "/" + top.ResourceName + "/" + top.PodName + "/" + top.Status
 	top.Summary = "Controller-owned pod is failing: " + top.Summary
 	top.Evidence = append([]Evidence{{Label: "Controller status", Value: finding.Status}}, top.Evidence...)
 	top.Evidence = append(top.Evidence, Evidence{Label: "Owned pod failures", Value: summarizeFailures(failures)})
@@ -300,34 +330,6 @@ func normalizeControllerKind(kind string) string {
 	default:
 		return toTitle(kind)
 	}
-}
-
-func controllerSelector(obj map[string]any, kind string) map[string]string {
-	spec := nestedMapAny(obj, "spec")
-	if strings.EqualFold(kind, "cronjob") || strings.EqualFold(kind, "cronjobs") || strings.EqualFold(kind, "cj") {
-		spec = nestedMapAny(obj, "spec", "jobTemplate", "spec")
-	}
-	selector := stringMap(nestedMapAny(spec, "selector", "matchLabels"))
-	if len(selector) > 0 {
-		return selector
-	}
-	return stringMap(nestedMapAny(spec, "template", "metadata", "labels"))
-}
-
-func podOwnedBy(pod kube.Pod, kind, name string) bool {
-	wantKind := normalizeControllerKind(kind)
-	for _, ref := range pod.Metadata.OwnerRefs {
-		if strings.EqualFold(ref.Kind, wantKind) && ref.Name == name {
-			return true
-		}
-		if wantKind == "Deployment" && strings.EqualFold(ref.Kind, "ReplicaSet") && strings.HasPrefix(ref.Name, name+"-") {
-			return true
-		}
-		if wantKind == "CronJob" && strings.EqualFold(ref.Kind, "Job") && strings.HasPrefix(ref.Name, name+"-") {
-			return true
-		}
-	}
-	return false
 }
 
 func labelsMatch(selector, labels map[string]string) bool {
@@ -452,18 +454,21 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 	if status == "" {
 		return Finding{}, false
 	}
-	kind, name := a.resolveTopOwner(ctx, pod.Metadata.Namespace, topOwnerKind(pod), topOwnerName(pod))
+	owner, ownerErr := kube.ResolveWorkloadOwner(ctx, a.k, pod)
+	kind, name := owner.Kind, owner.Name
 	f := Finding{
 		ID:           pod.Metadata.Namespace + "/" + pod.Metadata.Name + "/" + status,
 		Namespace:    pod.Metadata.Namespace,
 		ResourceKind: kind,
+		ResourceUID:  owner.UID,
+		PodUID:       pod.Metadata.UID,
 		ResourceName: name,
 		PodName:      pod.Metadata.Name,
 		Status:       status,
 		Severity:     severity,
 		Category:     category,
 		Summary:      summaryForStatus(status),
-		OwnerChain:   ownerChain(pod),
+		OwnerChain:   owner.Chain,
 		GitOps:       gitOpsHints(pod.Metadata.Labels, pod.Metadata.Annotations),
 		Evidence: []Evidence{
 			{Label: "Pod phase", Value: pod.Status.Phase},
@@ -471,9 +476,52 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		},
 		Recommendations: recommendationsForStatus(status, pod),
 	}
+	if ownerErr != nil {
+		f.Evidence = append(f.Evidence, Evidence{Label: "Ownership unverified", Value: ownerErr.Error()})
+	}
+	if owner.Object != nil && ownerErr == nil {
+		labels, annotations := objectLabelsAnnotations(owner.Object)
+		hints := gitOpsHints(labels, annotations)
+		f.GitOps = mergeGitOpsHints(f.GitOps, hints)
+	}
 	for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
 		if container.Name != "" && container.Image != "" {
 			f.Evidence = append(f.Evidence, Evidence{Label: "Container image " + container.Name, Value: container.Image})
+		}
+	}
+
+	if status == "OOMKilled" {
+		for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+			current := cs.State["terminated"]
+			previous := cs.LastState["terminated"]
+			if !cs.Ready && (current.Reason == "OOMKilled" || previous.Reason == "OOMKilled") {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Failing container", Value: cs.Name})
+			}
+		}
+	}
+	if status == "CrashLoopBackOff" {
+		for _, container := range append(append([]kube.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+			if len(container.Command) > 0 {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Container command " + container.Name, Value: a.redact(fmt.Sprint(container.Command))})
+			}
+			if len(container.Args) > 0 {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Container args " + container.Name, Value: a.redact(fmt.Sprint(container.Args))})
+			}
+		}
+		for _, cs := range append(append([]kube.ContainerStatus{}, pod.Status.InitStatuses...), pod.Status.ContainerStatuses...) {
+			if cs.State["waiting"].Reason == "CrashLoopBackOff" {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Failing container", Value: cs.Name})
+			}
+			terminated, ok := cs.State["terminated"]
+			if !ok {
+				terminated, ok = cs.LastState["terminated"]
+			}
+			if ok {
+				f.Evidence = append(f.Evidence, Evidence{Label: "Exit code " + cs.Name, Value: strconv.Itoa(terminated.ExitCode)})
+				if cs.State["waiting"].Reason == "CrashLoopBackOff" {
+					f.Summary = fmt.Sprintf("Container %s exited with code %d (%s) and is repeatedly restarting. Review its configured startup command and logs to establish the cause.", cs.Name, terminated.ExitCode, terminated.Reason)
+				}
+			}
 		}
 	}
 
@@ -510,6 +558,9 @@ func (a Analyzer) findingForPod(ctx context.Context, sctx *ScanContext, pod kube
 		a.appendNodePlatformEvidence(ctx, sctx, &f, pod.Spec.NodeName)
 	}
 
+	if diagnosis := probeFailureDiagnosis(pod, status, events); diagnosis != "" {
+		f.Summary = a.redact(diagnosis)
+	}
 	corr, recent := CorrelateRecentEvents(events)
 	f.ChangeCorrelation = corr
 	f.RecentChanges = recent
@@ -775,14 +826,21 @@ func (a Analyzer) appendNodePlatformEvidence(ctx context.Context, sctx *ScanCont
 
 func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace string) Finding {
 	labels, annotations := objectLabelsAnnotations(obj)
+	meta, _ := obj["metadata"].(map[string]any)
+	uid, _ := meta["uid"].(string)
+	resourceKind := strValue(obj["kind"])
+	if resourceKind == "" {
+		resourceKind = toTitle(kind)
+	}
 	status := "Unknown"
 	if s, ok := obj["status"].(map[string]any); ok {
 		status = compactMap(s)
 	}
 	return Finding{
 		ID:           namespace + "/" + kind + "/" + name,
+		ResourceUID:  uid,
 		Namespace:    namespace,
-		ResourceKind: toTitle(kind),
+		ResourceKind: resourceKind,
 		ResourceName: name,
 		Status:       status,
 		Severity:     "info",
@@ -795,6 +853,15 @@ func (a Analyzer) findingForObject(obj map[string]any, kind, name, namespace str
 			Description:   "Controller resources often need pod, event, service, and endpoint evidence before a safe fix can be suggested.",
 			SafeByDefault: true,
 		}},
+	}
+}
+
+func isPersistentVolumeClaimKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "pvc", "pvcs", "persistentvolumeclaim", "persistentvolumeclaims":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -839,10 +906,16 @@ func (a Analyzer) redact(value string) string {
 
 func podProblem(pod kube.Pod) (status, category, severity string) {
 	for _, cs := range append(pod.Status.InitStatuses, pod.Status.ContainerStatuses...) {
+		if terminated, ok := cs.LastState["terminated"]; ok && terminated.IsOOMKilled() {
+			return "OOMKilled", "resources", "high"
+		}
 		for stateName, state := range cs.State {
 			reason := firstNonEmpty(state.Reason, stateName)
 			switch {
 			case strings.Contains(reason, "CrashLoopBackOff"):
+				if terminated, ok := cs.LastState["terminated"]; ok && terminated.IsOOMKilled() {
+					return "OOMKilled", "resources", "high"
+				}
 				return "CrashLoopBackOff", "runtime", "critical"
 			case strings.Contains(reason, "ImagePullBackOff"), strings.Contains(reason, "ErrImagePull"):
 				return reason, "image", "high"
@@ -854,7 +927,7 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 		}
 		if term, ok := cs.State["terminated"]; ok {
 			switch {
-			case strings.Contains(term.Reason, "OOMKilled"):
+			case term.IsOOMKilled():
 				return "OOMKilled", "resources", "high"
 			case cs.RestartCount >= 1 && (term.ExitCode != 0 || term.Reason == "Error"):
 				// A container currently reported as terminated with a non-zero
@@ -866,7 +939,7 @@ func podProblem(pod kube.Pod) (status, category, severity string) {
 			}
 		}
 		for _, state := range cs.LastState {
-			if strings.Contains(state.Reason, "OOMKilled") {
+			if state.IsOOMKilled() {
 				return "OOMKilled", "resources", "high"
 			}
 		}
@@ -1004,15 +1077,18 @@ func gitOpsHints(labels, annotations map[string]string) GitOpsHints {
 	if h.HelmRelease != "" || strings.EqualFold(h.ManagedBy, "Helm") {
 		h.TargetAdvice = "Patch the Helm values source, not rendered Kubernetes YAML."
 	}
-	for key, value := range annotations {
-		lower := strings.ToLower(key + "=" + value)
-		if strings.Contains(lower, "argocd") {
-			h.ArgoHint = key + "=" + value
-		}
-		if strings.Contains(lower, "fluxcd") || strings.Contains(lower, "kustomize.toolkit") || strings.Contains(lower, "helm.toolkit") {
-			h.FluxHint = key + "=" + value
+	for _, source := range []map[string]string{labels, annotations} {
+		for key, value := range source {
+			lower := strings.ToLower(key + "=" + value)
+			if strings.Contains(lower, "argocd") {
+				h.ArgoHint = key + "=" + value
+			}
+			if strings.Contains(lower, "fluxcd") || strings.Contains(lower, "kustomize.toolkit") || strings.Contains(lower, "helm.toolkit") {
+				h.FluxHint = key + "=" + value
+			}
 		}
 	}
+
 	return h
 }
 
@@ -1022,25 +1098,6 @@ func ownerChain(pod kube.Pod) []string {
 		chain = append(chain, owner.Kind+"/"+owner.Name)
 	}
 	return chain
-}
-
-func (a Analyzer) resolveTopOwner(ctx context.Context, ns, kind, name string) (string, string) {
-	if kind == "ReplicaSet" || kind == "Job" {
-		obj, err := a.k.GetResource(ctx, ns, kind+"/"+name)
-		if err == nil {
-			meta, _ := obj["metadata"].(map[string]any)
-			if owners, ok := meta["ownerReferences"].([]any); ok && len(owners) > 0 {
-				if last, ok := owners[len(owners)-1].(map[string]any); ok {
-					if parentKind, ok := last["kind"].(string); ok {
-						if parentName, ok := last["name"].(string); ok {
-							return a.resolveTopOwner(ctx, ns, parentKind, parentName)
-						}
-					}
-				}
-			}
-		}
-	}
-	return kind, name
 }
 
 func topOwnerKind(pod kube.Pod) string {
@@ -1330,4 +1387,8 @@ func imageRefs(text string) []string {
 		}
 	}
 	return out
+}
+
+func mergeGitOpsHints(a, b GitOpsHints) GitOpsHints {
+	return GitOpsHints{ManagedBy: firstNonEmpty(b.ManagedBy, a.ManagedBy), HelmRelease: firstNonEmpty(b.HelmRelease, a.HelmRelease), HelmChart: firstNonEmpty(b.HelmChart, a.HelmChart), FluxHint: firstNonEmpty(b.FluxHint, a.FluxHint), ArgoHint: firstNonEmpty(b.ArgoHint, a.ArgoHint), TargetAdvice: firstNonEmpty(b.TargetAdvice, a.TargetAdvice)}
 }

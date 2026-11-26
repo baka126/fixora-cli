@@ -3,8 +3,12 @@ package kube
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -197,21 +201,39 @@ func (k Kubectl) Logs(ctx context.Context, namespace, pod string, previous bool)
 // --force-conflicts is needed because those fields are owned by the
 // kubectl-client-side-apply field manager; without it every apply to a
 // kubectl-managed workload fails with a conflict instead.
-func applyArgs(file string, dryRun bool) []string {
-	args := []string{"apply", "--server-side", "--force-conflicts"}
+func applyArgs(file string, dryRun bool) ([]string, error) {
+	proposal, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read repair proposal: %w", err)
+	}
+	// A distinct manager prevents kubectl's default ownership migration from
+	// claiming fields omitted by this partial manifest. Scope ownership to the
+	// proposal bytes so a later repair cannot delete fields from an earlier one.
+	// Repeated preflight/apply of the same bytes must use the same manager.
+	digest := sha256.Sum256(proposal)
+	manager := fmt.Sprintf("fixora-%x", digest[:8])
+	args := []string{"apply", "--server-side", "--force-conflicts", "--field-manager=" + manager}
 	if dryRun {
 		args = append(args, "--dry-run=server")
 	}
-	return append(args, "-f", file)
+	return append(args, "-f", file), nil
 }
 
 func (k Kubectl) Apply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, applyArgs(file, false)...)
+	args, err := applyArgs(file, false)
+	if err != nil {
+		return err
+	}
+	_, err = k.Run(ctx, args...)
 	return err
 }
 
 func (k Kubectl) DryRunApply(ctx context.Context, file string) error {
-	_, err := k.Run(ctx, applyArgs(file, true)...)
+	args, err := applyArgs(file, true)
+	if err != nil {
+		return err
+	}
+	_, err = k.Run(ctx, args...)
 	return err
 }
 
@@ -505,6 +527,22 @@ func (k Kubectl) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// ClusterID returns an opaque stable identifier for the configured API server.
+// The endpoint is never included in the returned value or any error message.
+func (k Kubectl) ClusterID(ctx context.Context) (string, error) {
+	out, err := k.Run(ctx, "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}")
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes API endpoint: %w", err)
+	}
+	endpoint := strings.TrimSpace(string(out))
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("Kubernetes API endpoint is unavailable or invalid")
+	}
+	sum := sha256.Sum256([]byte(endpoint))
+	return fmt.Sprintf("%x", sum[:]), nil
 }
 
 func scopeArgs(namespace string, allNS bool) []string {

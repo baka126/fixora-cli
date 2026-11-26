@@ -2,7 +2,10 @@ package repo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,13 +26,17 @@ type Mode struct {
 }
 
 type SourcePatch struct {
-	Path             string              `json:"path"`
-	Mode             string              `json:"mode"`
-	Actions          []string            `json:"actions"`
-	Warnings         []string            `json:"warnings,omitempty"`
-	Preview          string              `json:"preview,omitempty"`
-	HelmSource       *HelmSourceLocation `json:"helmSource,omitempty"`
-	RenderValidation *RenderValidation   `json:"renderValidation,omitempty"`
+	SourceStatus        string              `json:"sourceStatus,omitempty"`
+	ServerValidation    string              `json:"serverValidation,omitempty"`
+	RuntimeVerification string              `json:"runtimeVerification,omitempty"`
+	Reconciliation      string              `json:"reconciliation,omitempty"`
+	Path                string              `json:"path"`
+	Mode                string              `json:"mode"`
+	Actions             []string            `json:"actions"`
+	Warnings            []string            `json:"warnings,omitempty"`
+	Preview             string              `json:"preview,omitempty"`
+	HelmSource          *HelmSourceLocation `json:"helmSource,omitempty"`
+	RenderValidation    *RenderValidation   `json:"renderValidation,omitempty"`
 }
 
 type PullRequest struct {
@@ -235,62 +242,163 @@ func OpenPullRequest(ctx context.Context, repoPath, branch, base, title, body st
 		}
 		result.Branch = strings.TrimSpace(out)
 	}
+	remote, _, err := inspectPRRemote(ctx, repoPath)
+	if err != nil {
+		return result, err
+	}
+	result.Platform = remote.provider
+	providerCLI := "gh"
+	if remote.provider == "gitlab" {
+		providerCLI = "glab"
+	}
+	if _, err := exec.LookPath(providerCLI); err != nil {
+		return result, fmt.Errorf("%s is required for this review request provider; branch was not pushed", providerCLI)
+	}
+	if strings.TrimSpace(result.Base) == "" {
+		result.Base, err = defaultPRBase(ctx, repoPath, remote)
+		if err != nil {
+			return result, err
+		}
+	}
 	if push {
 		cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", result.Branch)
 		cmd.Dir = repoPath
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return result, fmt.Errorf("git push failed: %s", strings.TrimSpace(string(out)))
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+		if err := cmd.Run(); err != nil {
+			return result, fmt.Errorf("branch push failed; check the configured remote and credentials")
 		}
 		result.Pushed = true
 	}
-	if _, err := exec.LookPath("gh"); err == nil {
-		return openGitHubPullRequest(ctx, repoPath, result, body)
+	if remote.provider == "github" {
+		return openGitHubPullRequest(ctx, repoPath, result, body, remote.host, remote.path)
 	}
-	if _, err := exec.LookPath("glab"); err == nil {
-		return openGitLabMergeRequest(ctx, repoPath, result, body)
-	}
-	result.Warnings = append(result.Warnings, "gh/glab CLI not found; branch is ready but review request was not opened")
-	return result, nil
+	return openGitLabMergeRequest(ctx, repoPath, result, body, remote.host, remote.path)
 }
 
-func openGitHubPullRequest(ctx context.Context, repoPath string, result PullRequest, body string) (PullRequest, error) {
-	args := []string{"pr", "create", "--title", result.Title, "--body", firstNonEmpty(body, "Verified by Fixora shadow clone.")}
-	if result.Base != "" {
-		args = append(args, "--base", result.Base)
+func defaultPRBase(ctx context.Context, repoPath string, remote prRemote) (string, error) {
+	var command string
+	var args []string
+	if remote.provider == "github" {
+		parts := strings.Split(remote.path, "/")
+		if len(parts) != 2 {
+			return "", fmt.Errorf("GitHub repository identity is invalid")
+		}
+		command = "gh"
+		args = []string{"api", "--hostname", remote.host, "repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1])}
+	} else if remote.provider == "gitlab" {
+		command = "glab"
+		args = []string{"api", "--hostname", remote.host, "projects/" + url.PathEscape(remote.path)}
+	} else {
+		return "", fmt.Errorf("review request provider is unsupported")
 	}
-	if result.Branch != "" {
-		args = append(args, "--head", result.Branch)
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Dir = repoPath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("could not determine the repository's default review base; specify --pr-base")
+	}
+	var response struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.Unmarshal(out, &response); err != nil || strings.TrimSpace(response.DefaultBranch) == "" {
+		return "", fmt.Errorf("could not determine the repository's default review base; specify --pr-base")
+	}
+	base := strings.TrimSpace(response.DefaultBranch)
+	if _, err := gitReadOnlyOutput(ctx, repoPath, "check-ref-format", "--branch", base); err != nil {
+		return "", fmt.Errorf("repository returned an invalid default review base; specify --pr-base")
+	}
+	return base, nil
+}
+
+func openGitHubPullRequest(ctx context.Context, repoPath string, result PullRequest, body, host, repository string) (PullRequest, error) {
+	parts := strings.Split(repository, "/")
+	if len(parts) != 2 {
+		return result, fmt.Errorf("GitHub repository identity is invalid")
+	}
+	endpoint := "repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/pulls"
+	args := []string{"api", "--hostname", host, "--method", "POST", endpoint,
+		"--raw-field", "title=" + result.Title,
+		"--raw-field", "head=" + result.Branch,
+		"--raw-field", "base=" + result.Base,
+		"--raw-field", "body=" + firstNonEmpty(body, "Verified by Fixora."),
 	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = repoPath
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		return result, fmt.Errorf("gh pr create failed: %s", strings.TrimSpace(string(out)))
+		return result, fmt.Errorf("branch was pushed but GitHub did not confirm pull request creation; inspect the repository before retrying")
 	}
-	result.URL = strings.TrimSpace(string(out))
+	var response struct {
+		HTMLURL string `json:"html_url"`
+	}
+	_ = json.Unmarshal(out, &response)
+	result.URL = validatedReviewURL(response.HTMLURL, host, "github", repository)
 	result.Platform = "github"
 	result.Opened = true
+	if result.URL == "" {
+		result.Warnings = append(result.Warnings, "GitHub accepted the request but returned no usable URL; inspect the repository before retrying")
+	}
 	return result, nil
 }
 
-func openGitLabMergeRequest(ctx context.Context, repoPath string, result PullRequest, body string) (PullRequest, error) {
-	args := []string{"mr", "create", "--title", result.Title, "--description", firstNonEmpty(body, "Verified by Fixora shadow clone.")}
-	if result.Base != "" {
-		args = append(args, "--target-branch", result.Base)
-	}
-	if result.Branch != "" {
-		args = append(args, "--source-branch", result.Branch)
+func openGitLabMergeRequest(ctx context.Context, repoPath string, result PullRequest, body, host, repository string) (PullRequest, error) {
+	endpoint := "projects/" + url.PathEscape(repository) + "/merge_requests"
+	args := []string{"api", "--hostname", host, "--method", "POST", endpoint,
+		"--raw-field", "source_branch=" + result.Branch,
+		"--raw-field", "target_branch=" + result.Base,
+		"--raw-field", "title=" + result.Title,
+		"--raw-field", "description=" + firstNonEmpty(body, "Verified by Fixora."),
 	}
 	cmd := exec.CommandContext(ctx, "glab", args...)
 	cmd.Dir = repoPath
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		return result, fmt.Errorf("glab mr create failed: %s", strings.TrimSpace(string(out)))
+		return result, fmt.Errorf("branch was pushed but GitLab did not confirm merge request creation; inspect the project before retrying")
 	}
-	result.URL = strings.TrimSpace(string(out))
+	var response struct {
+		WebURL string `json:"web_url"`
+	}
+	_ = json.Unmarshal(out, &response)
+	result.URL = validatedReviewURL(response.WebURL, host, "gitlab", repository)
 	result.Platform = "gitlab"
 	result.Opened = true
+	if result.URL == "" {
+		result.Warnings = append(result.Warnings, "GitLab accepted the request but returned no usable URL; inspect the project before retrying")
+	}
 	return result, nil
+}
+
+func validatedReviewURL(raw, host, provider, repository string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), host) || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
+	}
+	path := strings.TrimSuffix(parsed.EscapedPath(), "/")
+	if provider == "github" {
+		prefix := "/" + repository + "/pull/"
+		if !strings.HasPrefix(path, prefix) || !digitsOnly(path[len(prefix):]) {
+			return ""
+		}
+	} else {
+		prefix := "/" + repository + "/-/merge_requests/"
+		if !strings.HasPrefix(path, prefix) || !digitsOnly(path[len(prefix):]) {
+			return ""
+		}
+	}
+	return parsed.String()
+}
+
+func digitsOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func gitOutput(ctx context.Context, repoPath string, args ...string) (string, error) {

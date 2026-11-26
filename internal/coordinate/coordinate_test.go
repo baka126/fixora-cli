@@ -182,3 +182,13 @@ func TestRunRestoreErrorContinuesReverseWalk(t *testing.T) {
 		t.Fatal("step b restore succeeded; should be marked rolled back")
 	}
 }
+
+func TestCoordinateCannotBypassRequiredShadow(t *testing.T) {
+	s := step("StatefulSet/app", true)
+	s.Plan.Guardrails = []string{"shadow-required"}
+	d := &fakeDeps{}
+	got := Run(context.Background(), []Step{s}, d, func(analyzer.Finding) bool { return false }, func() bool { return true }, func() bool { return true })
+	if !got.Aborted || len(d.applied) != 0 {
+		t.Fatal("coordinate bypassed shadow requirement")
+	}
+}

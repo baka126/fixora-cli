@@ -21,6 +21,8 @@ kubectl fixora scan -n prod --filter PVC,StorageClass,StatefulSet
 
 Check Pending/Lost claims, provisioning Events, class existence, capacity, and attachment constraints. A bound claim does not prove the filesystem is healthy inside the container. The `StorageClass` and `StatefulSet` analyzers can be selected explicitly when they are outside the default set.
 
+Policy-bound repair is available for a narrowly approved class assignment or monotonic volume expansion. See the [PVC repair guide]({{ '/guides/pvc-repairs/' | relative_url }}); Lost claims, reclaim/rebind changes, data recovery, and source-managed storage remain review-only.
+
 ## RBAC and policy
 
 **Effect:** Reads service-account authorization and security/policy signals. It does not grant permissions or change policy.
@@ -36,10 +38,10 @@ Use the exact service account, verb, and resource when narrowing an RBAC questio
 
 The `--secret-keys` switch is **Upcoming** on [codex/production-hardening](https://github.com/baka126/fixora-cli/tree/codex/production-hardening); it is not available in v0.8.0.
 
-**Effect:** On that branch, reads Secret key presence and base64 validity and reports key names, not values. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them. No writes.
+**Effect:** When enabled, reads Secret key names and types, live Pods, and Pod templates from Deployments, StatefulSets, DaemonSets, ReplicaSets, ReplicationControllers, Jobs, and CronJobs, plus referenced ServiceAccounts. It checks required `secretKeyRef` keys, Secret and projected-volume item keys, whole-Secret references, and Pod/ServiceAccount image-pull Secret type and required key names. It never reports encoded or decoded Secret values and makes no writes. The `scan` command also reads bounded logs by default; use `--include-logs=false` to skip them.
 
 ```bash
 kubectl fixora scan -n prod --filter Secret,Pod --secret-keys
 ```
 
-This can reveal a missing referenced key or image pull Secret. It does not test whether the stored credential works against the external service. Avoid sharing unredacted logs or `--unsafe-ai-no-redact` output during an incident.
+This can find missing references in a workload template before its Pod is created. It does not test whether a credential works against an external service. The check needs read access to Secrets, supported workload resources, and referenced ServiceAccounts; see `skippedChecks` because missing permissions make coverage inconclusive. Avoid sharing unredacted logs or `--unsafe-ai-no-redact` output during an incident.

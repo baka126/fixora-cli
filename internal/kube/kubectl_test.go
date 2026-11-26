@@ -2,10 +2,49 @@ package kube
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestClusterIDHashesAPIEndpointWithoutReturningIt(t *testing.T) {
+	dir := t.TempDir()
+	kubectlPath := filepath.Join(dir, "kubectl")
+	server := "https://api.private.example:6443"
+	script := "#!/bin/sh\nprintf '%s' '" + server + "'\n"
+	if err := os.WriteFile(kubectlPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	got, err := (Kubectl{Context: "prod"}).ClusterID(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256([]byte(server))
+	if got != fmt.Sprintf("%x", want) || len(got) != 64 {
+		t.Fatalf("cluster ID = %q, want sha256 endpoint digest", got)
+	}
+	if strings.Contains(got, "private.example") {
+		t.Fatal("cluster ID exposed the API endpoint")
+	}
+}
+
+func TestClusterIDRejectsMissingAPIEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	kubectlPath := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(kubectlPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if _, err := (Kubectl{}).ClusterID(context.Background()); err == nil {
+		t.Fatal("empty API endpoint must not identify a cluster")
+	}
+}
 
 func TestClassifyRolloutResult(t *testing.T) {
 	if ok, _, err := classifyRolloutResult("successfully rolled out", nil); !ok || err != nil {

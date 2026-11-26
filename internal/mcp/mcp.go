@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 	"github.com/fixora/kubectl-fixora/internal/config"
@@ -22,6 +23,10 @@ type Server struct {
 	AnalyzerOpt     analyzer.Options
 	Reader          kube.Reader // optional test/alternate reader; defaults to Kubectl
 	EnableShadow    bool
+	EnableSandbox   bool
+	PullRequestRepo string
+	sandboxes       *sandboxRegistry
+	prPreviews      *mcpPRPreviewRegistry
 	analyzeResource func(context.Context, string) (analyzer.Finding, error)                         // optional test seam
 	newTypedClient  func() (*kube.TypedClient, error)                                               // optional test seam
 	runShadow       func(context.Context, *kube.TypedClient, shadow.Request) (shadow.Result, error) // optional test seam
@@ -34,12 +39,34 @@ func (s Server) reader() kube.Reader {
 	return s.Kubectl
 }
 
-func (s Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
-	err := s.newSDKServer().Run(ctx, &sdk.IOTransport{Reader: io.NopCloser(in), Writer: nopWriteCloser{out}, MaxLineLength: 10 * 1024 * 1024})
-	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+func (s Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) (serveErr error) {
+	if s.PullRequestRepo != "" && s.prPreviews == nil {
+		s.prPreviews = newMCPPRPreviewRegistry()
+	}
+	if s.EnableSandbox && s.sandboxes == nil {
+		s.sandboxes = newSandboxRegistry(s.typedClientForSandbox)
+	}
+	if s.EnableSandbox {
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := s.sandboxes.closeAll(cleanupCtx); err != nil && serveErr == nil {
+				serveErr = err
+			}
+		}()
+	}
+	serveErr = s.newSDKServer().Run(ctx, &sdk.IOTransport{Reader: io.NopCloser(in), Writer: nopWriteCloser{out}, MaxLineLength: 10 * 1024 * 1024})
+	if errors.Is(serveErr, context.Canceled) && ctx.Err() != nil {
 		return nil
 	}
-	return err
+	return serveErr
+}
+
+func (s Server) typedClientForSandbox() (*kube.TypedClient, error) {
+	if s.newTypedClient != nil {
+		return s.newTypedClient()
+	}
+	return kube.NewRequiredTypedClient(s.Kubectl.Context, "MCP sandbox cleanup")
 }
 
 func (s Server) callTool(ctx context.Context, name string, args map[string]any) (any, error) {
