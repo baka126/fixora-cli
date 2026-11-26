@@ -1,0 +1,536 @@
+package shadow
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/fixora/kubectl-fixora/internal/kube"
+	"github.com/fixora/kubectl-fixora/internal/redact"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+const (
+	shadowMemorySampleInterval = 15 * time.Second
+	shadowMemorySampleLimit    = 32
+	shadowProbeEventLimit      = 8
+	shadowProbeEventByteLimit  = 512
+	shadowConfigMapKeyLimit    = 32
+	shadowConfigMapByteLimit   = 64 * 1024
+)
+
+func collectFailureEvidence(ctx context.Context, c *kube.TypedClient, sourceNamespace string, source, candidate *corev1.Pod) *FailureEvidence {
+	evidence := &FailureEvidence{}
+	if source != nil {
+		evidence.Probes = probeEvidence(source)
+		evidence.ConfigMaps = configMapReferenceEvidence(ctx, c, sourceNamespace, source)
+	}
+	if candidate != nil {
+		updateCandidateEvidence(evidence, candidate, time.Now())
+	}
+	return evidence
+}
+
+func configMapReferenceEvidence(ctx context.Context, c *kube.TypedClient, namespace string, pod *corev1.Pod) []ConfigMapReferenceEvidence {
+	if pod == nil {
+		return nil
+	}
+	type reference struct {
+		container           string
+		environmentVariable string
+		name                string
+		key                 string
+		optional            bool
+		textOnly            bool
+	}
+	var references []reference
+	add := func(container, environmentVariable, name, key string, optional, textOnly bool) {
+		if strings.TrimSpace(name) != "" {
+			references = append(references, reference{container: container, environmentVariable: environmentVariable, name: name, key: key, optional: optional, textOnly: textOnly})
+		}
+	}
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, source := range container.EnvFrom {
+			if source.ConfigMapRef != nil {
+				add(container.Name, "", source.ConfigMapRef.Name, "*", source.ConfigMapRef.Optional != nil && *source.ConfigMapRef.Optional, true)
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom != nil && env.ValueFrom.ConfigMapKeyRef != nil {
+				ref := env.ValueFrom.ConfigMapKeyRef
+				add(container.Name, env.Name, ref.Name, ref.Key, ref.Optional != nil && *ref.Optional, true)
+			}
+		}
+	}
+	addConfigMap := func(volumeName, name string, items []corev1.KeyToPath, optional *bool) {
+		if strings.TrimSpace(name) == "" {
+			return
+		}
+		isOptional := optional != nil && *optional
+		if len(items) == 0 {
+			add(volumeName, "", name, "*", isOptional, false)
+			return
+		}
+		for _, item := range items {
+			add(volumeName, "", name, item.Key, isOptional, false)
+		}
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if source := volume.ConfigMap; source != nil {
+			addConfigMap(volume.Name, source.Name, source.Items, source.Optional)
+		}
+		if volume.Projected != nil {
+			for _, projected := range volume.Projected.Sources {
+				if source := projected.ConfigMap; source != nil {
+					addConfigMap(volume.Name, source.Name, source.Items, source.Optional)
+				}
+			}
+		}
+	}
+
+	type configMapRead struct {
+		found      bool
+		dataKeys   map[string]bool
+		binaryKeys map[string]bool
+		err        error
+	}
+	cache := map[string]configMapRead{}
+	seen := map[string]bool{}
+	result := make([]ConfigMapReferenceEvidence, 0, len(references))
+	for _, ref := range references {
+		identity := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%t", ref.container, ref.environmentVariable, ref.name, ref.key, ref.textOnly)
+		if seen[identity] {
+			continue
+		}
+		seen[identity] = true
+		read, cached := cache[ref.name]
+		if !cached {
+			read.dataKeys = map[string]bool{}
+			read.binaryKeys = map[string]bool{}
+			if c == nil || c.Clientset == nil {
+				read.err = fmt.Errorf("typed Kubernetes client unavailable")
+			} else {
+				configMap, err := c.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, ref.name, metav1.GetOptions{})
+				switch {
+				case apierrors.IsNotFound(err):
+					read.found = false
+				case err != nil:
+					read.err = err
+				default:
+					read.found = true
+					for key := range configMap.Data {
+						read.dataKeys[key] = true
+					}
+					for key := range configMap.BinaryData {
+						read.binaryKeys[key] = true
+					}
+				}
+			}
+			cache[ref.name] = read
+		}
+		status := "object-present"
+		switch {
+		case read.err != nil:
+			status = "unknown"
+		case !read.found:
+			status = "not-found"
+		case ref.key != "*" && !read.dataKeys[ref.key] && (ref.textOnly || !read.binaryKeys[ref.key]):
+			status = "key-missing"
+		case ref.key != "*":
+			status = "key-present"
+		}
+		result = append(result, ConfigMapReferenceEvidence{
+			Container: ref.container, EnvironmentVariable: ref.environmentVariable, Name: ref.name, Key: ref.key,
+			SourceStatus: status, SandboxStatus: "omitted-by-isolation", Optional: ref.optional,
+		})
+	}
+	return result
+}
+
+type shadowConfigMapReference struct {
+	container           string
+	environmentVariable string
+	name                string
+	key                 string
+}
+
+func prepareShadowConfigMaps(ctx context.Context, c *kube.TypedClient, sourceNamespace, shadowNamespace string, pod *corev1.Pod) (ConfigMapPreparation, error) {
+	prepared := ConfigMapPreparation{}
+	refs, unsupported := shadowConfigMapReferences(pod)
+	prepared.Limitations = appendUnique(prepared.Limitations, unsupported...)
+	if len(prepared.Limitations) > 0 {
+		return prepared, nil
+	}
+	if len(refs) == 0 {
+		return prepared, nil
+	}
+	if c == nil || c.Clientset == nil || sourceNamespace == "" || shadowNamespace == "" {
+		return prepared, fmt.Errorf("typed Kubernetes client and source/shadow namespaces are required for ConfigMap evidence")
+	}
+	type sourceResult struct {
+		object *corev1.ConfigMap
+		err    error
+	}
+	sources := map[string]sourceResult{}
+	data := map[string]map[string]string{}
+	keyIDs := map[string]bool{}
+	totalBytes := 0
+	prepared.Evidence = make([]ConfigMapReferenceEvidence, 0, len(refs))
+	for _, ref := range refs {
+		source, cached := sources[ref.name]
+		if !cached {
+			cm, err := c.Clientset.CoreV1().ConfigMaps(sourceNamespace).Get(ctx, ref.name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				source.err = nil
+			} else if err != nil {
+				source.err = err
+			} else {
+				source.object = cm
+			}
+			sources[ref.name] = source
+		}
+		item := ConfigMapReferenceEvidence{Container: ref.container, EnvironmentVariable: ref.environmentVariable, Name: ref.name, Key: ref.key, SourceStatus: "not-found", SandboxStatus: "unresolved"}
+		if source.err != nil {
+			item.SourceStatus = "unknown"
+			prepared.Evidence = append(prepared.Evidence, item)
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("source ConfigMap %s could not be inspected", ref.name))
+			continue
+		}
+		if source.object != nil {
+			if value, ok := source.object.Data[ref.key]; ok {
+				item.SourceStatus = "key-present"
+				id := ref.name + "\x00" + ref.key
+				if !keyIDs[id] {
+					keyIDs[id] = true
+					totalBytes += len(value)
+					if data[ref.name] == nil {
+						data[ref.name] = map[string]string{}
+					}
+					data[ref.name][ref.key] = value
+				}
+			} else {
+				item.SourceStatus = "key-missing"
+			}
+		}
+		prepared.Evidence = append(prepared.Evidence, item)
+		if item.SourceStatus == "not-found" {
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("required ConfigMap %s is not present in the source namespace", ref.name))
+		} else if item.SourceStatus == "key-missing" {
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("required key %s is missing from ConfigMap %s", ref.key, ref.name))
+		}
+	}
+	if len(keyIDs) > shadowConfigMapKeyLimit {
+		prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("shadow ConfigMap key-copy limit exceeded (%d keys maximum)", shadowConfigMapKeyLimit))
+	}
+	if totalBytes > shadowConfigMapByteLimit {
+		prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("shadow ConfigMap key-copy data exceeds %d bytes", shadowConfigMapByteLimit))
+	}
+	if len(prepared.Limitations) > 0 {
+		return prepared, nil
+	}
+	for name, values := range data {
+		created, err := c.Clientset.CoreV1().ConfigMaps(shadowNamespace).Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: shadowNamespace, Labels: map[string]string{labelSandbox: "true"}},
+			Data:       values,
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return prepared, fmt.Errorf("create isolated ConfigMap %s: %w", name, err)
+		}
+		if created == nil || !reflect.DeepEqual(created.Data, values) || len(created.BinaryData) != 0 {
+			for i := range prepared.Evidence {
+				if prepared.Evidence[i].Name == name {
+					prepared.Evidence[i].SandboxStatus = "mismatch"
+				}
+			}
+			prepared.Limitations = appendUnique(prepared.Limitations, fmt.Sprintf("isolated ConfigMap %s did not preserve the requested key set", name))
+			return prepared, nil
+		}
+	}
+	prepared.Copied = len(data) > 0
+	for i := range prepared.Evidence {
+		prepared.Evidence[i].SandboxStatus = "key-present"
+	}
+	return prepared, nil
+}
+
+func shadowConfigMapReferences(pod *corev1.Pod) ([]shadowConfigMapReference, []string) {
+	if pod == nil {
+		return nil, []string{"candidate Pod template is unavailable for ConfigMap key inspection"}
+	}
+	var refs []shadowConfigMapReference
+	var limitations []string
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				limitations = appendUnique(limitations, "ConfigMap envFrom references are not supported in the isolated namespace")
+			}
+		}
+		for _, env := range container.Env {
+			if env.ValueFrom == nil || env.ValueFrom.ConfigMapKeyRef == nil {
+				continue
+			}
+			ref := env.ValueFrom.ConfigMapKeyRef
+			if ref.Optional != nil && *ref.Optional {
+				limitations = appendUnique(limitations, fmt.Sprintf("optional ConfigMap reference %s key %s is not supported in the isolated namespace", ref.Name, ref.Key))
+				continue
+			}
+			if strings.TrimSpace(ref.Name) == "" || strings.TrimSpace(ref.Key) == "" || strings.TrimSpace(env.Name) == "" {
+				limitations = appendUnique(limitations, "ConfigMap environment references must specify a name, key, and environment variable")
+				continue
+			}
+			refs = append(refs, shadowConfigMapReference{container: container.Name, environmentVariable: env.Name, name: ref.Name, key: ref.Key})
+		}
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.ConfigMap != nil {
+			limitations = appendUnique(limitations, "ConfigMap volumes are not supported in the isolated namespace")
+		}
+		if volume.Projected != nil {
+			for _, projected := range volume.Projected.Sources {
+				if projected.ConfigMap != nil {
+					limitations = appendUnique(limitations, "projected ConfigMap volumes are not supported in the isolated namespace")
+				}
+			}
+		}
+	}
+	return refs, limitations
+}
+
+func probeEvidence(pod *corev1.Pod) []ProbeEvidence {
+	if pod == nil {
+		return nil
+	}
+	var result []ProbeEvidence
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	for _, container := range containers {
+		appendProbe := func(kind string, probe *corev1.Probe) {
+			if probe == nil {
+				return
+			}
+			evidence := ProbeEvidence{Container: container.Name, Type: kind}
+			switch {
+			case probe.HTTPGet != nil:
+				evidence.Protocol = "http"
+				evidence.Path = sanitizeProbePath(probe.HTTPGet.Path)
+				evidence.Port = probe.HTTPGet.Port.String()
+				evidence.Scheme = string(probe.HTTPGet.Scheme)
+			case probe.TCPSocket != nil:
+				evidence.Protocol = "tcp"
+				evidence.Port = probe.TCPSocket.Port.String()
+			case probe.GRPC != nil:
+				evidence.Protocol = "grpc"
+				evidence.Port = fmt.Sprint(probe.GRPC.Port)
+			}
+			result = append(result, evidence)
+		}
+		appendProbe("readiness", container.ReadinessProbe)
+		appendProbe("liveness", container.LivenessProbe)
+		appendProbe("startup", container.StartupProbe)
+	}
+	return result
+}
+
+func sanitizeProbePath(path string) string {
+	// Queries and fragments are not needed to identify a probe endpoint and may
+	// carry credentials. Keep the bounded path component only.
+	path = strings.SplitN(path, "?", 2)[0]
+	path = strings.SplitN(path, "#", 2)[0]
+	path = redact.KubernetesText(path)
+	if len(path) > 256 {
+		path = path[:256]
+	}
+	return path
+}
+
+func updateCandidateEvidence(evidence *FailureEvidence, pod *corev1.Pod, observedAt time.Time) {
+	if evidence == nil || pod == nil {
+		return
+	}
+	evidence.Probes = probeEvidence(pod)
+	statuses := map[string]corev1.ContainerStatus{}
+	for _, status := range append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...) {
+		statuses[status.Name] = status
+	}
+	containers := append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...)
+	evidence.Containers = make([]ContainerEvidence, 0, len(containers))
+	for _, container := range containers {
+		item := ContainerEvidence{Name: container.Name, RequestedImage: container.Image}
+		if quantity, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+			item.MemoryRequest = quantity.String()
+		}
+		if quantity, ok := container.Resources.Limits[corev1.ResourceMemory]; ok {
+			item.MemoryLimit = quantity.String()
+		}
+		if status, ok := statuses[container.Name]; ok {
+			item.RuntimeImage = status.Image
+			item.ImageID = status.ImageID
+			item.Restarts = status.RestartCount
+			switch {
+			case status.State.Terminated != nil:
+				item.TerminationReason = status.State.Terminated.Reason
+				code := status.State.Terminated.ExitCode
+				item.ExitCode = &code
+			}
+			if status.State.Waiting != nil {
+				item.WaitingReason = status.State.Waiting.Reason
+			}
+			if status.LastTerminationState.Terminated != nil && status.State.Terminated == nil {
+				item.TerminationReason = status.LastTerminationState.Terminated.Reason
+				code := status.LastTerminationState.Terminated.ExitCode
+				item.ExitCode = &code
+			}
+		}
+		evidence.Containers = append(evidence.Containers, item)
+	}
+	if evidence.ReadyAt == nil {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type != corev1.PodReady || condition.Status != corev1.ConditionTrue {
+				continue
+			}
+			readyAt := observedAt
+			if !condition.LastTransitionTime.IsZero() {
+				readyAt = condition.LastTransitionTime.Time
+			} else {
+				evidence.ReadyTimingEstimated = true
+			}
+			evidence.ReadyAt = &readyAt
+			if !pod.CreationTimestamp.IsZero() && !readyAt.Before(pod.CreationTimestamp.Time) {
+				seconds := int64(readyAt.Sub(pod.CreationTimestamp.Time).Seconds())
+				evidence.TimeToReadySeconds = &seconds
+			}
+			break
+		}
+	}
+}
+
+func samplePodMemoryMetrics(ctx context.Context, c *kube.TypedClient, namespace, podName string) (MemorySample, error) {
+	if c == nil || c.Dynamic == nil {
+		return MemorySample{}, fmt.Errorf("metrics API client unavailable")
+	}
+	resourceClient := c.Dynamic.Resource(schema.GroupVersionResource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "pods"}).Namespace(namespace)
+	object, err := resourceClient.Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return MemorySample{}, err
+	}
+	containers, found, err := unstructured.NestedSlice(object.Object, "containers")
+	if err != nil || !found {
+		return MemorySample{}, fmt.Errorf("pod metrics response has no container samples")
+	}
+	sample := MemorySample{}
+	if timestamp, _, err := unstructured.NestedString(object.Object, "timestamp"); err == nil && timestamp != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, timestamp)
+		if parseErr == nil {
+			sample.Timestamp = parsed
+		}
+	}
+	if sample.Timestamp.IsZero() {
+		sample.Timestamp = time.Now()
+	}
+	for _, raw := range containers {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _, _ := unstructured.NestedString(container, "name")
+		memory, found, _ := unstructured.NestedString(container, "usage", "memory")
+		if !found || memory == "" {
+			continue
+		}
+		quantity, err := resource.ParseQuantity(memory)
+		if err != nil {
+			continue
+		}
+		sample.Containers = append(sample.Containers, ContainerMemorySample{Name: name, Memory: quantity.String(), MemoryBytes: quantity.Value()})
+	}
+	if len(sample.Containers) == 0 {
+		return MemorySample{}, fmt.Errorf("pod metrics response has no memory quantities")
+	}
+	sort.Slice(sample.Containers, func(i, j int) bool { return sample.Containers[i].Name < sample.Containers[j].Name })
+	return sample, nil
+}
+
+func appendMemorySample(evidence *FailureEvidence, sample MemorySample) {
+	if evidence == nil || len(sample.Containers) == 0 || len(evidence.MemoryCurve) >= shadowMemorySampleLimit {
+		return
+	}
+	evidence.MemoryCurve = append(evidence.MemoryCurve, sample)
+	evidence.MemoryMetricsStatus = "available"
+}
+
+type memorySampleResult struct {
+	sample MemorySample
+	err    error
+}
+
+func startMemoryEvidenceSampler(ctx context.Context, c *kube.TypedClient, namespace, podName string, evidence *FailureEvidence) <-chan memorySampleResult {
+	if evidence == nil {
+		return nil
+	}
+	evidence.MemoryMetricsStatus = "pending"
+	if c == nil || c.Dynamic == nil {
+		evidence.MemoryMetricsStatus = "unavailable"
+		return nil
+	}
+	results := make(chan memorySampleResult, 1)
+	go func() {
+		ticker := time.NewTicker(shadowMemorySampleInterval)
+		defer ticker.Stop()
+		for {
+			requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			sample, err := samplePodMemoryMetrics(requestCtx, c, namespace, podName)
+			cancel()
+			select {
+			case results <- memorySampleResult{sample: sample, err: err}:
+			default: // Keep only one pending observation; verification must never wait for metrics.
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return results
+}
+
+func applyMemorySampleResult(evidence *FailureEvidence, result memorySampleResult) {
+	if evidence == nil {
+		return
+	}
+	if result.err != nil {
+		if len(evidence.MemoryCurve) == 0 {
+			evidence.MemoryMetricsStatus = "unavailable"
+		}
+		return
+	}
+	appendMemorySample(evidence, result.sample)
+}
+
+func recordProbeFailureEvents(evidence *FailureEvidence, events []string) {
+	if evidence == nil {
+		return
+	}
+	for _, event := range events {
+		folded := strings.ToLower(event)
+		if strings.Contains(folded, "probe failed") || strings.Contains(folded, "readiness probe") || strings.Contains(folded, "liveness probe") || strings.Contains(folded, "startup probe") {
+			if len(evidence.ProbeFailureEvents) >= shadowProbeEventLimit {
+				return
+			}
+			event = redact.KubernetesText(event)
+			if len(event) > shadowProbeEventByteLimit {
+				event = event[:shadowProbeEventByteLimit]
+			}
+			evidence.ProbeFailureEvents = appendUnique(evidence.ProbeFailureEvents, event)
+		}
+	}
+}

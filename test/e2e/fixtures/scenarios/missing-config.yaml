@@ -1,3 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    app: missing-config-demo
+data:
+  some-key: "hello from fixora"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +30,10 @@ spec:
         env:
         - name: REQUIRED_ENV
           valueFrom:
-            secretKeyRef:
-              name: fixora-non-existent-secret
+            configMapKeyRef:
+              # Typo: the real ConfigMap above is named app-config. A mistyped
+              # reference is a realistic failure the env inferrer can correct,
+              # unlike a genuinely absent Secret, which no patch can create and
+              # which shadow refuses to verify at all.
+              name: app-confg
               key: some-key

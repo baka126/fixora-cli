@@ -127,12 +127,30 @@ func TestBuildClonePlanUsesOwnedPodPlatformForDeploymentArchitectureFix(t *testi
         image: repo/api:v2
 `,
 	}
-	plan, err := buildClonePlan(context.Background(), client, req, "12345678-1234-1234-1234-123456789abc")
+	plan, err := buildClonePlan(context.Background(), client, req, "12345678-1234-1234-1234-123456789abc", "fixora-shadow-test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plan.Clone.Spec.NodeSelector["kubernetes.io/arch"] != "arm64" {
 		t.Fatalf("expected controller shadow clone to use failing pod architecture: %#v", plan.Clone.Spec.NodeSelector)
+	}
+}
+
+func TestBuildClonePlanRoutesCandidateAndPolicyToIsolatedNamespace(t *testing.T) {
+	client := &kube.TypedClient{Clientset: fake.NewSimpleClientset(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Image: "repo/api:v1"}}}}},
+	})}
+	req := Request{Namespace: "prod", Resource: "Deployment/api", Patch: "spec:\n  template:\n    spec:\n      containers:\n      - name: api\n        image: repo/api:v2\n"}
+	plan, err := buildClonePlan(context.Background(), client, req, "12345678-1234-1234-1234-123456789abc", "fixora-shadow-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Clone.Namespace != "fixora-shadow-test" || plan.Policy.Namespace != "fixora-shadow-test" {
+		t.Fatalf("candidate and policy must use isolated namespace; pod=%q policy=%q", plan.Clone.Namespace, plan.Policy.Namespace)
+	}
+	if plan.Original.Namespace != "prod" {
+		t.Fatalf("source inspection lost original namespace: %q", plan.Original.Namespace)
 	}
 }
 
@@ -172,15 +190,61 @@ func TestApplyPatchRejectsMultiDocumentYAML(t *testing.T) {
 	}
 }
 
-func TestSandboxNetworkPolicyBlocksIngressAndAllowsEgressByDefault(t *testing.T) {
-	policy := sandboxNetworkPolicy("prod", "shadow-netpol", "session-a", "allow")
+func TestSandboxNetworkPolicyDeniesIngressAndEgress(t *testing.T) {
+	policy := sandboxNetworkPolicy("sandbox", "shadow-netpol", "session-a")
 	if len(policy.Spec.Ingress) != 0 {
 		t.Fatalf("expected ingress to be blocked, got %#v", policy.Spec.Ingress)
 	}
-	if len(policy.Spec.Egress) != 1 {
-		t.Fatalf("expected one allow-all egress rule, got %#v", policy.Spec.Egress)
+	if len(policy.Spec.Egress) != 0 {
+		t.Fatalf("expected egress to be blocked, got %#v", policy.Spec.Egress)
 	}
 	if policy.Spec.PodSelector.MatchLabels[labelSession] != "session-a" {
 		t.Fatalf("policy selector = %#v", policy.Spec.PodSelector.MatchLabels)
+	}
+}
+
+func TestBuildClonePlanRejectsNewContainerFromPatch(t *testing.T) {
+	client := &kube.TypedClient{Clientset: fake.NewSimpleClientset(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "prod"},
+		Spec:       appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "api", Image: "ghcr.io/acme/api:v1"}}}}},
+	})}
+	req := Request{Namespace: "prod", Resource: "Deployment/api", Patch: `spec:
+  template:
+    spec:
+      containers:
+      - name: helper
+        image: ghcr.io/acme/helper:v1
+`}
+	if _, err := buildClonePlan(context.Background(), client, req, "12345678-1234-1234-1234-123456789abc", "fixora-shadow-test"); err == nil {
+		t.Fatal("patch-added container accepted")
+	}
+}
+
+func TestApplyPatchClearsRemovedLiteralEnvValue(t *testing.T) {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "busybox", Env: []corev1.EnvVar{{Name: "DB_HOST", Value: "wrong-host"}, {Name: "UNCHANGED", Value: "keep"}}}}}}
+	patch := `apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: DB_HOST
+          value: null
+          valueFrom:
+            configMapKeyRef: {name: connection, key: DB_HOST}
+`
+	if err := applyPatchToPod(pod, patch); err != nil {
+		t.Fatal(err)
+	}
+	env := pod.Spec.Containers[0].Env
+	for _, e := range env {
+		if e.Name == "DB_HOST" && (e.Value != "" || e.ValueFrom == nil || e.ValueFrom.ConfigMapKeyRef == nil) {
+			t.Fatalf("old literal survived merge: %+v", e)
+		}
+		if e.Name == "UNCHANGED" && e.Value != "keep" {
+			t.Fatalf("unrelated env changed: %+v", e)
+		}
 	}
 }

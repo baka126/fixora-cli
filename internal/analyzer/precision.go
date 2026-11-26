@@ -7,13 +7,15 @@ import (
 	"sync"
 )
 
-func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
-	type precisionAnalyzer struct {
-		name    string
-		aliases []string
-		run     func(*ScanContext) ([]Finding, error)
-	}
-	analyzers := []precisionAnalyzer{
+type precisionAnalyzer struct {
+	name     string
+	aliases  []string
+	run      func(*ScanContext) ([]Finding, error)
+	optional bool
+}
+
+func (a Analyzer) precisionAnalyzers() []precisionAnalyzer {
+	return []precisionAnalyzer{
 		{name: "service-endpoints", aliases: []string{"service", "services", "networking"}, run: a.analyzeServiceEndpoints},
 		{name: "service-ports", aliases: []string{"service", "services", "networking"}, run: a.analyzeServicePortTargets},
 		{name: "ingress-backends", aliases: []string{"ingress", "ingresses", "networking"}, run: a.analyzeIngressBackends},
@@ -29,6 +31,7 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "storage", aliases: []string{"storage", "pv", "persistentvolume", "storageclass"}, run: a.analyzeStorage},
 		{name: "configmap", aliases: []string{"configmap", "configmaps", "configuration"}, run: a.analyzeConfigMaps},
 		{name: "olm-operators", aliases: []string{"olm", "operator", "operators", "catalogsource", "subscription", "installplan", "clusterserviceversion", "operatorgroup", "clustercatalog", "clusterextension"}, run: a.analyzeOLM},
+		{name: "resource-claim", aliases: []string{"resourceclaim", "resourceclaims", "deviceclass", "devices", "scheduling"}, run: a.analyzeResourceClaims, optional: true},
 		{name: "deployment-replicas", aliases: []string{"deployment", "deployments", "workload"}, run: a.analyzeDeployments},
 		{name: "daemonset", aliases: []string{"daemonset", "daemonsets", "workload"}, run: a.analyzeDaemonSets},
 		{name: "statefulset", aliases: []string{"statefulset", "statefulsets", "workload"}, run: a.analyzeStatefulSets},
@@ -38,11 +41,33 @@ func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedC
 		{name: "secret", aliases: []string{"secret", "secrets", "configuration"}, run: a.analyzeSecrets},
 		{name: "pod-terminating", aliases: []string{"pod", "pods", "terminating"}, run: a.analyzePodsTerminating},
 	}
+}
+
+func allPrecisionAnalyzerAliases() []string {
+	seen := map[string]bool{}
+	for _, pa := range (Analyzer{}).precisionAnalyzers() {
+		for _, alias := range pa.aliases {
+			seen[strings.ToLower(alias)] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for alias := range seen {
+		out = append(out, alias)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (a Analyzer) runPrecisionAnalyzers(ctx *ScanContext) ([]Finding, []SkippedCheck) {
 	selected := filterSet(a.opts.Filters)
+	analyzers := a.precisionAnalyzers()
 
 	// Select the analyzers to run, preserving registration order.
 	var jobs []precisionAnalyzer
 	for _, pa := range analyzers {
+		if len(selected) == 0 && pa.optional {
+			continue
+		}
 		if len(selected) > 0 && !matchesAny(selected, pa.aliases...) {
 			continue
 		}
@@ -374,3 +399,6 @@ func clusterFinding(kind, name, status, severity, category, summary string, evid
 		}},
 	}
 }
+
+// GitOpsHintsForObject reads source ownership from a current live object.
+func GitOpsHintsForObject(obj map[string]any) GitOpsHints { return gitOpsForObject(obj) }

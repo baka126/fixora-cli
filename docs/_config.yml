@@ -1,6 +1,14 @@
-theme: jekyll-theme-cayman
 title: Fixora CLI
-description: AI-Powered Kubernetes Forensic Detective & Remediation Engine
-url: ""
+description: Diagnose Kubernetes incidents, review evidence, and deliver guarded fixes from your terminal.
+url: "https://baka126.github.io"
+baseurl: "/fixora-cli"
+markdown: kramdown
+permalink: pretty
+exclude:
+  - superpowers
+  - checklist.md
+  - README.md
+  - Gemfile
+  - Gemfile.lock
 plugins:
   - jekyll-seo-tag

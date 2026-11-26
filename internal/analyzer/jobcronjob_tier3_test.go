@@ -142,6 +142,34 @@ func TestJobWithSucceededDoesNotEmitRetrying(t *testing.T) {
 	}
 }
 
+func TestCompletedJobWithEarlierFailuresHasNoFailureFinding(t *testing.T) {
+	job := jobFixture("prod", "batch", 2, 1, 6)
+	job["status"].(map[string]any)["conditions"] = []any{map[string]any{"type": "Complete", "status": "True"}}
+	ctx := scanContextWithItems(map[string][]map[string]any{"jobs": {job}})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.ResourceName == "batch" && (finding.Status == "Failed" || finding.Status == "JobRetrying") {
+			t.Fatalf("completed Job reported as failing: %#v", finding)
+		}
+	}
+}
+
+func TestPartiallySucceededJobIsStillRetrying(t *testing.T) {
+	job := jobFixture("prod", "batch", 1, 1, 6)
+	job["spec"].(map[string]any)["completions"] = float64(2)
+	ctx := scanContextWithItems(map[string][]map[string]any{"jobs": {job}})
+	findings, err := New(fakeReader{}, Options{Namespace: "prod"}).analyzeJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasStatus(findings, "Failed") != nil || hasStatus(findings, "JobRetrying") == nil {
+		t.Fatalf("partial success should be retrying, not terminal failure: %#v", findings)
+	}
+}
+
 // --- CronJobOverlap tests ---
 
 func TestCronJobOverlapEmittedWhenAllowAndActiveGTOne(t *testing.T) {

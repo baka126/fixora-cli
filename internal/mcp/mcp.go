@@ -1,9 +1,8 @@
 package mcp
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,112 +12,39 @@ import (
 	"github.com/fixora/kubectl-fixora/internal/fix"
 	"github.com/fixora/kubectl-fixora/internal/kube"
 	"github.com/fixora/kubectl-fixora/internal/ops"
+	"github.com/fixora/kubectl-fixora/internal/shadow"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Server implements the Model Context Protocol (MCP) over stdio.
-// The MCP server runs over stdio which is intrinsically authenticated
-// by the execution context (the parent process creating the pipes).
-// Do NOT expose this directly over a network socket without wrapping
-// it in an authenticated transport layer.
+// Server exposes only scoped, redacted diagnostics over local MCP stdio.
 type Server struct {
-	Kubectl     kube.Kubectl
-	AnalyzerOpt analyzer.Options
+	Kubectl         kube.Kubectl
+	AnalyzerOpt     analyzer.Options
+	Reader          kube.Reader // optional test/alternate reader; defaults to Kubectl
+	EnableShadow    bool
+	analyzeResource func(context.Context, string) (analyzer.Finding, error)                         // optional test seam
+	newTypedClient  func() (*kube.TypedClient, error)                                               // optional test seam
+	runShadow       func(context.Context, *kube.TypedClient, shadow.Request) (shadow.Result, error) // optional test seam
 }
 
-type request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type response struct {
-	JSONRPC string         `json:"jsonrpc"`
-	ID      any            `json:"id,omitempty"`
-	Result  any            `json:"result,omitempty"`
-	Error   *responseError `json:"error,omitempty"`
-}
-
-type responseError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+func (s Server) reader() kube.Reader {
+	if s.Reader != nil {
+		return s.Reader
+	}
+	return s.Kubectl
 }
 
 func (s Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
-	scanner := bufio.NewScanner(in)
-	buf := make([]byte, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-	encoder := json.NewEncoder(out)
-	for scanner.Scan() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var req request
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			_ = encoder.Encode(response{JSONRPC: "2.0", Error: &responseError{Code: -32700, Message: err.Error()}})
-			continue
-		}
-		result, err := s.handle(ctx, req)
-		resp := response{JSONRPC: "2.0", ID: req.ID, Result: result}
-		if err != nil {
-			resp.Result = nil
-			resp.Error = &responseError{Code: -32000, Message: err.Error()}
-		}
-		if err := encoder.Encode(resp); err != nil {
-			return err
-		}
+	err := s.newSDKServer().Run(ctx, &sdk.IOTransport{Reader: io.NopCloser(in), Writer: nopWriteCloser{out}, MaxLineLength: 10 * 1024 * 1024})
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		return nil
 	}
-	return scanner.Err()
-}
-
-func (s Server) handle(ctx context.Context, req request) (any, error) {
-	switch req.Method {
-	case "initialize":
-		return map[string]any{
-			"protocolVersion": "2024-11-05",
-			"serverInfo":      map[string]string{"name": "fixora-cli", "version": "v1alpha1"},
-			"capabilities":    map[string]any{"tools": map[string]any{}, "prompts": map[string]any{}, "resources": map[string]any{}},
-		}, nil
-	case "tools/list":
-		return map[string]any{"tools": tools()}, nil
-	case "tools/call":
-		var params struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.callTool(ctx, params.Name, params.Arguments)
-	case "prompts/list":
-		return map[string]any{"prompts": prompts()}, nil
-	case "prompts/get":
-		var params struct {
-			Name      string            `json:"name"`
-			Arguments map[string]string `json:"arguments"`
-		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return nil, err
-		}
-		return prompt(params.Name, params.Arguments), nil
-	case "resources/list":
-		return map[string]any{"resources": []map[string]string{
-			{"uri": "fixora://cluster/info", "name": "Cluster Info"},
-			{"uri": "fixora://config", "name": "Fixora Config"},
-		}}, nil
-	default:
-		return nil, fmt.Errorf("unsupported MCP method %q", req.Method)
-	}
+	return err
 }
 
 func (s Server) callTool(ctx context.Context, name string, args map[string]any) (any, error) {
-	a := analyzer.New(s.Kubectl, s.AnalyzerOpt)
+	reader := s.reader()
+	a := analyzer.New(reader, s.AnalyzerOpt)
 	switch name {
 	case "analyze":
 		resource := stringArg(args, "resource")
@@ -150,13 +76,7 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 			return nil, err
 		}
 		plan := fix.Concretize(fix.BuildPlan(finding), fix.ConcreteOptions{
-			Container:     stringArg(args, "container"),
-			Image:         stringArg(args, "image"),
-			MemoryRequest: stringArg(args, "memoryRequest"),
-			MemoryLimit:   stringArg(args, "memoryLimit"),
-			CPURequest:    stringArg(args, "cpuRequest"),
-			Strategy:      stringArg(args, "strategy"),
-			ForceRisky:    boolArg(args, "forceRisky"),
+			Container: stringArg(args, "container"), Image: stringArg(args, "image"), MemoryRequest: stringArg(args, "memoryRequest"), MemoryLimit: stringArg(args, "memoryLimit"), CPURequest: stringArg(args, "cpuRequest"), Strategy: stringArg(args, "strategy"),
 		})
 		if name == "preview-fix" {
 			return map[string]any{"plan": plan, "diff": plan.DiffView()}, nil
@@ -167,21 +87,55 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 		return plan, nil
 	case "list-resources":
 		resource := firstNonEmpty(stringArg(args, "type"), "pods")
-		return s.Kubectl.GetResourceItems(ctx, s.AnalyzerOpt.Namespace, s.AnalyzerOpt.AllNS, resource)
+		if err := allowResourceType(resource); err != nil {
+			return nil, err
+		}
+		items, err := reader.GetResourceItems(ctx, s.AnalyzerOpt.Namespace, s.AnalyzerOpt.AllNS, resource)
+		if err != nil {
+			return nil, err
+		}
+		page, next, err := pageItems(items, intArg(args, "offset"), intArg(args, "limit"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": page, "nextOffset": next}, nil
 	case "get-resource":
 		resource := stringArg(args, "resource")
-		if resource == "" {
-			return nil, fmt.Errorf("resource is required")
+		if err := allowResourceRef(resource); err != nil {
+			return nil, err
 		}
-		return s.Kubectl.GetResource(ctx, s.AnalyzerOpt.Namespace, resource)
+		return reader.GetResource(ctx, s.AnalyzerOpt.Namespace, resource)
 	case "get-logs":
 		pod := stringArg(args, "pod")
 		if pod == "" {
 			return nil, fmt.Errorf("pod is required")
 		}
-		return map[string]string{"logs": mustString(s.Kubectl.Logs(ctx, firstNonEmpty(stringArg(args, "namespace"), s.AnalyzerOpt.Namespace), pod, boolArg(args, "previous")))}, nil
+		namespace := firstNonEmpty(stringArg(args, "namespace"), s.AnalyzerOpt.Namespace)
+		if !s.AnalyzerOpt.AllNS && namespace != s.AnalyzerOpt.Namespace {
+			return nil, fmt.Errorf("namespace is outside server scope")
+		}
+		if namespace == "" {
+			return nil, fmt.Errorf("namespace is required for Pod logs")
+		}
+		logs, err := reader.Logs(ctx, namespace, pod, boolArg(args, "previous"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"logs": logs}, nil
 	case "list-events":
-		return s.Kubectl.GetEvents(ctx, s.AnalyzerOpt.Namespace, "")
+		namespace := s.AnalyzerOpt.Namespace
+		if s.AnalyzerOpt.AllNS {
+			namespace = ""
+		}
+		events, err := reader.GetEvents(ctx, namespace, "")
+		if err != nil {
+			return nil, err
+		}
+		page, next, err := pageItems(events, intArg(args, "offset"), intArg(args, "limit"))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"items": page, "nextOffset": next}, nil
 	case "list-filters":
 		return analyzer.ListAnalyzers(nil), nil
 	case "config":
@@ -189,60 +143,45 @@ func (s Server) callTool(ctx context.Context, name string, args map[string]any) 
 		if err != nil {
 			return nil, err
 		}
-		return config.Public(cfg), nil
+		return mcpPublicConfig(cfg), nil
 	default:
 		return nil, fmt.Errorf("unknown MCP tool %q", name)
 	}
 }
 
-func tools() []map[string]any {
-	names := []string{"analyze", "incidents", "health", "runbook", "plan-fix", "preview-fix", "validate-fix", "list-resources", "get-resource", "get-logs", "list-events", "list-filters", "config"}
-	out := make([]map[string]any, 0, len(names))
-	for _, name := range names {
-		out = append(out, map[string]any{"name": name, "description": "Fixora Kubernetes SRE tool: " + name, "inputSchema": map[string]any{"type": "object"}})
-	}
-	return out
-}
-
-func prompts() []map[string]string {
-	return []map[string]string{
-		{"name": "troubleshoot-pod", "description": "Guide an SRE through pod incident triage."},
-		{"name": "troubleshoot-deployment", "description": "Guide an SRE through deployment rollout triage."},
-		{"name": "troubleshoot-cluster", "description": "Guide an SRE through cluster-wide incident triage."},
-		{"name": "incident-runbook", "description": "Create a production incident runbook."},
-	}
-}
-
-func prompt(name string, args map[string]string) map[string]any {
-	target := firstNonEmpty(args["resource"], args["pod"], args["deployment"], "<target>")
-	text := "Use Fixora tools to gather status, events, logs, owner chain, recent changes, policy, networking, storage, and safe rollback evidence for " + target + ". Prefer GitOps-safe fixes and call out verification commands."
-	return map[string]any{"description": name, "messages": []map[string]any{{"role": "user", "content": map[string]string{"type": "text", "text": text}}}}
-}
-
 func stringArg(args map[string]any, key string) string {
-	if args[key] == nil {
-		return ""
-	}
-	return strings.TrimSpace(fmt.Sprint(args[key]))
+	v, _ := args[key].(string)
+	return strings.TrimSpace(v)
 }
-
-func boolArg(args map[string]any, key string) bool {
-	value, _ := args[key].(bool)
-	return value
-}
-
-func mustString(value string, err error) string {
-	if err != nil {
-		return err.Error()
-	}
-	return value
-}
-
+func boolArg(args map[string]any, key string) bool { v, _ := args[key].(bool); return v }
 func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" && value != "<nil>" {
-			return strings.TrimSpace(value)
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
 		}
 	}
 	return ""
+}
+
+func intArg(args map[string]any, key string) int { value, _ := args[key].(float64); return int(value) }
+
+func pageItems[T any](items []T, offset, limit int) ([]T, int, error) {
+	if offset < 0 || limit < 0 || limit > 100 {
+		return nil, 0, fmt.Errorf("offset must be nonnegative and limit must be between 0 and 100")
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	if offset >= len(items) {
+		return []T{}, 0, nil
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	next := 0
+	if end < len(items) {
+		next = end
+	}
+	return items[offset:end], next, nil
 }

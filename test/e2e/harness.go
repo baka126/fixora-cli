@@ -92,8 +92,10 @@ func kubectl(t *testing.T, args ...string) string {
 }
 
 // waitFor polls cond until it returns true or the deadline passes. It replaces
-// unconditional sleeps, which are the main flake source in cluster tests.
-func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
+// unconditional sleeps, which are the main flake source in cluster tests. Any
+// onTimeout callbacks run just before the fatal, so a CI failure can show why
+// the condition was never met instead of a bare timeout line.
+func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool, onTimeout ...func()) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -101,6 +103,9 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool)
 			return
 		}
 		time.Sleep(2 * time.Second)
+	}
+	for _, fn := range onTimeout {
+		fn()
 	}
 	t.Fatalf("timed out after %s waiting for %s", timeout, desc)
 }
@@ -158,6 +163,23 @@ func newNamespace(t *testing.T) string {
 func applyFixture(t *testing.T, ns, file string) {
 	t.Helper()
 	kubectl(t, "apply", "-n", ns, "-f", filepath.Join("fixtures", file))
+}
+
+// dumpScenario logs pod, deployment and recent-event state for a scenario's
+// workload. Wired into the scenario wait helpers as an onTimeout callback so a
+// CI failure shows what state the workload was actually in — image-pull stuck,
+// unschedulable, not yet crash-looping — rather than a bare timeout.
+func dumpScenario(t *testing.T, ns, deploy string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"get", "pods", "-n", ns, "-l", "app=" + deploy, "-o", "wide"},
+		{"describe", "pods", "-n", ns, "-l", "app=" + deploy},
+		{"get", "deployment", deploy, "-n", ns, "-o", "yaml"},
+		{"get", "events", "-n", ns, "--sort-by=.lastTimestamp"},
+	} {
+		out, errOut, _ := run(t, "kubectl", append([]string{"--context", kubeContext}, args...)...)
+		t.Logf("--- kubectl %s ---\n%s%s", strings.Join(args, " "), out, errOut)
+	}
 }
 
 // specOf returns the live .spec of a resource as canonical JSON. Comparing

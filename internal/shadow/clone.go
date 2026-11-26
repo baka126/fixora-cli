@@ -26,6 +26,7 @@ type clonePlan struct {
 	UnpatchedClone    *corev1.Pod
 	Clone             *corev1.Pod
 	Policy            *networkingv1.NetworkPolicy
+	Namespace         *corev1.Namespace
 	Warnings          []string
 	NamespaceMetadata namespaceMetadata
 }
@@ -35,7 +36,7 @@ type namespaceMetadata struct {
 	Annotations map[string]string
 }
 
-func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session string) (clonePlan, error) {
+func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, session, shadowNamespace string) (clonePlan, error) {
 	original, err := podTemplateForResource(ctx, c, req.Namespace, req.Resource, req.Finding.PodName)
 	if err != nil {
 		return clonePlan{}, err
@@ -45,13 +46,14 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	}
 	clone := sanitizePod(original, session, req.Timeout)
 	clone.Name = cloneName(original.Name, session)
+	clone.Namespace = shadowNamespace
 	nsMetadata := namespaceLabels(ctx, c, req.Namespace)
-	warnings := cloneWarnings(req.Egress)
+	warnings := cloneWarnings()
 	warnings = append(warnings, cloneFidelityWarnings(original, req.Resource, nsMetadata)...)
 	if strings.EqualFold(req.Plan.Strategy, "fix-architecture") {
 		platformSource := original
 		if platformSource.Spec.NodeName == "" && strings.TrimSpace(req.Finding.PodName) != "" {
-			platformSource, err = c.GetTypedPod(ctx, clone.Namespace, req.Finding.PodName)
+			platformSource, err = c.GetTypedPod(ctx, req.Namespace, req.Finding.PodName)
 			if err != nil {
 				return clonePlan{}, fmt.Errorf("read failing controller pod for architecture verification: %w", err)
 			}
@@ -66,7 +68,13 @@ func buildClonePlan(ctx context.Context, c *kube.TypedClient, req Request, sessi
 	if err := applyPatchToPod(clone, req.Patch); err != nil {
 		return clonePlan{}, err
 	}
-	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session, req.Egress)
+	if err := validateShadowSource(clone); err != nil {
+		return clonePlan{}, err
+	}
+	if err := validateCloneContainerIdentity(unpatchedClone, clone); err != nil {
+		return clonePlan{}, err
+	}
+	policy := sandboxNetworkPolicy(clone.Namespace, clone.Name+"-netpol", session)
 	return clonePlan{Original: original, UnpatchedClone: unpatchedClone, Clone: clone, Policy: policy, Warnings: warnings, NamespaceMetadata: nsMetadata}, nil
 }
 
@@ -459,33 +467,25 @@ func applyPatchToPod(pod *corev1.Pod, patchYAML string) error {
 	if err != nil {
 		return fmt.Errorf("merge patch into shadow pod: %w", err)
 	}
-	return json.Unmarshal(merged, pod)
+	// Decode into a fresh object: decoding into the source can retain omitted
+	// scalar fields on reused slice entries after strategic-merge deletion.
+	var revised corev1.Pod
+	if err := json.Unmarshal(merged, &revised); err != nil {
+		return err
+	}
+	*pod = revised
+	return nil
 }
 
 func podStrategicPatch(obj map[string]any) ([]byte, error) {
-	kind := strings.ToLower(fmt.Sprint(obj["kind"]))
-	if kind == "pod" || kind == "" {
-		return json.Marshal(removeIdentity(obj))
-	}
-	spec, ok := nestedMap(obj, "spec")
+	spec, ok := kube.WorkloadPodSpec(obj)
 	if !ok {
-		return nil, fmt.Errorf("patch does not include a spec")
+		return nil, fmt.Errorf("patch must target a correctly nested Pod spec")
 	}
-	template, ok := nestedMap(spec, "template")
-	if ok {
-		templateSpec, ok := nestedMap(template, "spec")
-		if !ok {
-			return nil, fmt.Errorf("workload patch does not include spec.template.spec")
-		}
-		return json.Marshal(map[string]any{"spec": templateSpec})
-	}
-	if _, ok := spec["containers"]; ok {
-		return json.Marshal(map[string]any{"spec": spec})
-	}
-	return nil, fmt.Errorf("cannot project %s patch into a shadow pod; only pod template spec changes are supported", kind)
+	return json.Marshal(map[string]any{"spec": spec})
 }
 
-func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1.NetworkPolicy {
+func sandboxNetworkPolicy(namespace, name, session string) *networkingv1.NetworkPolicy {
 	policyTypes := []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}
 	np := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
@@ -504,21 +504,14 @@ func sandboxNetworkPolicy(namespace, name, session, egress string) *networkingv1
 			Egress:      []networkingv1.NetworkPolicyEgressRule{},
 		},
 	}
-	if strings.EqualFold(egress, "allow") {
-		np.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{}}
-	}
 	return np
 }
 
-func cloneWarnings(egress string) []string {
+func cloneWarnings() []string {
 	warnings := []string{
 		"shadow pod labels are stripped so existing Services should not route traffic to the clone",
 		"shadow clone service account token access is disabled to avoid reusing workload credentials",
-	}
-	if strings.EqualFold(egress, "allow") || egress == "" {
-		warnings = append(warnings, "shadow NetworkPolicy blocks ingress but allows egress for parity; downstream systems may still see clone traffic")
-	} else {
-		warnings = append(warnings, "shadow egress is blocked; readiness may fail for workloads that need external dependencies")
+		"shadow egress is denied; readiness may be inconclusive when external dependencies are required",
 	}
 	return warnings
 }
@@ -622,4 +615,28 @@ func nestedMap(obj map[string]any, key string) (map[string]any, bool) {
 	}
 	m, ok := value.(map[string]any)
 	return m, ok
+}
+
+func validateCloneContainerIdentity(before, after *corev1.Pod) error {
+	for _, section := range []struct {
+		name              string
+		original, current []corev1.Container
+	}{
+		{"containers", before.Spec.Containers, after.Spec.Containers},
+		{"initContainers", before.Spec.InitContainers, after.Spec.InitContainers},
+	} {
+		if len(section.original) != len(section.current) {
+			return fmt.Errorf("shadow patch must not add or remove %s", section.name)
+		}
+		names := make(map[string]bool, len(section.original))
+		for _, container := range section.original {
+			names[container.Name] = true
+		}
+		for _, container := range section.current {
+			if !names[container.Name] {
+				return fmt.Errorf("shadow patch must not add %s entry %q", section.name, container.Name)
+			}
+		}
+	}
+	return nil
 }

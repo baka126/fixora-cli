@@ -2,33 +2,41 @@ package fix
 
 import (
 	"fmt"
+	"github.com/fixora/kubectl-fixora/internal/repairpolicy"
 	"strings"
 
 	"github.com/fixora/kubectl-fixora/internal/analyzer"
 )
 
 type Plan struct {
-	Resource         string   `json:"resource"`
-	Namespace        string   `json:"namespace"`
-	Status           string   `json:"status"`
-	Strategy         string   `json:"strategy"`
-	Safe             bool     `json:"safe"`
-	CanApply         bool     `json:"canApply"`
-	ApplyEligible    bool     `json:"applyEligible"`
-	Confidence       int      `json:"confidence"`
-	Risk             string   `json:"risk"`
-	AutoFixRequested bool     `json:"autoFixRequested"`
-	Patches          []Patch  `json:"patches,omitempty"`
-	Commands         []string `json:"commands,omitempty"`
-	Verification     []string `json:"verification,omitempty"`
-	Rollback         []string `json:"rollback,omitempty"`
-	Steps            []string `json:"steps"`
-	Warnings         []string `json:"warnings,omitempty"`
-	BlockedReasons   []string `json:"blockedReasons,omitempty"`
-	Guardrails       []string `json:"guardrails,omitempty"`
-	PatchTemplate    string   `json:"patchTemplate"`
-	RollbackCommand  string   `json:"rollbackCommand,omitempty"`
-	Recovered        bool     `json:"recovered,omitempty"`
+	PolicyAuthority  *repairpolicy.Authority `json:"-"`
+	PolicyProof      *repairpolicy.Proof     `json:"-"`
+	PolicySelection  string                  `json:"policySelection,omitempty"`
+	PolicySummary    *repairpolicy.Summary   `json:"policySummary,omitempty"`
+	TargetPodUID     string                  `json:"targetPodUid,omitempty"`
+	TargetUID        string                  `json:"targetUid,omitempty"`
+	Diagnosis        *analyzer.Finding       `json:"diagnosis,omitempty"`
+	Resource         string                  `json:"resource"`
+	Namespace        string                  `json:"namespace"`
+	Status           string                  `json:"status"`
+	Strategy         string                  `json:"strategy"`
+	Safe             bool                    `json:"safe"`
+	CanApply         bool                    `json:"canApply"`
+	ApplyEligible    bool                    `json:"applyEligible"`
+	Confidence       int                     `json:"confidence"`
+	Risk             string                  `json:"risk"`
+	AutoFixRequested bool                    `json:"autoFixRequested"`
+	Patches          []Patch                 `json:"patches,omitempty"`
+	Commands         []string                `json:"commands,omitempty"`
+	Verification     []string                `json:"verification,omitempty"`
+	Rollback         []string                `json:"rollback,omitempty"`
+	Steps            []string                `json:"steps"`
+	Warnings         []string                `json:"warnings,omitempty"`
+	BlockedReasons   []string                `json:"blockedReasons,omitempty"`
+	Guardrails       []string                `json:"guardrails,omitempty"`
+	PatchTemplate    string                  `json:"patchTemplate"`
+	RollbackCommand  string                  `json:"rollbackCommand,omitempty"`
+	Recovered        bool                    `json:"recovered,omitempty"`
 }
 
 type Patch struct {
@@ -47,6 +55,7 @@ type ConcreteOptions struct {
 	EnvName       string
 	ConfigMap     string
 	ConfigKey     string
+	ProbePort     string
 	Strategy      string
 	ForceRisky    bool
 }
@@ -54,6 +63,8 @@ type ConcreteOptions struct {
 func BuildPlan(finding analyzer.Finding) Plan {
 	resource := finding.ResourceKind + "/" + finding.ResourceName
 	plan := Plan{
+		Diagnosis: &finding,
+		TargetUID: finding.ResourceUID, TargetPodUID: finding.PodUID,
 		Resource:   resource,
 		Namespace:  finding.Namespace,
 		Status:     finding.Status,
@@ -105,6 +116,20 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Confidence = 62
 		plan.Warnings = append(plan.Warnings, "Right-size from observed usage. Do not only raise limits if the process is intentionally allocating too much memory.")
 		plan.Verification = append(plan.Verification, "query Prometheus p95/p99 memory before choosing request and limit")
+	case finding.Status == "DeviceClassNotFound" && finding.ResourceKind == "ResourceClaim":
+		plan.Strategy = "deviceclass"
+		plan.Confidence = 85
+		plan.Steps = []string{
+			"Confirm the intended DeviceClass with the cluster's device driver operator.",
+			"Restore the missing DeviceClass or change the ResourceClaim in its source repository after reviewing allocation requirements.",
+			"Recheck the ResourceClaim and dependent Pod scheduling after the reviewed change.",
+		}
+		plan.BlockedReasons = append(plan.BlockedReasons, "DeviceClass and ResourceClaim changes require driver-aware review.")
+		for _, evidence := range finding.Evidence {
+			if evidence.Label == "DeviceClass" && evidence.Value != "" {
+				plan.Verification = append(plan.Verification, "kubectl get deviceclasses.resource.k8s.io "+evidence.Value)
+			}
+		}
 	case strings.Contains(finding.Status, "CrashLoopBackOff"):
 		plan.Strategy = "runtime"
 		plan.PatchTemplate = runtimePatchTemplate(finding)
@@ -155,12 +180,33 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Confidence = 40
 		plan.BlockedReasons = append(plan.BlockedReasons, "Modifying admission webhooks requires high-privilege review.")
 		plan.Warnings = append(plan.Warnings, "Webhook changes affect admission safety. Prefer restoring backend Service before changing failure policy.")
+	case (strings.Contains(finding.Status, "Pending") || strings.Contains(finding.Status, "Unschedulable")) &&
+		hasEvidence(finding, "Requests exceed node allocatable"):
+		// Only the requests-exceed-allocatable sub-case is claimed here.
+		// Taints, affinity and PVC binding are also Pending causes and are not
+		// fixed by lowering requests, so they keep falling through to the
+		// review-only scheduling strategy.
+		plan.Strategy = "resources"
+		plan.PatchTemplate = resourcesPatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Lower resource requests so the pod fits an available node.", Preview: plan.PatchTemplate})
+		plan.Confidence = 65
+		plan.Warnings = append(plan.Warnings, "Lowering requests changes scheduling and QoS class. Confirm the workload actually runs within the reduced request.")
+	case strings.Contains(finding.Status, "ProbeFailure"):
+		plan.Strategy = "probe"
+		plan.PatchTemplate = probePatchTemplate(finding)
+		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: resource, Description: "Point the readiness probe at the port the container actually listens on.", Preview: plan.PatchTemplate})
+		plan.Confidence = 80
+		plan.Warnings = append(plan.Warnings, "Confirm the container serves the probe path on the proposed port before applying.")
 	default:
 		plan.PatchTemplate = genericPatchTemplate(finding)
 		plan.BlockedReasons = append(plan.BlockedReasons, "No deterministic patch strategy matched this status.")
 	}
-	plan.Commands = []string{fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)}
-	plan.RollbackCommand = rollbackCommand(finding)
+	if plan.Strategy != "deviceclass" {
+		plan.Commands = []string{fmt.Sprintf("kubectl apply -f fixora-patch.yaml -n %s", finding.Namespace)}
+	}
+	if plan.Strategy != "deviceclass" {
+		plan.RollbackCommand = rollbackCommand(finding)
+	}
 	if plan.RollbackCommand != "" {
 		plan.Rollback = append(plan.Rollback, plan.RollbackCommand)
 	}
@@ -168,6 +214,12 @@ func BuildPlan(finding analyzer.Finding) Plan {
 		plan.Risk = "low"
 	}
 	plan.refreshApplyEligibility(false)
+	for _, e := range finding.Evidence {
+		if e.Label == "Ownership unverified" {
+			plan.Guardrails = appendUnique(plan.Guardrails, "ownership-unverified")
+		}
+	}
+	plan = WithTargetPolicy(plan)
 	return plan
 }
 
@@ -186,6 +238,7 @@ func Concretize(plan Plan, opts ConcreteOptions) Plan {
 		"TODO_ENV_NAME":                opts.EnvName,
 		"TODO_CONFIGMAP":               opts.ConfigMap,
 		"TODO_KEY":                     opts.ConfigKey,
+		"TODO_PROBE_PORT":              opts.ProbePort,
 	}
 	for key, value := range replacements {
 		if value != "" {
@@ -223,7 +276,7 @@ func WithValidatedAIPatch(plan Plan, patch string, confidence int) Plan {
 	plan.CanApply = true
 	plan.Safe = true
 	plan.Risk = "low"
-	plan.Confidence = max(plan.Confidence, max(confidence, 90))
+	plan.Confidence = confidence
 	plan.BlockedReasons = nil
 	plan.Guardrails = appendUnique(plan.Guardrails, "ai-patch-safety-validated")
 	plan.Warnings = appendUnique(plan.Warnings, "AI generated this patch from redacted evidence; review the diff before shadow verification or apply.")
@@ -231,9 +284,8 @@ func WithValidatedAIPatch(plan Plan, patch string, confidence int) Plan {
 		plan.Patches = append(plan.Patches, Patch{Type: "strategic-merge", Target: plan.Resource, Description: "AI-generated Kubernetes remediation patch.", Preview: patch})
 	} else {
 		plan.Patches[0].Preview = patch
-		if plan.Patches[0].Description == "" {
-			plan.Patches[0].Description = "AI-generated Kubernetes remediation patch."
-		}
+		plan.Patches[0].Type = "strategic-merge"
+		plan.Patches[0].Description = "AI-generated Kubernetes remediation patch."
 	}
 	plan.refreshApplyEligibility(false)
 	return plan
@@ -283,6 +335,11 @@ func validateConcretePatch(plan Plan) ([]string, []string) {
 			return nil, []string{"resources strategy requires concrete resource request or limit fields"}
 		}
 		return nil, nil
+	case "probe":
+		if !strings.Contains(patch, "readinessprobe") && !strings.Contains(patch, "livenessprobe") {
+			return nil, []string{"probe strategy requires a concrete readinessProbe or livenessProbe block"}
+		}
+		return nil, nil
 	case "repair-selector", "service", "webhook", "runtime", "scheduling", "pdb", "ingress", "hpa":
 		return []string{"strategy " + strategy + " remains review-only and is not auto-applied"}, []string{"strategy " + strategy + " is not apply-eligible by default"}
 	default:
@@ -291,6 +348,7 @@ func validateConcretePatch(plan Plan) ([]string, []string) {
 }
 
 func (p *Plan) refreshApplyEligibility(forceRisky bool) {
+	*p = WithTargetPolicy(*p)
 	p.ApplyEligible = p.CanApply && p.Confidence >= 90 && len(p.BlockedReasons) == 0 && (p.Safe || forceRisky) && (!p.Recovered || forceRisky)
 	if p.CanApply && !p.ApplyEligible {
 		if p.Confidence < 90 {
@@ -370,6 +428,17 @@ func envPatchTemplate(f analyzer.Finding) string {
       configMapKeyRef:
         name: TODO_CONFIGMAP
         key: TODO_KEY
+`)
+}
+
+// probePatchTemplate patches only the probe's port. readinessProbe is a struct,
+// so a strategic merge keeps the existing path, scheme and timings.
+func probePatchTemplate(f analyzer.Finding) string {
+	return workloadPatchTemplate(f, `containers:
+- name: TODO_CONTAINER_NAME
+  readinessProbe:
+    httpGet:
+      port: TODO_PROBE_PORT
 `)
 }
 
@@ -514,6 +583,15 @@ func normalizeKind(kind string) string {
 	default:
 		return kind
 	}
+}
+
+func hasEvidence(f analyzer.Finding, label string) bool {
+	for _, evidence := range f.Evidence {
+		if strings.HasPrefix(evidence.Label, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func slug(value string) string {

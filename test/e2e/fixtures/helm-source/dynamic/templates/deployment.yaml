@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: worker}
+  template:
+    metadata:
+      labels: {app: worker}
+    spec:
+      containers:
+        - name: worker
+          image: {{ if .Values.global.reference }}{{ .Values.global.reference | quote }}{{ else if eq .Values.format "derived" }}{{ printf "%s:%s" .Values.parts.left .Values.parts.right | quote }}{{ else }}{{ .Values.choice | quote }}{{ end }}
+          resources:
+            limits:
+              {{- if .Values.memory }}
+              memory: {{ .Values.memory | quote }}
+              {{- else }} {}
+              {{- end }}
+          {{- with .Values.health }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: HOST
+              {{- if .Values.literal }}
+              value: {{ .Values.literal | quote }}
+              {{- else }}
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.connector | quote }}
+                  key: HOST
+              {{- end }}

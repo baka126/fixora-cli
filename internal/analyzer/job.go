@@ -40,12 +40,19 @@ func (a Analyzer) analyzeJobs(ctx *ScanContext) ([]Finding, error) {
 
 		failed := intValue(status["failed"])
 		succeeded := intValue(status["succeeded"])
+		completions := 1
+		if configured := intValue(spec["completions"]); configured > 0 {
+			completions = configured
+		}
+		if mapConditionTrue(status, "Complete") || succeeded >= completions {
+			continue
+		}
 		backoffLimit := 6 // Kubernetes default
 		if _, ok := spec["backoffLimit"]; ok {
 			backoffLimit = intValue(spec["backoffLimit"])
 		}
 
-		if failed > 0 && succeeded == 0 && failed < backoffLimit {
+		if failed > 0 && failed < backoffLimit {
 			out = append(out, Finding{
 				ID:           keyFor(namespace, "Job/"+name+"/JobRetrying"),
 				Namespace:    namespace,
